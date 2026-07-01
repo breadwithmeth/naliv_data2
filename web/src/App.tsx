@@ -1457,6 +1457,7 @@ function InventoryReports() {
 
   if (state.status === "loading") return <div className="empty-state">Загружаем отчет по запасам</div>;
   if (state.status === "error") return <div className="empty-state">{state.error}</div>;
+  if (!state.data) return <div className="empty-state">Нет данных по запасам</div>;
 
   const report = state.data;
 
