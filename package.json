@@ -1,0 +1,46 @@
+{
+  "name": "naliv-analytics",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c green,cyan \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch api/src/server.ts",
+    "dev:web": "vite --host 0.0.0.0",
+    "build": "npm run build:api && npm run build:web",
+    "build:api": "tsc -p api/tsconfig.json",
+    "build:web": "tsc -p web/tsconfig.json && vite build",
+    "start:api": "node dist/api/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:pull": "prisma db pull --schema prisma/schema.prisma",
+    "typecheck": "npm run build:api && tsc -p web/tsconfig.json"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.10.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^2.15.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.8",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "prisma": "^6.10.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}

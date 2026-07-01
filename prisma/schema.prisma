@@ -1,0 +1,2461 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model catalog_informatsionnye_karty {
+  id                                     BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                          String    @map("_source_entity")
+  source_url                             String    @map("_source_url")
+  loaded_at                              DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                String?
+  predefined                             Boolean?
+  predefined_data_name                   String?
+  data_version                           String?
+  description                            String?
+  code                                   String?
+  parent_key                             String?
+  is_folder                              Boolean?
+  deletion_mark                          Boolean?
+  kod_karty                              String?
+  vladelets_karty                        String?
+  vid_karty                              String?
+  vid_diskontnoy_karty_key               String?
+  tip_karty                              String?
+  data_otkrytiya                         DateTime? @db.Timestamp(6)
+  data_poslednego_oprosa                 DateTime? @db.Timestamp(6)
+  data_sleduyuschego_oprosa              DateTime? @db.Timestamp(6)
+  bonusnaya_programma_loyalnosti_key     String?
+  karta_dlya_nakopleniy_key              String?
+  gruppa_vladeltsa_karty_po_shablonu_key String?
+  vladelets_karty_type                   String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model catalog_magaziny {
+  id                                                            BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                                                 String   @map("_source_entity")
+  source_url                                                    String   @map("_source_url")
+  loaded_at                                                     DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                                       String?
+  predefined                                                    Boolean?
+  predefined_data_name                                          String?
+  data_version                                                  String?
+  description                                                   String?
+  code                                                          String?
+  deletion_mark                                                 Boolean?
+  vid_minimalnyh_tsen_prodazhi_key                              String?
+  ispolzovat_ordernuyu_shemu_pri_otgruzke                       Boolean?
+  ispolzovat_ordernuyu_shemu_pri_otrazhenii_izlishkov_nedostach Boolean?
+  ispolzovat_ordernuyu_shemu_pri_peremeschenii                  Boolean?
+  ispolzovat_ordernuyu_shemu_pri_postuplenii                    Boolean?
+  ispolzovat_primenenie_tsen                                    Boolean?
+  poryadok_okrugleniya_summy_cheka_v_polzu_pokupatelya          String?
+  pravilo_tsenoobrazovaniya_key                                 String?
+  segment_isklyuchaemoy_nomenklatury_key                        String?
+  sklad_postupleniya_key                                        String?
+  sklad_prodazhi_key                                            String?
+  format_magazina_key                                           String?
+  sklad_upravlyayuschey_sistemy                                 Boolean?
+  ispolzovat_pryamuyu_inkassatsiyu                              Boolean?
+  kontrolirovat_assortiment                                     Boolean?
+  kontrolirovat_assortiment_v_zakaze_pokupatelya                Boolean?
+  metod_rascheta_potrebnosti                                    String?
+  tip_okrugleniya_cheka_v_polzu_pokupatelya                     BigInt?
+  ploschad_torgovogo_zala                                       Decimal? @db.Decimal
+  telefon_dostavki                                              String?
+  tekst_dostavki                                                String?
+  vid_tsen_zakupa_key                                           String?
+  protsent_natsenki_emenyu                                      BigInt?
+  token_magazina                                                String?
+  vid_tsen_realizatsii_key                                      String?
+  ustanovka_tsen_iz_dokumentov_postupleniya                     Boolean?
+  predel_magazina                                               Decimal? @db.Decimal
+  vid_tsen_realizatsii_optovaya_key                             String?
+  naliv_kassa_vyemki_key                                        String?
+  naliv_organizatsiya_key                                       String?
+  naliv_bar_market                                              Boolean?
+  naliv_protsent_barmen                                         Decimal? @db.Decimal
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model catalog_nomenklatura {
+  id                                              BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                   String    @map("_source_entity")
+  source_url                                      String    @map("_source_url")
+  loaded_at                                       DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                         String?
+  predefined                                      Boolean?
+  predefined_data_name                            String?
+  data_version                                    String?
+  description                                     String?
+  code                                            String?
+  parent_key                                      String?
+  is_folder                                       Boolean?
+  deletion_mark                                   Boolean?
+  alkogolnaya_produktsiya                         Boolean?
+  artikul                                         String?
+  ves                                             Decimal?  @db.Decimal
+  vesovoy                                         Boolean?
+  vid_alkogolnoy_produktsii_egais_key             String?
+  vid_nomenklatury_key                            String?
+  data_okonchaniya_deystviya                      DateTime? @db.Timestamp(6)
+  dogovor_kontragenta_key                         String?
+  edinitsa_izmereniya_key                         String?
+  importnaya_alkogolnaya_produktsiya              Boolean?
+  ispolzovat_seriynye_nomera                      Boolean?
+  kolichestvo_periodov_deystviya                  BigInt?
+  krepost                                         Decimal?  @db.Decimal
+  marka_key                                       String?
+  nabor_upakovok_key                              String?
+  naimenovanie_polnoe                             String?
+  nominal                                         Decimal?  @db.Decimal
+  obem_dal                                        Decimal?  @db.Decimal
+  opisanie                                        String?
+  periodichnost                                   String?
+  podkontrolnaya_produktsiya_vetis                Boolean?
+  proizvoditel_key                                String?
+  proizvoditel_importer_alkogolnoy_produktsii_key String?
+  razreshit_vvod_drobnogo_kolichestva             Boolean?
+  stavka_nds_key                                  String?
+  strana_proishozhdeniya_key                      String?
+  tip_nomenklatury                                String?
+  tip_seriynogo_nomera                            String?
+  tip_sroka_deystviya                             String?
+  tovarnaya_gruppa_key                            String?
+  tovarnaya_kategoriya_key                        String?
+  fayl_kartinki_key                               String?
+  tsenovaya_gruppa_key                            String?
+  osobennost_ucheta                               String?
+  produktsiya_markiruemaya_dlya_gism              Boolean?
+  ki_zgism                                        Boolean?
+  ki_zgism_vid                                    String?
+  ki_zgism_sposob_vypuska_v_oborot                String?
+  ki_zgismgtin                                    String?
+  ki_zgism_razmer                                 String?
+  vid_meha_gism_key                               String?
+  kod_tnved                                       String?
+  udalit_vid_alkogolnoy_produktsii_key            String?
+  tabachnaya_produktsiya                          Boolean?
+  naimenovanie_dlya_kkm                           String?
+  obuvnaya_produktsiya                            Boolean?
+  tovar_vs                                        Boolean?
+  lekarstvennye_preparaty                         Boolean?
+  emenyu                                          Boolean?
+  normativnyy_zapas_usolka                        Decimal?  @db.Decimal
+  normativnyy_zapas_satpaeva                      Decimal?  @db.Decimal
+  normativnyy_zapas_gorkogo                       Decimal?  @db.Decimal
+  normativnyy_zapas_karaganda                     Decimal?  @db.Decimal
+  normativnyy_zapas                               Boolean?
+  osnovnoy_postavschik_pavlodar_key               String?
+  osnovnoy_postavschik_karaganda_key              String?
+  osnovnoy_postavschik_astana_key                 String?
+  osnovnoy_postavschik_temirtau_key               String?
+  normativnyy_zapas_karaganda_shahter             Decimal?  @db.Decimal
+  normativnyy_zapas_karagandinskiy_pivzavod       Decimal?  @db.Decimal
+  normativnyy_zapas_tolstogo                      Decimal?  @db.Decimal
+  normativnyy_zapas_astana                        Decimal?  @db.Decimal
+  normativnyy_zapas_temirtau_mira104              Decimal?  @db.Decimal
+  normativnyy_zapas_temirtau_mira86               Decimal?  @db.Decimal
+  normativnyy_zapas_usolka2                       Decimal?  @db.Decimal
+  normativnyy_zapas_satpaeva2                     Decimal?  @db.Decimal
+  normativnyy_zapas_gorkogo2                      Decimal?  @db.Decimal
+  normativnyy_zapas_karaganda2                    Decimal?  @db.Decimal
+  normativnyy_zapas2                              Boolean?
+  normativnyy_zapas_karaganda_shahter2            Decimal?  @db.Decimal
+  normativnyy_zapas_karagandinskiy_pivzavod2      Decimal?  @db.Decimal
+  normativnyy_zapas_tolstogo2                     Decimal?  @db.Decimal
+  normativnyy_zapas_astana2                       Decimal?  @db.Decimal
+  normativnyy_zapas_temirtau_mira1042             Decimal?  @db.Decimal
+  normativnyy_zapas_temirtau_mira862              Decimal?  @db.Decimal
+  normativnyy_zapas_karaganda_buhar_zhyrau        Decimal?  @db.Decimal
+  normativnyy_zapas_karaganda_buhar_zhyrau2       Decimal?  @db.Decimal
+  naliv_povyshennyy_protsent_skoroport            Boolean?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model catalog_skidki_natsenki {
+  id                                               BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                                    String   @map("_source_entity")
+  source_url                                       String   @map("_source_url")
+  loaded_at                                        DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                          String?
+  predefined                                       Boolean?
+  predefined_data_name                             String?
+  data_version                                     String?
+  description                                      String?
+  parent_key                                       String?
+  is_folder                                        Boolean?
+  deletion_mark                                    Boolean?
+  valyuta_predostavleniya                          String?
+  variant_sovmestnogo_primeneniya                  String?
+  vid_tseny_key                                    String?
+  znachenie_skidki_natsenki                        Decimal? @db.Decimal
+  oblast_predostavleniya                           String?
+  rekvizit_dop_uporyadochivaniya                   BigInt?
+  segment_nomenklatury_predostavleniya_key         String?
+  sposob_predostavleniya                           String?
+  status_deystviya                                 String?
+  upravlyaemaya                                    Boolean?
+  podarok_iz_spiska                                Boolean?
+  podarok_iz_korziny_pokupatelya                   Boolean?
+  kolichestvo_podarkov_iz_korziny_pokupatelya      BigInt?
+  uchityvat_podarok_kak_prodazhu                   Boolean?
+  tekst_soobscheniya                               String?
+  moment_vydachi_soobscheniya                      String?
+  bonusnaya_programma_loyalnosti_key               String?
+  period_deystviya                                 String?
+  kolichestvo_periodov_deystviya                   BigInt?
+  period_otsrochki_nachala_deystviya               String?
+  kolichestvo_periodov_otsrochki_nachala_deystviya BigInt?
+  kratno_kolichestvu_usloviy                       Boolean?
+  ogranichenie_razmera_podchinennyh_skidok         Boolean?
+  vneshnyaya_obrabotka_key                         String?
+  parametry_vneshney_obrabotki_base64_data         String?
+  parametry_vneshney_obrabotki_type                String?
+  parametry_vneshney_obrabotki                     String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model catalog_sklady {
+  id                   BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity        String   @map("_source_entity")
+  source_url           String   @map("_source_url")
+  loaded_at            DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key              String?
+  predefined           Boolean?
+  predefined_data_name String?
+  data_version         String?
+  description          String?
+  code                 String?
+  parent_key           String?
+  is_folder            Boolean?
+  deletion_mark        Boolean?
+  tip_sklada           String?
+  organizatsiya_key    String?
+  magazin_key          String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_akt_o_rashozhdeniyah_pri_priemke_tovarov {
+  id                           BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                String    @map("_source_entity")
+  source_url                   String    @map("_source_url")
+  loaded_at                    DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                      String?
+  data_version                 String?
+  number                       String?
+  date                         DateTime? @db.Timestamp(6)
+  deletion_mark                Boolean?
+  posted                       Boolean?
+  dokument_osnovanie_key       String?
+  kommentariy                  String?
+  magazin_otpravitel_key       String?
+  magazin_poluchatel_key       String?
+  organizatsiya_key            String?
+  organizatsiya_poluchatel_key String?
+  otvetstvennyy_key            String?
+  sklad_otpravitel_key         String?
+  sklad_poluchatel_key         String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_chek_kkm {
+  id                                                     BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                          String    @map("_source_entity")
+  source_url                                             String    @map("_source_url")
+  loaded_at                                              DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                                String?
+  data_version                                           String?
+  number                                                 String?
+  date                                                   DateTime? @db.Timestamp(6)
+  deletion_mark                                          Boolean?
+  posted                                                 Boolean?
+  adres_cheka_egais                                      String?
+  analitika_hozyaystvennoy_operatsii_key                 String?
+  bonusy_nachisleny                                      Boolean?
+  vid_operatsii                                          String?
+  vladelets_diskontnoy_karty                             String?
+  diskontnaya_karta_key                                  String?
+  zakaz_pokupatelya_key                                  String?
+  kassa_kkm_key                                          String?
+  kommentariy                                            String?
+  magazin_key                                            String?
+  nomer_smeny_kkm                                        BigInt?
+  nomer_cheka_kkm                                        BigInt?
+  organizatsiya_key                                      String?
+  otvetstvennyy_key                                      String?
+  otrabotan_perehod                                      Boolean?
+  otchet_o_roznichnyh_prodazhah_key                      String?
+  podpis_cheka_egais                                     String?
+  prodavets_key                                          String?
+  skidki_rasschitany                                     Boolean?
+  status_cheka_kkm                                       String?
+  summa_dokumenta                                        Decimal?  @db.Decimal
+  udalit_dogovor_ekvayringa_key                          String?
+  tsena_vklyuchaet_nds                                   Boolean?
+  chek_kkm_prodazha_key                                  String?
+  telefon                                                String?
+  adres_ep                                               String?
+  dogovor_kontragenta_key                                String?
+  udalit_vid_naloga                                      String?
+  kontragent_key                                         String?
+  operatsiya_s_denezhnymi_sredstvami                     Boolean?
+  dokument_rascheta                                      String?
+  flag_dokumenta                                         Boolean?
+  adres                                                  String?
+  dostavka_do_kvartiry                                   Boolean?
+  dostavka_do_podezda                                    Boolean?
+  dostavka                                               Boolean?
+  sistema_nalogooblozheniya                              String?
+  vyruchka_nalichnymi                                    Decimal?  @db.Decimal
+  iin                                                    String?
+  emenyu                                                 Boolean?
+  dostavka_summa                                         Decimal?  @db.Decimal
+  naliv_servisnyy_sbor                                   BigInt?
+  vladelets_diskontnoy_karty_type                        String?
+  dokument_rascheta_type                                 String?
+  analitika_hozyaystvennoy_operatsii_navigation_link_url String?
+  zakaz_pokupatelya_navigation_link_url                  String?
+  kassa_kkm_navigation_link_url                          String?
+  magazin_navigation_link_url                            String?
+  organizatsiya_navigation_link_url                      String?
+  otvetstvennyy_navigation_link_url                      String?
+  prodavets_navigation_link_url                          String?
+  otchet_o_roznichnyh_prodazhah_navigation_link_url      String?
+  diskontnaya_karta_navigation_link_url                  String?
+  chek_kkm_prodazha_navigation_link_url                  String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_chek_kkm_bonusnye_bally_k_nachisleniyu {
+  id                                 BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                      String    @map("_source_entity")
+  source_url                         String    @map("_source_url")
+  loaded_at                          DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                     String?   @map("_parent_ref_key")
+  parent_line_index                  Int?      @map("_parent_line_index")
+  ref_key                            String?
+  line_number                        BigInt?
+  klyuch_svyazi                      String?
+  bonusnaya_programma_loyalnosti_key String?
+  skidka_natsenka_key                String?
+  data_nachisleniya                  DateTime? @db.Timestamp(6)
+  data_spisaniya                     DateTime? @db.Timestamp(6)
+  kolichestvo_bonusnyh_ballov        Decimal?  @db.Decimal
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_chek_kkm_oplata {
+  id                                 BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                      String   @map("_source_entity")
+  source_url                         String   @map("_source_url")
+  loaded_at                          DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                     String?  @map("_parent_ref_key")
+  parent_line_index                  Int?     @map("_parent_line_index")
+  ref_key                            String?
+  line_number                        BigInt?
+  vid_oplaty_key                     String?
+  ekvayringovyy_terminal_key         String?
+  summa                              Decimal? @db.Decimal
+  protsent_komissii                  BigInt?
+  summa_komissii                     BigInt?
+  ssylochnyy_nomer                   String?
+  nomer_cheka_et                     String?
+  nomer_platezhnoy_karty             String?
+  dannye_peredany_v_bank             Boolean?
+  summa_bonusov_v_skidkah            BigInt?
+  kolichestvo_bonusov                BigInt?
+  kolichestvo_bonusov_v_skidkah      BigInt?
+  bonusnaya_programma_loyalnosti_key String?
+  dogovor_kontragenta_key            String?
+  klyuch_svyazi_oplaty               String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_chek_kkm_skidki_natsenki {
+  id                            BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                 String   @map("_source_entity")
+  source_url                    String   @map("_source_url")
+  loaded_at                     DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                String?  @map("_parent_ref_key")
+  parent_line_index             Int?     @map("_parent_line_index")
+  ref_key                       String?
+  line_number                   BigInt?
+  klyuch_svyazi                 String?
+  summa                         Decimal? @db.Decimal
+  skidka_natsenka_key           String?
+  ogranichena_minimalnoy_tsenoy Boolean?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_chek_kkm_tovary {
+  id                                 BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                      String   @map("_source_entity")
+  source_url                         String   @map("_source_url")
+  loaded_at                          DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                     String?  @map("_parent_ref_key")
+  parent_line_index                  Int?     @map("_parent_line_index")
+  ref_key                            String?
+  line_number                        BigInt?
+  zakaz_pokupatelya_key              String?
+  klyuch_svyazi                      String?
+  klyuch_svyazi_seriynyh_nomerov     String?
+  kod_stroki                         String?
+  kolichestvo                        Decimal? @db.Decimal
+  kolichestvo_upakovok               Decimal? @db.Decimal
+  neobhodimost_vvoda_aktsiznoy_marki Boolean?
+  nomenklatura_key                   String?
+  prodavets_key                      String?
+  prodazha_podarka                   Boolean?
+  protsent_avtomaticheskoy_skidki    BigInt?
+  protsent_ruchnoy_skidki            BigInt?
+  registratsiya_prodazhi             Boolean?
+  rezervirovat                       Boolean?
+  sklad_key                          String?
+  stavka_nds_key                     String?
+  status_ukazaniya_seriy             BigInt?
+  summa                              BigInt?
+  summa_avtomaticheskoy_skidki       BigInt?
+  summa_nds                          BigInt?
+  summa_ruchnoy_skidki               BigInt?
+  summa_skidki_oplaty_bonusom        BigInt?
+  upakovka_key                       String?
+  harakteristika_key                 String?
+  tsena                              BigInt?
+  shtrihkod                          String?
+  neobhodimost_vvoda_koda_markirovki Boolean?
+  gtin                               String?
+  identifikator_vs                   String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_ezhednevnyy_otchet {
+  id                    BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity         String    @map("_source_entity")
+  source_url            String    @map("_source_url")
+  loaded_at             DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key               String?
+  data_version          String?
+  number                String?
+  date                  DateTime? @db.Timestamp(6)
+  deletion_mark         Boolean?
+  posted                Boolean?
+  data_otcheta          DateTime? @db.Timestamp(6)
+  magazin_key           String?
+  sotrudnik_key         String?
+  otvetstvennyy_key     String?
+  kommentariy           String?
+  prodolzhitelnost_dnya DateTime? @db.Timestamp(6)
+  rabochaya_smena_key   String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_informatsionnaya_rassylka {
+  id                      BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity           String    @map("_source_entity")
+  source_url              String    @map("_source_url")
+  loaded_at               DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                 String?
+  data_version            String?
+  number                  String?
+  date                    DateTime? @db.Timestamp(6)
+  deletion_mark           Boolean?
+  posted                  Boolean?
+  otvetstvennyy_key       String?
+  kommentariy             String?
+  dokument_osnovanie      String?
+  tip_rassylki            String?
+  tema                    String?
+  tekst_soobscheniya      String?
+  otpravlyat_v_translite  Boolean?
+  sostoyanie              String?
+  dokument_osnovanie_type String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_kassovaya_kniga {
+  id                      BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity           String    @map("_source_entity")
+  source_url              String    @map("_source_url")
+  loaded_at               DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                 String?
+  data_version            String?
+  number                  String?
+  date                    DateTime? @db.Timestamp(6)
+  deletion_mark           Boolean?
+  posted                  Boolean?
+  organizatsiya_key       String?
+  magazin_key             String?
+  otvetstvennyy_key       String?
+  summa_postupleniya      Decimal?  @db.Decimal
+  summa_vydachi           Decimal?  @db.Decimal
+  tip_lista               String?
+  nomera_listov           String?
+  kommentariy             String?
+  dogovor_kontragenta_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_kassovaya_smena {
+  id                                       BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                            String    @map("_source_entity")
+  source_url                               String    @map("_source_url")
+  loaded_at                                DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                  String?
+  data_version                             String?
+  number                                   String?
+  date                                     DateTime? @db.Timestamp(6)
+  deletion_mark                            Boolean?
+  posted                                   Boolean?
+  data_pervogo_neperedannogo_fd            DateTime? @db.Timestamp(6)
+  data_smeny_kkt                           DateTime? @db.Timestamp(6)
+  kassa_kkm_key                            String?
+  kolichestvo_neperedannyh_fd              BigInt?
+  kolichestvo_fd                           BigInt?
+  kolichestvo_chekov                       BigInt?
+  kommentariy                              String?
+  nachalo_kassovoy_smeny                   DateTime? @db.Timestamp(6)
+  neobhodima_strochnaya_zamena_fn          Boolean?
+  nomer_smeny_kkt                          BigInt?
+  okonchanie_kassovoy_smeny                DateTime? @db.Timestamp(6)
+  organizatsiya_key                        String?
+  pamyat_fn_perepolnena                    Boolean?
+  prevysheno_vremya_ozhidaniya_otveta_ofd  Boolean?
+  resurs_fn_ischerpan                      Boolean?
+  status                                   String?
+  fdo_zakrytii_smeny_base64_data           String?
+  fiskalnoe_ustroystvo_key                 String?
+  kassir_key                               String?
+  magazin_key                              String?
+  ishodnaya_kassovaya_smena_key            String?
+  fdo_zakrytii_smeny_type                  String?
+  fdo_zakrytii_smeny                       String?
+  kassa_kkm_navigation_link_url            String?
+  organizatsiya_navigation_link_url        String?
+  kassir_navigation_link_url               String?
+  magazin_navigation_link_url              String?
+  fiskalnoe_ustroystvo_navigation_link_url String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_kassovaya_smena_smena {
+  id                BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity     String   @map("_source_entity")
+  source_url        String   @map("_source_url")
+  loaded_at         DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key    String?  @map("_parent_ref_key")
+  parent_line_index Int?     @map("_parent_line_index")
+  ref_key           String?
+  line_number       BigInt?
+  sotrudnik_key     String?
+  dolzhnost_key     String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_korrektirovka_registrov {
+  id                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                     String    @map("_source_entity")
+  source_url                        String    @map("_source_url")
+  loaded_at                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                           String?
+  data_version                      String?
+  number                            String?
+  date                              DateTime? @db.Timestamp(6)
+  deletion_mark                     Boolean?
+  posted                            Boolean?
+  otvetstvennyy_key                 String?
+  kommentariy                       String?
+  otvetstvennyy_navigation_link_url String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_korrektirovka_registrov_tablitsa_registrov {
+  id                BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity     String   @map("_source_entity")
+  source_url        String   @map("_source_url")
+  loaded_at         DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key    String?  @map("_parent_ref_key")
+  parent_line_index Int?     @map("_parent_line_index")
+  ref_key           String?
+  line_number       BigInt?
+  imya              String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_marketingovaya_aktsiya {
+  id                                         BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                              String    @map("_source_entity")
+  source_url                                 String    @map("_source_url")
+  loaded_at                                  DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                    String?
+  data_version                               String?
+  number                                     String?
+  date                                       DateTime? @db.Timestamp(6)
+  deletion_mark                              Boolean?
+  posted                                     Boolean?
+  naimenovanie_aktsii                        String?
+  opisanie                                   String?
+  data_nachala_deystviya                     DateTime? @db.Timestamp(6)
+  data_okonchaniya_deystviya                 DateTime? @db.Timestamp(6)
+  kommentariy                                String?
+  otvetstvennyy_key                          String?
+  dlya_vseh_magazinov                        Boolean?
+  dlya_vseh_magazinov_odno_raspisanie_skidok Boolean?
+  otvetstvennyy_navigation_link_url          String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_marketingovaya_aktsiya_magaziny {
+  id                BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity     String   @map("_source_entity")
+  source_url        String   @map("_source_url")
+  loaded_at         DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key    String?  @map("_parent_ref_key")
+  parent_line_index Int?     @map("_parent_line_index")
+  ref_key           String?
+  line_number       BigInt?
+  magazin_key       String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_marketingovaya_aktsiya_skidki_natsenki {
+  id                  BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity       String    @map("_source_entity")
+  source_url          String    @map("_source_url")
+  loaded_at           DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key      String?   @map("_parent_ref_key")
+  parent_line_index   Int?      @map("_parent_line_index")
+  ref_key             String?
+  line_number         BigInt?
+  data_nachala        DateTime? @db.Timestamp(6)
+  data_okonchaniya    DateTime? @db.Timestamp(6)
+  magazin_key         String?
+  skidka_natsenka_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_nachislenie_i_spisanie_bonusnyh_ballov {
+  id                                                 BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                      String    @map("_source_entity")
+  source_url                                         String    @map("_source_url")
+  loaded_at                                          DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                            String?
+  data_version                                       String?
+  number                                             String?
+  date                                               DateTime? @db.Timestamp(6)
+  deletion_mark                                      Boolean?
+  posted                                             Boolean?
+  marketingovaya_aktsiya_key                         String?
+  bonusnaya_programma_loyalnosti_key                 String?
+  kommentariy                                        String?
+  pravilo_nachisleniya_key                           String?
+  period_deystviya                                   String?
+  kolichestvo_periodov_deystviya                     BigInt?
+  kolichestvo_periodov_otsrochki_nachala_deystviya   BigInt?
+  period_otsrochki_nachala_deystviya                 String?
+  data_okonchaniya_sroka_deystviya                   DateTime? @db.Timestamp(6)
+  otvetstvennyy_key                                  String?
+  bonusnaya_programma_loyalnosti_navigation_link_url String?
+  otvetstvennyy_navigation_link_url                  String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_nachislenie_i_spisanie_bonusnyh_ballov_nachislenie {
+  id                    BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity         String   @map("_source_entity")
+  source_url            String   @map("_source_url")
+  loaded_at             DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key        String?  @map("_parent_ref_key")
+  parent_line_index     Int?     @map("_parent_line_index")
+  ref_key               String?
+  line_number           BigInt?
+  diskontnaya_karta_key String?
+  bally                 BigInt?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_naliv_priem_na_rabotu_v_organizatsiyu {
+  id                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity     String    @map("_source_entity")
+  source_url        String    @map("_source_url")
+  loaded_at         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key           String?
+  data_version      String?
+  number            String?
+  date              DateTime? @db.Timestamp(6)
+  deletion_mark     Boolean?
+  posted            Boolean?
+  organizatsiya_key String?
+  kommentariy       String?
+  avtor_key         String?
+  otvetstvennyy_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_naliv_rmk_deystviya {
+  id            BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity String    @map("_source_entity")
+  source_url    String    @map("_source_url")
+  loaded_at     DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key       String?
+  data_version  String?
+  number        String?
+  date          DateTime? @db.Timestamp(6)
+  deletion_mark Boolean?
+  posted        Boolean?
+  magazin_key   String?
+  kassa_kkm_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_naliv_uvolnenie_iz_organizatsiy {
+  id                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity     String    @map("_source_entity")
+  source_url        String    @map("_source_url")
+  loaded_at         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key           String?
+  data_version      String?
+  number            String?
+  date              DateTime? @db.Timestamp(6)
+  deletion_mark     Boolean?
+  posted            Boolean?
+  organizatsiya_key String?
+  kommentariy       String?
+  avtor_key         String?
+  otvetstvennyy_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_oplata_ot_pokupatelya_platezhnoy_kartoy {
+  id                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                     String    @map("_source_entity")
+  source_url                        String    @map("_source_url")
+  loaded_at                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                           String?
+  data_version                      String?
+  number                            String?
+  date                              DateTime? @db.Timestamp(6)
+  deletion_mark                     Boolean?
+  posted                            Boolean?
+  organizatsiya_key                 String?
+  hozyaystvennaya_operatsiya        String?
+  ekvayringovyy_terminal_key        String?
+  kontragent_key                    String?
+  magazin_key                       String?
+  udalit_dogovor_ekvayringa_key     String?
+  ekvayrer_key                      String?
+  vid_oplaty_key                    String?
+  dokument_osnovanie                String?
+  kommentariy                       String?
+  nomer_cheka_kkm                   BigInt?
+  otvetstvennyy_key                 String?
+  protsent_komissii                 Decimal?  @db.Decimal
+  summa_dokumenta                   Decimal?  @db.Decimal
+  summa_komissii                    Decimal?  @db.Decimal
+  nomer_platezhnoy_karty            String?
+  otchet_o_roznichnyh_prodazhah_key String?
+  probit_chek                       Boolean?
+  kassa_kkm_key                     String?
+  oplata_vypolnena                  Boolean?
+  probivat_cheki_po_kasse_kkm       Boolean?
+  smena_zakryta                     Boolean?
+  otrabotan_perehod                 Boolean?
+  udalit_vid_naloga                 String?
+  dogovor_kontragenta_key           String?
+  zakaz_pokupatelya_key             String?
+  sistema_nalogooblozheniya         String?
+  telefon                           String?
+  adres_ep                          String?
+  dokument_osnovanie_type           String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_oprihodovanie_tovarov {
+  id                                                     BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                          String    @map("_source_entity")
+  source_url                                             String    @map("_source_url")
+  loaded_at                                              DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                                String?
+  data_version                                           String?
+  number                                                 String?
+  date                                                   DateTime? @db.Timestamp(6)
+  deletion_mark                                          Boolean?
+  posted                                                 Boolean?
+  analitika_hozyaystvennoy_operatsii_key                 String?
+  dokument_osnovanie                                     String?
+  kommentariy                                            String?
+  magazin_key                                            String?
+  organizatsiya_key                                      String?
+  otvetstvennyy_key                                      String?
+  sklad_key                                              String?
+  summa_dokumenta                                        Decimal?  @db.Decimal
+  kontragent_key                                         String?
+  dogovor_key                                            String?
+  dokument_osnovanie_type                                String?
+  analitika_hozyaystvennoy_operatsii_navigation_link_url String?
+  magazin_navigation_link_url                            String?
+  organizatsiya_navigation_link_url                      String?
+  otvetstvennyy_navigation_link_url                      String?
+  sklad_navigation_link_url                              String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_oprihodovanie_tovarov_tovary {
+  id                             BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                  String   @map("_source_entity")
+  source_url                     String   @map("_source_url")
+  loaded_at                      DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                 String?  @map("_parent_ref_key")
+  parent_line_index              Int?     @map("_parent_line_index")
+  ref_key                        String?
+  line_number                    BigInt?
+  nomenklatura_key               String?
+  harakteristika_key             String?
+  kolichestvo                    Decimal? @db.Decimal
+  upakovka_key                   String?
+  kolichestvo_upakovok           Decimal? @db.Decimal
+  klyuch_svyazi_seriynyh_nomerov String?
+  tsena                          Decimal? @db.Decimal
+  summa                          Decimal? @db.Decimal
+  status_ukazaniya_seriy         BigInt?
+  alkogolnaya_produktsiya_key    String?
+  klyuch_svyazi                  String?
+  nomer_gtd_key                  String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_otchet_komitentu_o_prodazhah {
+  id                                             BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                  String    @map("_source_entity")
+  source_url                                     String    @map("_source_url")
+  loaded_at                                      DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                        String?
+  data_version                                   String?
+  number                                         String?
+  date                                           DateTime? @db.Timestamp(6)
+  deletion_mark                                  Boolean?
+  posted                                         Boolean?
+  organizatsiya_key                              String?
+  bankovskiy_schet_organizatsii_key              String?
+  kontragent_key                                 String?
+  dogovor_key                                    String?
+  magazin_key                                    String?
+  summa_zakupki                                  Decimal?  @db.Decimal
+  uchityvat_nds                                  Boolean?
+  tsena_vklyuchaet_nds                           Boolean?
+  nachalo_perioda                                DateTime? @db.Timestamp(6)
+  konets_perioda                                 DateTime? @db.Timestamp(6)
+  data_oplaty                                    DateTime? @db.Timestamp(6)
+  usluga_komissionnogo_voznagrazhdeniya_key      String?
+  sposob_rascheta_komissionnogo_voznagrazhdeniya String?
+  protsent_komissionnogo_voznagrazhdeniya        Decimal?  @db.Decimal
+  summa_voznagrazhdeniya                         Decimal?  @db.Decimal
+  stavka_nds_voznagrazhdeniya_key                String?
+  summa_nds_voznagrazhdeniya                     Decimal?  @db.Decimal
+  kommentariy                                    String?
+  otvetstvennyy_key                              String?
+  summa_prodazhi                                 Decimal?  @db.Decimal
+  summa_dokumenta                                Decimal?  @db.Decimal
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_otchet_komitentu_o_spisanii {
+  id                   BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity        String    @map("_source_entity")
+  source_url           String    @map("_source_url")
+  loaded_at            DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key              String?
+  data_version         String?
+  number               String?
+  date                 DateTime? @db.Timestamp(6)
+  deletion_mark        Boolean?
+  posted               Boolean?
+  organizatsiya_key    String?
+  kontragent_key       String?
+  dogovor_key          String?
+  summa_dokumenta      Decimal?  @db.Decimal
+  uchityvat_nds        Boolean?
+  tsena_vklyuchaet_nds Boolean?
+  nachalo_perioda      DateTime? @db.Timestamp(6)
+  konets_perioda       DateTime? @db.Timestamp(6)
+  data_oplaty          DateTime? @db.Timestamp(6)
+  magazin_key          String?
+  kommentariy          String?
+  otvetstvennyy_key    String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_otchet_o_roznichnyh_prodazhah {
+  id                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                     String    @map("_source_entity")
+  source_url                        String    @map("_source_url")
+  loaded_at                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                           String?
+  data_version                      String?
+  number                            String?
+  date                              DateTime? @db.Timestamp(6)
+  deletion_mark                     Boolean?
+  posted                            Boolean?
+  kassa_kkm_key                     String?
+  kommentariy                       String?
+  otvetstvennyy_key                 String?
+  summa_dokumenta                   Decimal?  @db.Decimal
+  summa_vozvratov                   Decimal?  @db.Decimal
+  magazin_key                       String?
+  udalit_dogovor_ekvayringa_key     String?
+  ekvayrer_key                      String?
+  tsena_vklyuchaet_nds              Boolean?
+  uchityvat_nds                     Boolean?
+  oplata_podarochnymi_sertifikatami Decimal?  @db.Decimal
+  organizatsiya_key                 String?
+  kassovaya_smena                   String?
+  est_markiruemaya_produktsiya_gism Boolean?
+  summa_oplaty_nalichnyh            Decimal?  @db.Decimal
+  flag_dokumenta                    Boolean?
+  kassovaya_smena_type              String?
+  kassa_kkm_navigation_link_url     String?
+  otvetstvennyy_navigation_link_url String?
+  magazin_navigation_link_url       String?
+  organizatsiya_navigation_link_url String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_otchet_o_roznichnyh_prodazhah_bonusnye_bally_b637022a {
+  id                                 BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                      String    @map("_source_entity")
+  source_url                         String    @map("_source_url")
+  loaded_at                          DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                     String?   @map("_parent_ref_key")
+  parent_line_index                  Int?      @map("_parent_line_index")
+  ref_key                            String?
+  line_number                        BigInt?
+  bonusnaya_programma_loyalnosti_key String?
+  diskontnaya_karta_key              String?
+  data_nachisleniya                  DateTime? @db.Timestamp(6)
+  data_spisaniya                     DateTime? @db.Timestamp(6)
+  kolichestvo_bonusnyh_ballov        BigInt?
+  data_pervonachalnogo_nachisleniya  DateTime? @db.Timestamp(6)
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_otchet_o_roznichnyh_prodazhah_oplata_bonusnymi_ballami {
+  id                                 BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                      String   @map("_source_entity")
+  source_url                         String   @map("_source_url")
+  loaded_at                          DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                     String?  @map("_parent_ref_key")
+  parent_line_index                  Int?     @map("_parent_line_index")
+  ref_key                            String?
+  line_number                        BigInt?
+  vid_oplaty_key                     String?
+  bonusnaya_programma_loyalnosti_key String?
+  diskontnaya_karta_key              String?
+  summa_bonusov                      BigInt?
+  summa_bonusov_v_skidkah            BigInt?
+  kolichestvo_bonusov                BigInt?
+  kolichestvo_bonusov_v_skidkah      BigInt?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_otchet_o_roznichnyh_prodazhah_oplata_platezhn_5ea33aad {
+  id                         BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity              String   @map("_source_entity")
+  source_url                 String   @map("_source_url")
+  loaded_at                  DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key             String?  @map("_parent_ref_key")
+  parent_line_index          Int?     @map("_parent_line_index")
+  ref_key                    String?
+  line_number                BigInt?
+  vid_oplaty_key             String?
+  summa                      BigInt?
+  protsent_komissii          BigInt?
+  summa_komissii             BigInt?
+  ekvayringovyy_terminal_key String?
+  dogovor_kontragenta_key    String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_otchet_o_roznichnyh_prodazhah_tovary {
+  id                                     BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                          String   @map("_source_entity")
+  source_url                             String   @map("_source_url")
+  loaded_at                              DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                         String?  @map("_parent_ref_key")
+  parent_line_index                      Int?     @map("_parent_line_index")
+  ref_key                                String?
+  line_number                            BigInt?
+  nomenklatura_key                       String?
+  harakteristika_key                     String?
+  kolichestvo                            Decimal? @db.Decimal
+  tsena                                  BigInt?
+  summa                                  Decimal? @db.Decimal
+  stavka_nds_key                         String?
+  summa_nds                              BigInt?
+  protsent_skidki_natsenki               BigInt?
+  registratsiya_prodazhi                 Boolean?
+  sklad_key                              String?
+  klyuch_svyazi_seriynyh_nomerov         String?
+  prodavets_key                          String?
+  diskontnaya_karta_key                  String?
+  kolichestvo_upakovok                   Decimal? @db.Decimal
+  upakovka_key                           String?
+  klyuch_svyazi                          String?
+  status_ukazaniya_seriy                 BigInt?
+  kod_stroki                             String?
+  zakaz_pokupatelya_key                  String?
+  rezervirovat                           Boolean?
+  analitika_hozyaystvennoy_operatsii_key String?
+  nomer_gtd_key                          String?
+  postavschik_key                        String?
+  dogovor_key                            String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary {
+  id                                     BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                          String   @map("_source_entity")
+  source_url                             String   @map("_source_url")
+  loaded_at                              DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                         String?  @map("_parent_ref_key")
+  parent_line_index                      Int?     @map("_parent_line_index")
+  ref_key                                String?
+  line_number                            BigInt?
+  nomenklatura_key                       String?
+  harakteristika_key                     String?
+  kolichestvo                            Decimal? @db.Decimal
+  tsena                                  BigInt?
+  summa                                  Decimal? @db.Decimal
+  protsent_skidki_natsenki               BigInt?
+  registratsiya_prodazhi                 Boolean?
+  sklad_key                              String?
+  stavka_nds_key                         String?
+  summa_nds                              BigInt?
+  prodavets_key                          String?
+  diskontnaya_karta_key                  String?
+  analitika_hozyaystvennoy_operatsii_key String?
+  kolichestvo_upakovok                   Decimal? @db.Decimal
+  upakovka_key                           String?
+  klyuch_svyazi                          String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_otzyv_soglasiya_na_obrabotku_personalnyh_dannyh {
+  id                                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                     String    @map("_source_entity")
+  source_url                                        String    @map("_source_url")
+  loaded_at                                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                           String?
+  data_version                                      String?
+  number                                            String?
+  date                                              DateTime? @db.Timestamp(6)
+  deletion_mark                                     Boolean?
+  posted                                            Boolean?
+  organizatsiya_key                                 String?
+  yuridicheskiy_adres_organizatsii                  String?
+  otvetstvennyy_za_obrabotku_personalnyh_dannyh_key String?
+  fio_otvetstvennogo_za_obrabotku_p_dn              String?
+  subekt_key                                        String?
+  data_otzyva                                       DateTime? @db.Timestamp(6)
+  otvetstvennyy_key                                 String?
+  kommentariy                                       String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_peremeschenie_tovarov {
+  id                                                              BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                                   String    @map("_source_entity")
+  source_url                                                      String    @map("_source_url")
+  loaded_at                                                       DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                                         String?
+  data_version                                                    String?
+  number                                                          String?
+  date                                                            DateTime? @db.Timestamp(6)
+  deletion_mark                                                   Boolean?
+  posted                                                          Boolean?
+  dannye_transportnogo_razdela_base64_data                        String?
+  dokument_osnovanie                                              String?
+  kommentariy                                                     String?
+  magazin_otpravitel_key                                          String?
+  magazin_poluchatel_key                                          String?
+  organizatsiya_key                                               String?
+  organizatsiya_poluchatel_key                                    String?
+  otvetstvennyy_key                                               String?
+  predstavlenie_dokumenta_osnovaniya                              String?
+  sklad_otpravitel_key                                            String?
+  sklad_poluchatel_key                                            String?
+  udalit_status_obrabotki_egais                                   String?
+  summa_dokumenta                                                 Decimal?  @db.Decimal
+  ttn_ishodyaschaya_egais_key                                     String?
+  ttn_vhodyaschaya_egais_key                                      String?
+  udalit_tovarno_transportnaya_nakladnaya_egais_ishodyaschaya_key String?
+  dannye_transportnogo_razdela_type                               String?
+  dokument_osnovanie_type                                         String?
+  dannye_transportnogo_razdela                                    String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_pereschet_tovarov {
+  id                                     BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                          String    @map("_source_entity")
+  source_url                             String    @map("_source_url")
+  loaded_at                              DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                String?
+  data_version                           String?
+  number                                 String?
+  date                                   DateTime? @db.Timestamp(6)
+  deletion_mark                          Boolean?
+  posted                                 Boolean?
+  dokument_osnovanie_key                 String?
+  kommentariy                            String?
+  magazin_key                            String?
+  organizatsiya_key                      String?
+  otbor_perescheta_tovarov_base64_data   String?
+  otvetstvennyy_key                      String?
+  sklad_key                              String?
+  status                                 String?
+  summa_dokumenta                        Decimal?  @db.Decimal
+  uchetnye_dannye_zapolneny              Boolean?
+  otbor_perescheta_tovarov_type          String?
+  otbor_perescheta_tovarov               String?
+  dokument_osnovanie_navigation_link_url String?
+  magazin_navigation_link_url            String?
+  organizatsiya_navigation_link_url      String?
+  otvetstvennyy_navigation_link_url      String?
+  sklad_navigation_link_url              String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_pereschet_tovarov_tovary {
+  id                        BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity             String   @map("_source_entity")
+  source_url                String   @map("_source_url")
+  loaded_at                 DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key            String?  @map("_parent_ref_key")
+  parent_line_index         Int?     @map("_parent_line_index")
+  ref_key                   String?
+  line_number               BigInt?
+  nomenklatura_key          String?
+  harakteristika_key        String?
+  kolichestvo               Decimal? @db.Decimal
+  upakovka_key              String?
+  kolichestvo_upakovok      Decimal? @db.Decimal
+  tsena                     Decimal? @db.Decimal
+  summa                     Decimal? @db.Decimal
+  summa_fakt                Decimal? @db.Decimal
+  kolichestvo_fakt          Decimal? @db.Decimal
+  kolichestvo_upakovok_fakt Decimal? @db.Decimal
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_peresortitsa_tovarov {
+  id                     BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity          String    @map("_source_entity")
+  source_url             String    @map("_source_url")
+  loaded_at              DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                String?
+  data_version           String?
+  number                 String?
+  date                   DateTime? @db.Timestamp(6)
+  deletion_mark          Boolean?
+  posted                 Boolean?
+  dokument_osnovanie_key String?
+  kommentariy            String?
+  magazin_key            String?
+  organizatsiya_key      String?
+  otvetstvennyy_key      String?
+  sklad_key              String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_polozhenie_o_premirovanii {
+  id                                  BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                       String    @map("_source_entity")
+  source_url                          String    @map("_source_url")
+  loaded_at                           DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                             String?
+  data_version                        String?
+  number                              String?
+  date                                DateTime? @db.Timestamp(6)
+  deletion_mark                       Boolean?
+  posted                              Boolean?
+  data_nachala_deystviya              DateTime? @db.Timestamp(6)
+  data_okonchaniya_deystviya          DateTime? @db.Timestamp(6)
+  otvetstvennyy_key                   String?
+  kommentariy                         String?
+  dlya_vseh_magazinov_odno_polozhenie Boolean?
+  dlya_vseh_magazinov                 Boolean?
+  opisanie                            String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_postuplenie_tovarov {
+  id                                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                     String    @map("_source_entity")
+  source_url                                        String    @map("_source_url")
+  loaded_at                                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                           String?
+  data_version                                      String?
+  number                                            String?
+  date                                              DateTime? @db.Timestamp(6)
+  deletion_mark                                     Boolean?
+  posted                                            Boolean?
+  kommentariy                                       String?
+  otvetstvennyy_key                                 String?
+  summa_dokumenta                                   Decimal?  @db.Decimal
+  magazin_key                                       String?
+  tsena_vklyuchaet_nds                              Boolean?
+  uchityvat_nds                                     Boolean?
+  kontragent_key                                    String?
+  sklad_key                                         String?
+  zakaz_postavschiku_key                            String?
+  data_vhodyaschego_dokumenta                       DateTime? @db.Timestamp(6)
+  nomer_vhodyaschego_dokumenta                      String?
+  organizatsiya_key                                 String?
+  bankovskiy_schet_organizatsii_key                 String?
+  bankovskiy_schet_kontragenta_key                  String?
+  est_rashozhdeniya                                 Boolean?
+  predyavlen_schet_faktura                          Boolean?
+  nomer_scheta_faktury                              String?
+  data_scheta_faktury                               DateTime? @db.Timestamp(6)
+  udalit_poluchen_iz_egais                          Boolean?
+  ttn_vhodyaschaya_egais_key                        String?
+  udalit_akt_peredan_vegais                         Boolean?
+  est_markiruemaya_produktsiya_gism                 Boolean?
+  est_ki_zgism                                      Boolean?
+  hozyaystvennaya_operatsiya                        String?
+  dogovor_key                                       String?
+  flag_dokumenta                                    Boolean?
+  naliv_oplachen                                    Boolean?
+  naliv_data_oplaty                                 DateTime? @db.Timestamp(6)
+  naliv_forma_oplaty                                String?
+  otvetstvennyy_navigation_link_url                 String?
+  magazin_navigation_link_url                       String?
+  kontragent_navigation_link_url                    String?
+  sklad_navigation_link_url                         String?
+  zakaz_postavschiku_navigation_link_url            String?
+  organizatsiya_navigation_link_url                 String?
+  bankovskiy_schet_organizatsii_navigation_link_url String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_postuplenie_tovarov_etapy_oplat {
+  id                          BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity               String    @map("_source_entity")
+  source_url                  String    @map("_source_url")
+  loaded_at                   DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key              String?   @map("_parent_ref_key")
+  parent_line_index           Int?      @map("_parent_line_index")
+  ref_key                     String?
+  line_number                 BigInt?
+  summa                       BigInt?
+  data_platezha               DateTime? @db.Timestamp(6)
+  kommentariy                 String?
+  otsrochka_platezha          BigInt?
+  vid_platezha                String?
+  protsent_oplaty             BigInt?
+  forma_oplaty                String?
+  dokument_vzaimozacheta      String?
+  dokument_vzaimozacheta_type String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_postuplenie_tovarov_tovary {
+  id                             BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                  String   @map("_source_entity")
+  source_url                     String   @map("_source_url")
+  loaded_at                      DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                 String?  @map("_parent_ref_key")
+  parent_line_index              Int?     @map("_parent_line_index")
+  ref_key                        String?
+  line_number                    BigInt?
+  nomenklatura_key               String?
+  harakteristika_key             String?
+  kolichestvo                    BigInt?
+  tsena                          BigInt?
+  summa                          BigInt?
+  stavka_nds_key                 String?
+  summa_nds                      BigInt?
+  klyuch_svyazi_seriynyh_nomerov String?
+  upakovka_key                   String?
+  kolichestvo_upakovok           BigInt?
+  status_ukazaniya_seriy         BigInt?
+  identifikator_stroki           String?
+  alkogolnaya_produktsiya_key    String?
+  identifikator_upakovki         String?
+  klyuch_svyazi                  String?
+  nomer_gtd_key                  String?
+  kolichestvo_zakaz              BigInt?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_prays_listy {
+  id            BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity String    @map("_source_entity")
+  source_url    String    @map("_source_url")
+  loaded_at     DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key       String?
+  data_version  String?
+  number        String?
+  date          DateTime? @db.Timestamp(6)
+  deletion_mark Boolean?
+  posted        Boolean?
+  nazvanie      String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_prihodnyy_kassovyy_order {
+  id                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                     String    @map("_source_entity")
+  source_url                        String    @map("_source_url")
+  loaded_at                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                           String?
+  data_version                      String?
+  number                            String?
+  date                              DateTime? @db.Timestamp(6)
+  deletion_mark                     Boolean?
+  posted                            Boolean?
+  organizatsiya_key                 String?
+  kassa_kkm_key                     String?
+  hozyaystvennaya_operatsiya        String?
+  kassa_key                         String?
+  bankovskiy_schet_key              String?
+  kommentariy                       String?
+  kontragent_key                    String?
+  dokument_osnovanie                String?
+  summa_dokumenta                   Decimal?  @db.Decimal
+  prinyato_ot                       String?
+  osnovanie                         String?
+  prilozhenie                       String?
+  otvetstvennyy_key                 String?
+  nomer_cheka_kkm                   BigInt?
+  probivat_cheki_po_kasse_kkm       Boolean?
+  probit_chek                       Boolean?
+  v_tom_chisle_nds                  String?
+  otchet_o_roznichnyh_prodazhah_key String?
+  smena_zakryta                     Boolean?
+  dogovor_kontragenta_key           String?
+  udalit_vid_naloga                 String?
+  zakaz_pokupatelya_key             String?
+  sistema_nalogooblozheniya         String?
+  telefon                           String?
+  adres_ep                          String?
+  iin                               String?
+  dokument_osnovanie_type           String?
+  organizatsiya_navigation_link_url String?
+  kassa_kkm_navigation_link_url     String?
+  kassa_navigation_link_url         String?
+  otvetstvennyy_navigation_link_url String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_prihodnyy_kassovyy_order_rasshifrovka_platezha {
+  id                                      BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                           String   @map("_source_entity")
+  source_url                              String   @map("_source_url")
+  loaded_at                               DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                          String?  @map("_parent_ref_key")
+  parent_line_index                       Int?     @map("_parent_line_index")
+  ref_key                                 String?
+  line_number                             BigInt?
+  statya_dvizheniya_denezhnyh_sredstv_key String?
+  dokument_raschetov_s_kontragentom       String?
+  dokument_raschetov_s_kontragentom_type  String?
+  summa                                   BigInt?
+  priznak_sposoba_rascheta                String?
+  sotrudnik_key                           String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_prikaz_na_provedenie_inventarizatsii_tovarov {
+  id                                                         BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                              String    @map("_source_entity")
+  source_url                                                 String    @map("_source_url")
+  loaded_at                                                  DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                                    String?
+  data_version                                               String?
+  number                                                     String?
+  date                                                       DateTime? @db.Timestamp(6)
+  deletion_mark                                              Boolean?
+  posted                                                     Boolean?
+  data_nachala                                               DateTime? @db.Timestamp(6)
+  data_okonchaniya                                           DateTime? @db.Timestamp(6)
+  kommentariy                                                String?
+  magazin_key                                                String?
+  nastroyki_komponovki_dannyh_base64_data                    String?
+  opisanie                                                   String?
+  organizatsiya_key                                          String?
+  otvetstvennyy_key                                          String?
+  pravila_otbora_tovarov_inventarizatsii_key                 String?
+  sklad_key                                                  String?
+  status                                                     String?
+  nastroyki_komponovki_dannyh_type                           String?
+  nastroyki_komponovki_dannyh                                String?
+  magazin_navigation_link_url                                String?
+  organizatsiya_navigation_link_url                          String?
+  otvetstvennyy_navigation_link_url                          String?
+  pravila_otbora_tovarov_inventarizatsii_navigation_link_url String?
+  sklad_navigation_link_url                                  String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_raschet_premiy_po_lichnym_prodazham {
+  id                               BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                    String    @map("_source_entity")
+  source_url                       String    @map("_source_url")
+  loaded_at                        DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                          String?
+  data_version                     String?
+  number                           String?
+  date                             DateTime? @db.Timestamp(6)
+  deletion_mark                    Boolean?
+  posted                           Boolean?
+  magazin_key                      String?
+  otvetstvennyy_key                String?
+  kommentariy                      String?
+  period_rascheta_data_nachala     DateTime? @db.Timestamp(6)
+  period_rascheta_data_okonchaniya DateTime? @db.Timestamp(6)
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_rashodnyy_kassovyy_order {
+  id                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                     String    @map("_source_entity")
+  source_url                        String    @map("_source_url")
+  loaded_at                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                           String?
+  data_version                      String?
+  number                            String?
+  date                              DateTime? @db.Timestamp(6)
+  deletion_mark                     Boolean?
+  posted                            Boolean?
+  organizatsiya_key                 String?
+  kassa_kkm_key                     String?
+  dokument_osnovanie                String?
+  kassa_key                         String?
+  kassa_poluchatel_key              String?
+  hozyaystvennaya_operatsiya        String?
+  bankovskiy_schet_key              String?
+  kontragent                        String?
+  vydat                             String?
+  kommentariy                       String?
+  nomer_cheka_kkm                   BigInt?
+  osnovanie                         String?
+  otvetstvennyy_key                 String?
+  po_dokumentu                      String?
+  prilozhenie                       String?
+  summa_dokumenta                   Decimal?  @db.Decimal
+  nomer_sumki                       String?
+  probivat_cheki_po_kasse_kkm       Boolean?
+  probit_chek                       Boolean?
+  platezhnaya_vedomost_key          String?
+  otchet_o_roznichnyh_prodazhah_key String?
+  smena_zakryta                     Boolean?
+  dogovor_kontragenta_key           String?
+  udalit_vid_naloga                 String?
+  sistema_nalogooblozheniya         String?
+  telefon                           String?
+  adres_ep                          String?
+  iin                               String?
+  dokument_osnovanie_type           String?
+  kontragent_type                   String?
+  organizatsiya_navigation_link_url String?
+  kassa_navigation_link_url         String?
+  otvetstvennyy_navigation_link_url String?
+  kassa_kkm_navigation_link_url     String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_rashodnyy_kassovyy_order_rasshifrovka_platezha {
+  id                                      BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                           String   @map("_source_entity")
+  source_url                              String   @map("_source_url")
+  loaded_at                               DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                          String?  @map("_parent_ref_key")
+  parent_line_index                       Int?     @map("_parent_line_index")
+  ref_key                                 String?
+  line_number                             BigInt?
+  statya_dvizheniya_denezhnyh_sredstv_key String?
+  dokument_raschetov_s_kontragentom       String?
+  dokument_raschetov_s_kontragentom_type  String?
+  summa                                   BigInt?
+  dogovor_kontragenta_key                 String?
+  priznak_sposoba_rascheta                String?
+  operatsiya_kassovoy_otchetnosti_key     String?
+  sotrudnik_key                           String?
+  magazin_key                             String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_realizatsiya_tovarov {
+  id                                       BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                            String    @map("_source_entity")
+  source_url                               String    @map("_source_url")
+  loaded_at                                DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                  String?
+  data_version                             String?
+  number                                   String?
+  date                                     DateTime? @db.Timestamp(6)
+  deletion_mark                            Boolean?
+  posted                                   Boolean?
+  sklad_key                                String?
+  magazin_key                              String?
+  kommentariy                              String?
+  kontragent_key                           String?
+  summa_dokumenta                          Decimal?  @db.Decimal
+  diskontnaya_karta_key                    String?
+  otvetstvennyy_key                        String?
+  uchityvat_nds                            Boolean?
+  tsena_vklyuchaet_nds                     Boolean?
+  doverennost_nomer                        String?
+  doverennost_data                         DateTime? @db.Timestamp(6)
+  doverennost_vydana                       String?
+  doverennost_cherez_kogo                  String?
+  adres_dostavki                           String?
+  vladelets_diskontnoy_karty               String?
+  prodavets_key                            String?
+  organizatsiya_key                        String?
+  skidki_rasschitany                       Boolean?
+  bankovskiy_schet_organizatsii_key        String?
+  bonusy_nachisleny                        Boolean?
+  dannye_transportnogo_razdela_base64_data String?
+  est_markiruemaya_produktsiya_gism        Boolean?
+  udalit_adres_cheka_egais                 String?
+  udalit_podpis_cheka_egais                String?
+  zakaz_pokupatelya_key                    String?
+  dokument_rascheta                        String?
+  udalit_kassa_kkm_key                     String?
+  udalit_nomer_cheka_kkm                   BigInt?
+  udalit_probit_chek                       Boolean?
+  dogovor_kontragenta_key                  String?
+  udalit_vid_naloga                        String?
+  sistema_nalogooblozheniya                String?
+  udalit_telefon                           String?
+  udalit_adres_ep                          String?
+  vladelets_diskontnoy_karty_type          String?
+  dannye_transportnogo_razdela_type        String?
+  dokument_rascheta_type                   String?
+  dannye_transportnogo_razdela             String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_registratsiya_beznalichnoy_oplaty {
+  id                         BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity              String    @map("_source_entity")
+  source_url                 String    @map("_source_url")
+  loaded_at                  DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                    String?
+  data_version               String?
+  number                     String?
+  date                       DateTime? @db.Timestamp(6)
+  deletion_mark              Boolean?
+  posted                     Boolean?
+  organizatsiya_key          String?
+  hozyaystvennaya_operatsiya String?
+  magazin_key                String?
+  kommentariy                String?
+  kontragent_key             String?
+  otvetstvennyy_key          String?
+  summa_dokumenta            Decimal?  @db.Decimal
+  dokument_osnovanie         String?
+  kassa_kkm_key              String?
+  nomer_cheka_kkm            BigInt?
+  probit_chek                Boolean?
+  udalit_vid_naloga          String?
+  dogovor_kontragenta_key    String?
+  sistema_nalogooblozheniya  String?
+  telefon                    String?
+  adres_ep                   String?
+  dokument_osnovanie_type    String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_registratsiya_podscheta_posetiteley {
+  id                                  BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                       String    @map("_source_entity")
+  source_url                          String    @map("_source_url")
+  loaded_at                           DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                             String?
+  data_version                        String?
+  number                              String?
+  date                                DateTime? @db.Timestamp(6)
+  deletion_mark                       Boolean?
+  posted                              Boolean?
+  magazin_key                         String?
+  schetchik_podscheta_posetiteley_key String?
+  kommentariy                         String?
+  otvetstvennyy_key                   String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_sborka_tovarov {
+  id                              BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                   String    @map("_source_entity")
+  source_url                      String    @map("_source_url")
+  loaded_at                       DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                         String?
+  data_version                    String?
+  number                          String?
+  date                            DateTime? @db.Timestamp(6)
+  deletion_mark                   Boolean?
+  posted                          Boolean?
+  sklad_key                       String?
+  kommentariy                     String?
+  magazin_key                     String?
+  otvetstvennyy_key               String?
+  nomenklatura_key                String?
+  harakteristika_key              String?
+  kolichestvo                     Decimal?  @db.Decimal
+  vid_operatsii                   String?
+  kolichestvo_upakovok            Decimal?  @db.Decimal
+  upakovka_key                    String?
+  organizatsiya_key               String?
+  status_ukazaniya_seriy          BigInt?
+  oshibka_sebestoimosti           BigInt?
+  dokument_osnovanie_komplekt_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_soglasie_na_obrabotku_personalnyh_dannyh {
+  id                                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                     String    @map("_source_entity")
+  source_url                                        String    @map("_source_url")
+  loaded_at                                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                           String?
+  data_version                                      String?
+  number                                            String?
+  date                                              DateTime? @db.Timestamp(6)
+  deletion_mark                                     Boolean?
+  posted                                            Boolean?
+  organizatsiya_key                                 String?
+  naimenovanie_organizatsii                         String?
+  yuridicheskiy_adres_organizatsii                  String?
+  otvetstvennyy_za_obrabotku_personalnyh_dannyh_key String?
+  fio_otvetstvennogo_za_obrabotku_p_dn              String?
+  subekt_key                                        String?
+  fio_subekta                                       String?
+  adres_subekta                                     String?
+  pasportnye_dannye                                 String?
+  data_polucheniya                                  DateTime? @db.Timestamp(6)
+  srok_deystviya                                    DateTime? @db.Timestamp(6)
+  otvetstvennyy_key                                 String?
+  kommentariy                                       String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_spisanie_tovarov {
+  id                                                     BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                          String    @map("_source_entity")
+  source_url                                             String    @map("_source_url")
+  loaded_at                                              DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                                String?
+  data_version                                           String?
+  number                                                 String?
+  date                                                   DateTime? @db.Timestamp(6)
+  deletion_mark                                          Boolean?
+  posted                                                 Boolean?
+  analitika_hozyaystvennoy_operatsii_key                 String?
+  dokument_osnovanie                                     String?
+  kommentariy                                            String?
+  magazin_key                                            String?
+  organizatsiya_key                                      String?
+  osnovanie_spisaniya                                    String?
+  otvetstvennyy_key                                      String?
+  otchet_o_roznichnyh_prodazhah_key                      String?
+  sklad_key                                              String?
+  summa_dokumenta                                        Decimal?  @db.Decimal
+  udalit_akt_spisaniya_egais_key                         String?
+  udalit_status_obrabotki_egais                          String?
+  est_ki_zgism                                           Boolean?
+  est_markiruemaya_produktsiya_gism                      Boolean?
+  dokument_osnovanie_type                                String?
+  analitika_hozyaystvennoy_operatsii_navigation_link_url String?
+  magazin_navigation_link_url                            String?
+  organizatsiya_navigation_link_url                      String?
+  otvetstvennyy_navigation_link_url                      String?
+  sklad_navigation_link_url                              String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_spisanie_tovarov_tovary {
+  id                             BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                  String   @map("_source_entity")
+  source_url                     String   @map("_source_url")
+  loaded_at                      DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                 String?  @map("_parent_ref_key")
+  parent_line_index              Int?     @map("_parent_line_index")
+  ref_key                        String?
+  line_number                    BigInt?
+  nomenklatura_key               String?
+  harakteristika_key             String?
+  kolichestvo                    Decimal? @db.Decimal
+  upakovka_key                   String?
+  kolichestvo_upakovok           Decimal? @db.Decimal
+  klyuch_svyazi_seriynyh_nomerov String?
+  tsena                          Decimal? @db.Decimal
+  summa                          Decimal? @db.Decimal
+  status_ukazaniya_seriy         BigInt?
+  spravka2_key                   String?
+  alkogolnaya_produktsiya_key    String?
+  klyuch_svyazi                  String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_spravki_spark_riski {
+  id              BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity   String    @map("_source_entity")
+  source_url      String    @map("_source_url")
+  loaded_at       DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key         String?
+  data_version    String?
+  number          String?
+  date            DateTime? @db.Timestamp(6)
+  deletion_mark   Boolean?
+  posted          Boolean?
+  inn             String?
+  kontragent      String?
+  polzovatel_key  String?
+  sostoyanie      String?
+  identifikator   String?
+  kontragent_type String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_sredniy_chek_operatory {
+  id                   BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity        String    @map("_source_entity")
+  source_url           String    @map("_source_url")
+  loaded_at            DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key              String?
+  data_version         String?
+  number               String?
+  date                 DateTime? @db.Timestamp(6)
+  deletion_mark        Boolean?
+  posted               Boolean?
+  nazvanie             String?
+  otvetstvennyy_key    String?
+  data_nachalo         DateTime? @db.Timestamp(6)
+  data_konets          DateTime? @db.Timestamp(6)
+  vremya_nachalo_smeny DateTime? @db.Timestamp(6)
+  vremya_konets_smeny  DateTime? @db.Timestamp(6)
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_start_stop {
+  id            BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity String    @map("_source_entity")
+  source_url    String    @map("_source_url")
+  loaded_at     DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key       String?
+  data_version  String?
+  number        String?
+  date          DateTime? @db.Timestamp(6)
+  deletion_mark Boolean?
+  posted        Boolean?
+  magazin_key   String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_svodnyy_otchet_po_kassovoy_smene {
+  id                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity     String    @map("_source_entity")
+  source_url        String    @map("_source_url")
+  loaded_at         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key           String?
+  data_version      String?
+  number            String?
+  date              DateTime? @db.Timestamp(6)
+  deletion_mark     Boolean?
+  posted            Boolean?
+  organizatsiya_key String?
+  kommentariy       String?
+  magazin_key       String?
+  otvetstvennyy_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_tabel_ucheta_rabochego_vremeni {
+  id                  BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity       String    @map("_source_entity")
+  source_url          String    @map("_source_url")
+  loaded_at           DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key             String?
+  data_version        String?
+  number              String?
+  date                DateTime? @db.Timestamp(6)
+  deletion_mark       Boolean?
+  posted              Boolean?
+  magazin_key         String?
+  period_registratsii DateTime? @db.Timestamp(6)
+  kommentariy         String?
+  otvetstvennyy_key   String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_udalit_kassovaya_smena {
+  id                        BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity             String    @map("_source_entity")
+  source_url                String    @map("_source_url")
+  loaded_at                 DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                   String?
+  data_version              String?
+  number                    String?
+  date                      DateTime? @db.Timestamp(6)
+  deletion_mark             Boolean?
+  posted                    Boolean?
+  kassa_kkm_key             String?
+  kassir_key                String?
+  magazin_key               String?
+  organizatsiya_key         String?
+  nachalo_kassovoy_smeny    DateTime? @db.Timestamp(6)
+  okonchanie_kassovoy_smeny DateTime? @db.Timestamp(6)
+  status_kassovoy_smeny     String?
+  kommentariy               String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_udalit_proizvolnyy_ed {
+  id                        BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity             String    @map("_source_entity")
+  source_url                String    @map("_source_url")
+  loaded_at                 DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                   String?
+  data_version              String?
+  number                    String?
+  date                      DateTime? @db.Timestamp(6)
+  deletion_mark             Boolean?
+  posted                    Boolean?
+  kommentariy               String?
+  kontragent_key            String?
+  napravlenie               String?
+  organizatsiya_key         String?
+  prochitan                 Boolean?
+  status_dokumenta          String?
+  tekst                     String?
+  trebuetsya_podtverzhdenie Boolean?
+  tip_dokumenta             String?
+  dokument_osnovanie        String?
+  dogovor_kontragenta_key   String?
+  dokument_osnovanie_type   String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_udalit_svertka_iz_upravlyayuschey_sistemy {
+  id                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity     String    @map("_source_entity")
+  source_url        String    @map("_source_url")
+  loaded_at         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key           String?
+  data_version      String?
+  number            String?
+  date              DateTime? @db.Timestamp(6)
+  deletion_mark     Boolean?
+  posted            Boolean?
+  otvetstvennyy_key String?
+  kommentariy       String?
+  sverka_dannyh     Boolean?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_ustanovka_ploschadi_vykladki {
+  id                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                     String    @map("_source_entity")
+  source_url                        String    @map("_source_url")
+  loaded_at                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                           String?
+  data_version                      String?
+  number                            String?
+  date                              DateTime? @db.Timestamp(6)
+  deletion_mark                     Boolean?
+  posted                            Boolean?
+  magazin_key                       String?
+  data_ustanovki_ploschadi_vykladki DateTime? @db.Timestamp(6)
+  obschaya_ploschad_vykladki        Decimal?  @db.Decimal
+  otvetstvennyy_key                 String?
+  kommentariy                       String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_ustanovka_sebestoimosti {
+  id                                 BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                      String    @map("_source_entity")
+  source_url                         String    @map("_source_url")
+  loaded_at                          DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                            String?
+  data_version                       String?
+  number                             String?
+  date                               DateTime? @db.Timestamp(6)
+  deletion_mark                      Boolean?
+  posted                             Boolean?
+  kommentariy                        String?
+  otvetstvennyy_key                  String?
+  magazin_key                        String?
+  prinyat_iz_upravlyayuschey_sistemy Boolean?
+  dokument_osnovanie_key             String?
+  raschet_sebestoimosti              Boolean?
+  magazin_navigation_link_url        String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_ustanovka_sebestoimosti_tovary {
+  id                 BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity      String   @map("_source_entity")
+  source_url         String   @map("_source_url")
+  loaded_at          DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key     String?  @map("_parent_ref_key")
+  parent_line_index  Int?     @map("_parent_line_index")
+  ref_key            String?
+  line_number        BigInt?
+  nomenklatura_key   String?
+  harakteristika_key String?
+  tsena              Decimal? @db.Decimal
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_ustanovka_tsen_nomenklatury {
+  id                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                     String    @map("_source_entity")
+  source_url                        String    @map("_source_url")
+  loaded_at                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                           String?
+  data_version                      String?
+  number                            String?
+  date                              DateTime? @db.Timestamp(6)
+  deletion_mark                     Boolean?
+  posted                            Boolean?
+  otvetstvennyy_key                 String?
+  kommentariy                       String?
+  dokument_osnovanie                String?
+  soglasovan                        Boolean?
+  dokument_osnovanie_type           String?
+  otvetstvennyy_navigation_link_url String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_ustanovka_tsen_nomenklatury_tovary {
+  id                       BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity            String   @map("_source_entity")
+  source_url               String   @map("_source_url")
+  loaded_at                DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key           String?  @map("_parent_ref_key")
+  parent_line_index        Int?     @map("_parent_line_index")
+  ref_key                  String?
+  line_number              BigInt?
+  nomenklatura_key         String?
+  harakteristika_key       String?
+  upakovka_key             String?
+  vid_tseny_key            String?
+  tsena                    Decimal? @db.Decimal
+  tsena_izmenena_vruchnuyu Boolean?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_ustanovka_tsen_nomenklatury_vidy_tsen {
+  id                                      BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                           String   @map("_source_entity")
+  source_url                              String   @map("_source_url")
+  loaded_at                               DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                          String?  @map("_parent_ref_key")
+  parent_line_index                       Int?     @map("_parent_line_index")
+  ref_key                                 String?
+  line_number                             BigInt?
+  vid_tseny_key                           String?
+  nastroyki_komponovki_dannyh_type        String?
+  nastroyki_komponovki_dannyh_base64_data String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_vnesenie_denezhnyh_sredstv_v_kassu_kkm {
+  id                      BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity           String    @map("_source_entity")
+  source_url              String    @map("_source_url")
+  loaded_at               DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                 String?
+  data_version            String?
+  number                  String?
+  date                    DateTime? @db.Timestamp(6)
+  deletion_mark           Boolean?
+  posted                  Boolean?
+  kassa_kkm_key           String?
+  organizatsiya_key       String?
+  otvetstvennyy_key       String?
+  summa_dokumenta         Decimal?  @db.Decimal
+  dokument_osnovanie_key  String?
+  kommentariy             String?
+  dogovor_kontragenta_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_vozvrat_tovarov_ot_pokupatelya {
+  id                                     BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                          String    @map("_source_entity")
+  source_url                             String    @map("_source_url")
+  loaded_at                              DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                String?
+  data_version                           String?
+  number                                 String?
+  date                                   DateTime? @db.Timestamp(6)
+  deletion_mark                          Boolean?
+  posted                                 Boolean?
+  vladelets_diskontnoy_karty             String?
+  diskontnaya_karta_key                  String?
+  kommentariy                            String?
+  kontragent_key                         String?
+  magazin_key                            String?
+  organizatsiya_key                      String?
+  otvetstvennyy_key                      String?
+  prodavets_key                          String?
+  sklad_key                              String?
+  summa_dokumenta                        Decimal?  @db.Decimal
+  uchityvat_nds                          Boolean?
+  analitika_hozyaystvennoy_operatsii_key String?
+  tsena_vklyuchaet_nds                   Boolean?
+  dokument_osnovanie_key                 String?
+  bonusy_nachisleny                      Boolean?
+  predyavlen_schet_faktura               Boolean?
+  nomer_scheta_faktury                   String?
+  data_scheta_faktury                    DateTime? @db.Timestamp(6)
+  fiz_litso                              String?
+  data_rozhdeniya                        DateTime? @db.Timestamp(6)
+  po_dokumentu                           String?
+  chek_data                              DateTime? @db.Timestamp(6)
+  chek_nomer                             BigInt?
+  udalit_adres_cheka_egais               String?
+  udalit_podpis_cheka_egais              String?
+  est_markiruemaya_produktsiya_gism      Boolean?
+  kassa_kkm_key                          String?
+  nomer_cheka_kkm                        BigInt?
+  probit_chek                            Boolean?
+  dogovor_kontragenta_key                String?
+  udalit_vid_naloga                      String?
+  sistema_nalogooblozheniya              String?
+  telefon                                String?
+  adres_ep                               String?
+  vladelets_diskontnoy_karty_type        String?
+  fiz_litso_type                         String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_vozvrat_tovarov_postavschiku {
+  id                                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                     String    @map("_source_entity")
+  source_url                                        String    @map("_source_url")
+  loaded_at                                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                           String?
+  data_version                                      String?
+  number                                            String?
+  date                                              DateTime? @db.Timestamp(6)
+  deletion_mark                                     Boolean?
+  posted                                            Boolean?
+  kommentariy                                       String?
+  data_vhodyaschego_dokumenta                       DateTime? @db.Timestamp(6)
+  vid_vhodyaschego_dokumenta                        String?
+  otvetstvennyy_key                                 String?
+  summa_dokumenta                                   Decimal?  @db.Decimal
+  magazin_key                                       String?
+  nomer_vhodyaschego_dokumenta                      String?
+  tsena_vklyuchaet_nds                              Boolean?
+  uchityvat_nds                                     Boolean?
+  kontragent_key                                    String?
+  sklad_key                                         String?
+  analitika_hozyaystvennoy_operatsii_key            String?
+  organizatsiya_key                                 String?
+  dokument_osnovanie_key                            String?
+  bankovskiy_schet_organizatsii_key                 String?
+  bankovskiy_schet_kontragenta_key                  String?
+  ttn_ishodyaschaya_egais_key                       String?
+  dannye_transportnogo_razdela_base64_data          String?
+  est_markiruemaya_produktsiya_gism                 Boolean?
+  udalit_tovarno_transportnaya_nakladnaya_egais_key String?
+  udalit_status_obrabotki_egais                     String?
+  predyavlen_schet_faktura                          Boolean?
+  nomer_scheta_faktury                              String?
+  data_scheta_faktury                               DateTime? @db.Timestamp(6)
+  dogovor_key                                       String?
+  dannye_transportnogo_razdela_type                 String?
+  dannye_transportnogo_razdela                      String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_vvod_nachalnyh_ostatkov_uzla {
+  id              BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity   String    @map("_source_entity")
+  source_url      String    @map("_source_url")
+  loaded_at       DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key         String?
+  data_version    String?
+  number          String?
+  date            DateTime? @db.Timestamp(6)
+  deletion_mark   Boolean?
+  posted          Boolean?
+  uzel            String?
+  kod_uzla_obmena String?
+  kommentariy     String?
+  uzel_type       String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_vvod_ostatkov_denezhnyh_sredstv {
+  id                      BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity           String    @map("_source_entity")
+  source_url              String    @map("_source_url")
+  loaded_at               DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                 String?
+  data_version            String?
+  number                  String?
+  date                    DateTime? @db.Timestamp(6)
+  deletion_mark           Boolean?
+  posted                  Boolean?
+  otvetstvennyy_key       String?
+  kommentariy             String?
+  kassa_key               String?
+  summa                   Decimal?  @db.Decimal
+  dogovor_kontragenta_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_vvod_ostatkov_po_nakopitelnym_skidkam {
+  id                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity     String    @map("_source_entity")
+  source_url        String    @map("_source_url")
+  loaded_at         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key           String?
+  data_version      String?
+  number            String?
+  date              DateTime? @db.Timestamp(6)
+  deletion_mark     Boolean?
+  posted            Boolean?
+  kommentariy       String?
+  otvetstvennyy_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_vvod_ostatkov_raschetov_s_postavschikami {
+  id                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity     String    @map("_source_entity")
+  source_url        String    @map("_source_url")
+  loaded_at         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key           String?
+  data_version      String?
+  number            String?
+  date              DateTime? @db.Timestamp(6)
+  deletion_mark     Boolean?
+  posted            Boolean?
+  magazin_key       String?
+  otvetstvennyy_key String?
+  kommentariy       String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_vyemka_denezhnyh_sredstv_iz_kassy_kkm {
+  id                                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                     String    @map("_source_entity")
+  source_url                                        String    @map("_source_url")
+  loaded_at                                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                           String?
+  data_version                                      String?
+  number                                            String?
+  date                                              DateTime? @db.Timestamp(6)
+  deletion_mark                                     Boolean?
+  posted                                            Boolean?
+  kassa_kkm_key                                     String?
+  organizatsiya_key                                 String?
+  otvetstvennyy_key                                 String?
+  magazin_key                                       String?
+  hozyaystvennaya_operatsiya                        String?
+  summa_dokumenta                                   Decimal?  @db.Decimal
+  otchet_o_roznichnyh_prodazhah_key                 String?
+  kommentariy                                       String?
+  dogovor_kontragenta_key                           String?
+  kassa_kkm_navigation_link_url                     String?
+  organizatsiya_navigation_link_url                 String?
+  otvetstvennyy_navigation_link_url                 String?
+  magazin_navigation_link_url                       String?
+  otchet_o_roznichnyh_prodazhah_navigation_link_url String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_zakaz_na_peremeschenie {
+  id                           BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                String    @map("_source_entity")
+  source_url                   String    @map("_source_url")
+  loaded_at                    DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                      String?
+  data_version                 String?
+  number                       String?
+  date                         DateTime? @db.Timestamp(6)
+  deletion_mark                Boolean?
+  posted                       Boolean?
+  kommentariy                  String?
+  otvetstvennyy_key            String?
+  zakaz_pokupatelya_key        String?
+  magazin_poluchatel_key       String?
+  zhelaemaya_data_postupleniya DateTime? @db.Timestamp(6)
+  organizatsiya_key            String?
+  magazin_otpravitel_key       String?
+  dlitelnost_peremescheniya    BigInt?
+  status                       String?
+  zakryt_vruchnuyu             Boolean?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_zakaz_pokupatelya {
+  id                                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                                     String    @map("_source_entity")
+  source_url                                        String    @map("_source_url")
+  loaded_at                                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                                           String?
+  data_version                                      String?
+  number                                            String?
+  date                                              DateTime? @db.Timestamp(6)
+  deletion_mark                                     Boolean?
+  posted                                            Boolean?
+  sklad_key                                         String?
+  magazin_key                                       String?
+  kommentariy                                       String?
+  summa_dokumenta                                   Decimal?  @db.Decimal
+  diskontnaya_karta_key                             String?
+  otvetstvennyy_key                                 String?
+  uchityvat_nds                                     Boolean?
+  tsena_vklyuchaet_nds                              Boolean?
+  zhelaemaya_data_prodazhi                          DateTime? @db.Timestamp(6)
+  adres_dostavki                                    String?
+  vladelets_diskontnoy_karty                        String?
+  prodavets_key                                     String?
+  organizatsiya_key                                 String?
+  skidki_rasschitany                                Boolean?
+  maksimalnyy_kod_stroki                            BigInt?
+  status                                            String?
+  nalichie_nezarezervirovannyh_strok                Boolean?
+  otmeneno                                          Boolean?
+  nomer_zakaza_na_sayte                             String?
+  data_zakaza_na_sayte                              DateTime? @db.Timestamp(6)
+  kontragent_key                                    String?
+  bankovskiy_schet_organizatsii_key                 String?
+  kassa_kkm_key                                     String?
+  adres                                             String?
+  telefon                                           String?
+  status_dostavki                                   String?
+  oplachen                                          Boolean?
+  kurer_key                                         String?
+  dostavka_do_kvartiry                              Boolean?
+  dostavka_do_podezda                               Boolean?
+  fio_klienta                                       String?
+  kommentariy_operatora                             String?
+  kommentariy_komplektuyuschego                     String?
+  kommentariy_kurera                                String?
+  data_sozdaniya                                    DateTime? @db.Timestamp(6)
+  data_prinyatiya_v_rabotu                          DateTime? @db.Timestamp(6)
+  data_vydachi_kureru                               DateTime? @db.Timestamp(6)
+  data_dostavki                                     DateTime? @db.Timestamp(6)
+  dostavka_summa                                    Decimal?  @db.Decimal
+  summa_dokumenta_plan                              Decimal?  @db.Decimal
+  data_zameny                                       DateTime? @db.Timestamp(6)
+  data_soglasovaniya                                DateTime? @db.Timestamp(6)
+  data_sborki                                       DateTime? @db.Timestamp(6)
+  emenyu                                            Boolean?
+  naliv_volt                                        Boolean?
+  naliv_yandeks                                     Boolean?
+  naliv_chocofood                                   Boolean?
+  naliv_oplata_bonusami                             Decimal?  @db.Decimal
+  naliv_servisnyy_sbor                              BigInt?
+  vladelets_diskontnoy_karty_type                   String?
+  sklad_navigation_link_url                         String?
+  magazin_navigation_link_url                       String?
+  diskontnaya_karta_navigation_link_url             String?
+  otvetstvennyy_navigation_link_url                 String?
+  organizatsiya_navigation_link_url                 String?
+  kontragent_navigation_link_url                    String?
+  bankovskiy_schet_organizatsii_navigation_link_url String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_zakaz_pokupatelya_bonusnye_bally_k_nachisleniyu {
+  id                                 BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                      String    @map("_source_entity")
+  source_url                         String    @map("_source_url")
+  loaded_at                          DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                     String?   @map("_parent_ref_key")
+  parent_line_index                  Int?      @map("_parent_line_index")
+  ref_key                            String?
+  line_number                        BigInt?
+  klyuch_svyazi                      String?
+  bonusnaya_programma_loyalnosti_key String?
+  skidka_natsenka_key                String?
+  data_nachisleniya                  DateTime? @db.Timestamp(6)
+  data_spisaniya                     DateTime? @db.Timestamp(6)
+  kolichestvo_bonusnyh_ballov        BigInt?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_zakaz_pokupatelya_skidki_natsenki {
+  id                            BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                 String   @map("_source_entity")
+  source_url                    String   @map("_source_url")
+  loaded_at                     DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                String?  @map("_parent_ref_key")
+  parent_line_index             Int?     @map("_parent_line_index")
+  ref_key                       String?
+  line_number                   BigInt?
+  klyuch_svyazi                 String?
+  summa                         Decimal? @db.Decimal
+  skidka_natsenka_key           String?
+  ogranichena_minimalnoy_tsenoy Boolean?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_zakaz_pokupatelya_tovary {
+  id                              BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                   String   @map("_source_entity")
+  source_url                      String   @map("_source_url")
+  loaded_at                       DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                  String?  @map("_parent_ref_key")
+  parent_line_index               Int?     @map("_parent_line_index")
+  ref_key                         String?
+  line_number                     BigInt?
+  nomenklatura_key                String?
+  harakteristika_key              String?
+  kolichestvo                     BigInt?
+  upakovka_key                    String?
+  kolichestvo_upakovok            BigInt?
+  tsena                           BigInt?
+  prodavets_key                   String?
+  protsent_avtomaticheskoy_skidki BigInt?
+  protsent_ruchnoy_skidki         BigInt?
+  summa                           BigInt?
+  stavka_nds_key                  String?
+  summa_nds                       BigInt?
+  summa_avtomaticheskoy_skidki    BigInt?
+  summa_ruchnoy_skidki            BigInt?
+  klyuch_svyazi                   String?
+  kod_stroki                      String?
+  rezervirovat                    Boolean?
+  otmeneno                        Boolean?
+  prichina_otmeny_key             String?
+  prodazha_podarka                Boolean?
+  kolichestvo_plan                BigInt?
+  stroka_kassira                  Boolean?
+  nomenklatura_plan_key           String?
+  naliv_staraya_tsena             BigInt?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_zakaz_postavschiku {
+  id                                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity                     String    @map("_source_entity")
+  source_url                        String    @map("_source_url")
+  loaded_at                         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                           String?
+  data_version                      String?
+  number                            String?
+  date                              DateTime? @db.Timestamp(6)
+  deletion_mark                     Boolean?
+  posted                            Boolean?
+  kommentariy                       String?
+  otvetstvennyy_key                 String?
+  magazin_key                       String?
+  kontragent_key                    String?
+  summa_dokumenta                   Decimal?  @db.Decimal
+  uchityvat_nds                     Boolean?
+  tsena_vklyuchaet_nds              Boolean?
+  data_postupleniya                 DateTime? @db.Timestamp(6)
+  sklad_key                         String?
+  zakryt                            Boolean?
+  dney_prosrochki_postavki          BigInt?
+  organizatsiya_key                 String?
+  bessrochnyy                       Boolean?
+  zakaz_pokupatelya_key             String?
+  est_ki_zgism                      Boolean?
+  dogovor_key                       String?
+  hozyaystvennaya_operatsiya        String?
+  otvetstvennyy_navigation_link_url String?
+  magazin_navigation_link_url       String?
+  kontragent_navigation_link_url    String?
+  sklad_navigation_link_url         String?
+  organizatsiya_navigation_link_url String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_zakaz_postavschiku_etapy_oplat {
+  id                          BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity               String    @map("_source_entity")
+  source_url                  String    @map("_source_url")
+  loaded_at                   DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key              String?   @map("_parent_ref_key")
+  parent_line_index           Int?      @map("_parent_line_index")
+  ref_key                     String?
+  line_number                 BigInt?
+  summa                       BigInt?
+  data_platezha               DateTime? @db.Timestamp(6)
+  kommentariy                 String?
+  otsrochka_platezha          BigInt?
+  vid_platezha                String?
+  protsent_oplaty             BigInt?
+  forma_oplaty                String?
+  dokument_vzaimozacheta      String?
+  dokument_vzaimozacheta_type String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_zakaz_postavschiku_tovary {
+  id                                      BigInt   @id @default(autoincrement()) @map("_id")
+  source_entity                           String   @map("_source_entity")
+  source_url                              String   @map("_source_url")
+  loaded_at                               DateTime @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  parent_ref_key                          String?  @map("_parent_ref_key")
+  parent_line_index                       Int?     @map("_parent_line_index")
+  ref_key                                 String?
+  line_number                             BigInt?
+  nomenklatura_key                        String?
+  harakteristika_key                      String?
+  kolichestvo                             BigInt?
+  upakovka_key                            String?
+  kolichestvo_upakovok                    BigInt?
+  tsena                                   BigInt?
+  summa                                   BigInt?
+  stavka_nds_key                          String?
+  summa_nds                               BigInt?
+  identifikator_nomenklatury_postavschika String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_zamena_diskontnyh_kart {
+  id                BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity     String    @map("_source_entity")
+  source_url        String    @map("_source_url")
+  loaded_at         DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key           String?
+  data_version      String?
+  number            String?
+  date              DateTime? @db.Timestamp(6)
+  deletion_mark     Boolean?
+  posted            Boolean?
+  magazin_key       String?
+  kommentariy       String?
+  otvetstvennyy_key String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model document_zarplata_k_vyplate_organizatsiy {
+  id                     BigInt    @id @default(autoincrement()) @map("_id")
+  source_entity          String    @map("_source_entity")
+  source_url             String    @map("_source_url")
+  loaded_at              DateTime  @default(now()) @map("_loaded_at") @db.Timestamptz(6)
+  ref_key                String?
+  data_version           String?
+  number                 String?
+  date                   DateTime? @db.Timestamp(6)
+  deletion_mark          Boolean?
+  posted                 Boolean?
+  organizatsiya_key      String?
+  magazin_key            String?
+  otvetstvennyy_key      String?
+  kommentariy            String?
+  period_registratsii    DateTime? @db.Timestamp(6)
+  dokument_osnovanie_key String?
+}
