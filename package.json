@@ -10,6 +10,7 @@
     "build": "npm run build:api && npm run build:web",
     "build:api": "tsc -p api/tsconfig.json",
     "build:web": "tsc -p web/tsconfig.json && vite build",
+    "start": "node dist/api/server.js",
     "start:api": "node dist/api/server.js",
     "prisma:generate": "prisma generate",
     "prisma:pull": "prisma db pull --schema prisma/schema.prisma",
