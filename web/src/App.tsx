@@ -1455,11 +1455,16 @@ function InventoryReports() {
       );
   }, [period]);
 
+  if (state.status === "loading") return <div className="empty-state">Загружаем отчет по запасам</div>;
+  if (state.status === "error") return <div className="empty-state">{state.error}</div>;
+
+  const report = state.data;
+
   const toggleSection = (section: string) => {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
   };
 
-  const renderSection = (title: string, sectionKey: string, items: typeof report.items, cols: ColumnDef<(typeof items)[0]>[]) => {
+  const renderSection = (title: string, sectionKey: string, items: InventoryReport["items"], cols: ColumnDef<InventoryReport["items"][0]>[]) => {
     if (!items || items.length === 0) return null;
     const expanded = expandedSections[sectionKey] ?? false;
     const visible = expanded ? items : items.slice(0, 10);
@@ -1505,12 +1510,7 @@ function InventoryReports() {
     );
   };
 
-  if (state.status === "loading") return <div className="empty-state">Загружаем отчет по запасам</div>;
-  if (state.status === "error") return <div className="empty-state">{state.error}</div>;
-
-  const report = state.data;
-
-  const stockColumns: ColumnDef<(typeof report.items)[0]>[] = [
+  const stockColumns: ColumnDef<InventoryReport["items"][0]>[] = [
     { key: "name", label: "Товар", render: (r) => r.name },
     { key: "stockQty", label: "Остаток", num: true, render: (r) => formatDecimal(r.stockQty, 1) },
     { key: "dailySalesRate", label: "Продаж/день", num: true, render: (r) => formatDecimal(r.dailySalesRate, 2) },
@@ -1520,7 +1520,7 @@ function InventoryReports() {
     { key: "daysSinceLastSale", label: "Дней с посл. продажи", num: true, render: (r) => r.daysSinceLastSale !== null ? formatNumber(r.daysSinceLastSale) : "—" }
   ];
 
-  const shortColumns: ColumnDef<(typeof report.items)[0]>[] = [
+  const shortColumns: ColumnDef<InventoryReport["items"][0]>[] = [
     { key: "name", label: "Товар", render: (r) => r.name },
     { key: "stockQty", label: "Остаток", num: true, render: (r) => formatDecimal(r.stockQty, 1) },
     { key: "stockCost", label: "Себест-ть", num: true, render: (r) => formatMoney(r.stockCost) },

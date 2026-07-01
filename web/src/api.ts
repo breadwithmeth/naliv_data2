@@ -261,58 +261,6 @@ export type InventoryReport = {
   dead: InventoryItem[];
 };
 
-export type MarketingReport = {
-  period: SalesPeriod;
-  summary: {
-    totalRevenue: number;
-    totalChecks: number;
-    revenueWithDiscounts: number;
-    revenueWithoutDiscounts: number;
-    discountCheckCount: number;
-    noDiscountCheckCount: number;
-    totalDiscountAmount: number;
-    avgDiscountPct: number;
-  };
-  promos: Array<{
-    key: string;
-    name: string;
-    checkCount: number;
-    revenue: number;
-    discountAmount: number;
-    avgDiscountPct: number;
-  }>;
-  salesWithoutDiscounts: {
-    checkCount: number;
-    revenue: number;
-    avgCheck: number;
-  };
-  salesWithDiscounts: {
-    checkCount: number;
-    revenue: number;
-    discountAmount: number;
-    avgCheck: number;
-  };
-  stores: Array<{
-    key: string;
-    name: string;
-    totalChecks: number;
-    totalRevenue: number;
-    discountChecks: number;
-    discountAmount: number;
-    avgDiscountPct: number;
-  }>;
-  storePromos: Array<{
-    storeKey: string;
-    storeName: string;
-    promoKey: string;
-    promoName: string;
-    checkCount: number;
-    revenue: number;
-    discountAmount: number;
-    avgDiscountPct: number;
-  }>;
-};
-
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     credentials: "include",
