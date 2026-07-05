@@ -45,6 +45,47 @@ export type DbTable = {
   totalBytes: number;
 };
 
+export type DataGroupKey =
+  | "documents"
+  | "documentLines"
+  | "catalogs"
+  | "balances"
+  | "other";
+
+export type DataGroup = {
+  key: DataGroupKey;
+  tableCount: number;
+  estimatedRows: number;
+  totalBytes: number;
+  columnCount: number;
+  numericColumnCount: number;
+  temporalColumnCount: number;
+  sampleTables: string[];
+};
+
+type SchemaColumn = {
+  table_name: string;
+  column_name: string;
+  data_type: string;
+};
+
+const dataGroupOrder: DataGroupKey[] = [
+  "documents",
+  "documentLines",
+  "catalogs",
+  "balances",
+  "other"
+];
+
+const serviceColumns = [
+  "_id",
+  "_source_entity",
+  "_source_url",
+  "_loaded_at",
+  "_parent_ref_key",
+  "_parent_line_index"
+];
+
 function quoteIdent(identifier: string) {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
@@ -130,35 +171,107 @@ export async function getColumns(tableName: string): Promise<DbColumn[]> {
 }
 
 export async function getOverview() {
-  const [tables, columnStats] = await Promise.all([
-    getTables(),
-    prisma.$queryRaw<
-      Array<{
-        total_columns: bigint | number;
-        numeric_columns: bigint | number;
-        temporal_columns: bigint | number;
-      }>
-    >`
-      select
-        count(*) as total_columns,
-        count(*) filter (where data_type in (${Prisma.join([...numericTypes])})) as numeric_columns,
-        count(*) filter (where data_type in (${Prisma.join([...temporalTypes])})) as temporal_columns
+  const tables = await getTables();
+  const columns = await prisma.$queryRaw<SchemaColumn[]>`
+      select table_name, column_name, data_type
       from information_schema.columns
       where table_schema = ${config.PGSCHEMA}
-    `
-  ]);
+    `;
+
+  const columnsByTable = new Map<string, SchemaColumn[]>();
+  for (const column of columns) {
+    const group = columnsByTable.get(column.table_name);
+    if (group) {
+      group.push(column);
+    } else {
+      columnsByTable.set(column.table_name, [column]);
+    }
+  }
+
+  const groups = new Map<DataGroupKey, DataGroup>(
+    dataGroupOrder.map((key) => [
+      key,
+      {
+        key,
+        tableCount: 0,
+        estimatedRows: 0,
+        totalBytes: 0,
+        columnCount: 0,
+        numericColumnCount: 0,
+        temporalColumnCount: 0,
+        sampleTables: []
+      }
+    ])
+  );
+
+  for (const table of tables) {
+    const tableColumns = columnsByTable.get(table.name) ?? [];
+    const columnNames = new Set(tableColumns.map((column) => column.column_name));
+    const key = classifyDataGroup(table.name, columnNames);
+    const group = groups.get(key);
+
+    if (!group) {
+      continue;
+    }
+
+    group.tableCount += 1;
+    group.estimatedRows += table.estimatedRows;
+    group.totalBytes += table.totalBytes;
+    group.columnCount += tableColumns.length;
+    group.numericColumnCount += tableColumns.filter((column) =>
+      numericTypes.has(column.data_type)
+    ).length;
+    group.temporalColumnCount += tableColumns.filter((column) =>
+      temporalTypes.has(column.data_type)
+    ).length;
+
+    if (group.sampleTables.length < 6) {
+      group.sampleTables.push(table.name);
+    }
+  }
+
+  const serviceFieldCoverage = serviceColumns.map((name) => ({
+    name,
+    tableCount: columns.filter((column) => column.column_name === name).length
+  }));
 
   return {
     schema: config.PGSCHEMA,
     tableCount: tables.length,
     estimatedRows: tables.reduce((sum, table) => sum + table.estimatedRows, 0),
     totalBytes: tables.reduce((sum, table) => sum + table.totalBytes, 0),
-    columnCount: Number(columnStats[0]?.total_columns ?? 0),
-    numericColumnCount: Number(columnStats[0]?.numeric_columns ?? 0),
-    temporalColumnCount: Number(columnStats[0]?.temporal_columns ?? 0),
+    columnCount: columns.length,
+    numericColumnCount: columns.filter((column) => numericTypes.has(column.data_type)).length,
+    temporalColumnCount: columns.filter((column) =>
+      temporalTypes.has(column.data_type)
+    ).length,
     largestTables: tables.slice(0, 12),
-    tables
+    tables,
+    dataGroups: dataGroupOrder
+      .map((key) => groups.get(key))
+      .filter((group): group is DataGroup => Boolean(group && group.tableCount > 0)),
+    serviceFieldCoverage
   };
+}
+
+function classifyDataGroup(tableName: string, columnNames: Set<string>): DataGroupKey {
+  if (tableName.endsWith("_balance") || tableName.includes("_balance_")) {
+    return "balances";
+  }
+
+  if (columnNames.has("_parent_ref_key") || columnNames.has("_parent_line_index")) {
+    return "documentLines";
+  }
+
+  if (tableName.startsWith("document_")) {
+    return "documents";
+  }
+
+  if (tableName.startsWith("catalog_")) {
+    return "catalogs";
+  }
+
+  return "other";
 }
 
 async function getSampleRows(tableName: string) {

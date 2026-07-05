@@ -9,6 +9,24 @@ export type DbTable = {
   totalBytes: number;
 };
 
+export type DataGroupKey =
+  | "documents"
+  | "documentLines"
+  | "catalogs"
+  | "balances"
+  | "other";
+
+export type DataGroup = {
+  key: DataGroupKey;
+  tableCount: number;
+  estimatedRows: number;
+  totalBytes: number;
+  columnCount: number;
+  numericColumnCount: number;
+  temporalColumnCount: number;
+  sampleTables: string[];
+};
+
 export type DbColumn = {
   name: string;
   dataType: string;
@@ -28,6 +46,11 @@ export type Overview = {
   temporalColumnCount: number;
   largestTables: DbTable[];
   tables: DbTable[];
+  dataGroups: DataGroup[];
+  serviceFieldCoverage: Array<{
+    name: string;
+    tableCount: number;
+  }>;
 };
 
 export type TableProfile = {
@@ -59,6 +82,16 @@ export type TimeSeriesPoint = {
 };
 
 export type SalesPeriod = "day" | "week" | "month";
+
+export type ReportDateRange = {
+  from?: string;
+  to?: string;
+};
+
+export type ReportRequest = ReportDateRange & {
+  period: SalesPeriod;
+  storeLimit?: number;
+};
 
 export type SalesReport = {
   period: SalesPeriod;
@@ -165,9 +198,51 @@ export type ItemAnalysis = {
   revenuePct: number;
 };
 
+export type ExitProductReason =
+  | "no_sales"
+  | "dead_stock"
+  | "slow_moving"
+  | "overstock"
+  | "old_stock";
+
+export type ExitProduct = {
+  key: string;
+  name: string;
+  stockQty: number;
+  reservedQty: number;
+  availableQty: number;
+  warehouseCount: number;
+  recentSoldQty: number;
+  recentRevenue: number;
+  recentDaysActive: number;
+  dailySalesRate: number;
+  daysOfStock: number | null;
+  stockCost: number;
+  lastSaleDate: string | null;
+  lastSaleInPeriod: string | null;
+  lastPurchaseDate: string | null;
+  stockPeriod: string | null;
+  daysSinceLastSale: number | null;
+  daysSinceLastPurchase: number | null;
+  reason: ExitProductReason;
+  riskScore: number;
+};
+
 export type NomenclatureReport = {
   period: SalesPeriod;
   items: ItemAnalysis[];
+  exitItems: ExitProduct[];
+  exitSummary: {
+    totalItems: number;
+    stockQty: number;
+    stockCost: number;
+    noSalesCount: number;
+    deadStockCount: number;
+    slowMovingCount: number;
+    overstockCount: number;
+    oldStockCount: number;
+    stockPeriod: string | null;
+  };
   totalDays: number;
 };
 
@@ -221,6 +296,45 @@ export type MarketingReport = {
     discountAmount: number;
     avgDiscountPct: number;
   }>;
+  promoAnalytics: Array<{
+    key: string;
+    name: string;
+    checkCount: number;
+    storeCount: number;
+    itemCount: number;
+    quantity: number;
+    checkRevenue: number;
+    itemRevenue: number;
+    discountAmount: number;
+    avgCheck: number;
+    avgDiscountPct: number;
+    roi: number;
+    stores: Array<{
+      key: string;
+      name: string;
+      checkCount: number;
+      itemCount: number;
+      quantity: number;
+      checkRevenue: number;
+      itemRevenue: number;
+      discountAmount: number;
+      avgCheck: number;
+      avgDiscountPct: number;
+      roi: number;
+      items: Array<{
+        key: string;
+        name: string;
+        checkCount: number;
+        quantity: number;
+        revenue: number;
+        discountAmount: number;
+        avgPrice: number;
+        avgDiscountPct: number;
+        roi: number;
+        lastSaleDate: string | null;
+      }>;
+    }>;
+  }>;
 };
 
 export type InventoryItem = {
@@ -229,6 +343,9 @@ export type InventoryItem = {
   totalPurchased: number;
   totalSold: number;
   stockQty: number;
+  reservedQty: number;
+  availableQty: number;
+  warehouseCount: number;
   recentSoldQty: number;
   recentDaysActive: number;
   dailySalesRate: number;
@@ -238,6 +355,7 @@ export type InventoryItem = {
   stockRetailValue: number;
   lastSaleDate: string | null;
   lastPurchaseDate: string | null;
+  stockPeriod: string | null;
   daysSinceLastSale: number | null;
   category: "out_of_stock" | "overstock" | "slow_moving" | "dead" | "normal";
 };
@@ -253,6 +371,8 @@ export type InventoryReport = {
     overstockCount: number;
     slowMovingCount: number;
     deadCount: number;
+    reservedQty: number;
+    stockPeriod: string | null;
   };
   items: InventoryItem[];
   outOfStock: InventoryItem[];
@@ -260,6 +380,28 @@ export type InventoryReport = {
   slowMoving: InventoryItem[];
   dead: InventoryItem[];
 };
+
+function appendReportParams(params: URLSearchParams, filters: ReportDateRange) {
+  if (filters.from) {
+    params.set("from", filters.from);
+  }
+
+  if (filters.to) {
+    params.set("to", nextDate(filters.to));
+  }
+}
+
+function nextDate(value: string) {
+  const parts = value.split("-").map((part) => Number(part));
+  const [year, month, day] = parts;
+
+  if (!year || !month || !day) {
+    return value;
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day + 1));
+  return date.toISOString().slice(0, 10);
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -305,24 +447,35 @@ export const api = {
   overview() {
     return request<Overview>("/api/analytics/overview");
   },
-  salesReport(period: SalesPeriod) {
-    const params = new URLSearchParams({ period, storeLimit: "12" });
+  salesReport(filters: ReportRequest) {
+    const params = new URLSearchParams({
+      period: filters.period,
+      storeLimit: String(filters.storeLimit ?? 12)
+    });
+    appendReportParams(params, filters);
     return request<SalesReport>(`/api/reports/sales?${params}`);
   },
-  incomeReport(period: SalesPeriod) {
-    const params = new URLSearchParams({ period, storeLimit: "12" });
+  incomeReport(filters: ReportRequest) {
+    const params = new URLSearchParams({
+      period: filters.period,
+      storeLimit: String(filters.storeLimit ?? 12)
+    });
+    appendReportParams(params, filters);
     return request<IncomeReport>(`/api/reports/income?${params}`);
   },
-  nomenclatureReport(period: SalesPeriod) {
-    const params = new URLSearchParams({ period });
+  nomenclatureReport(filters: ReportRequest) {
+    const params = new URLSearchParams({ period: filters.period });
+    appendReportParams(params, filters);
     return request<NomenclatureReport>(`/api/nomenclature?${params}`);
   },
-  marketingReport(period: SalesPeriod) {
-    const params = new URLSearchParams({ period });
+  marketingReport(filters: ReportRequest) {
+    const params = new URLSearchParams({ period: filters.period });
+    appendReportParams(params, filters);
     return request<MarketingReport>(`/api/marketing?${params}`);
   },
-  inventoryReport(period: SalesPeriod) {
-    const params = new URLSearchParams({ period });
+  inventoryReport(filters: ReportRequest) {
+    const params = new URLSearchParams({ period: filters.period });
+    appendReportParams(params, filters);
     return request<InventoryReport>(`/api/inventory?${params}`);
   },
   table(tableName: string) {

@@ -19,7 +19,26 @@ function qualifiedTable(tableName: string) {
   return Prisma.raw(`${quoteIdent(config.PGSCHEMA)}.${quoteIdent(tableName)}`);
 }
 
-function dateFilters(params: SalesReportParams) {
+function retailSalesFilters(params: SalesReportParams) {
+  const filters: Prisma.Sql[] = [
+    Prisma.sql`r.date is not null`,
+    Prisma.sql`coalesce(r.deletion_mark, false) = false`,
+    Prisma.sql`coalesce(r.posted, false) = true`,
+    Prisma.sql`coalesce(r.summa_dokumenta, 0) > 0`
+  ];
+
+  if (params.from) {
+    filters.push(Prisma.sql`r.date >= ${params.from}`);
+  }
+
+  if (params.to) {
+    filters.push(Prisma.sql`r.date < ${params.to}`);
+  }
+
+  return Prisma.join(filters, " and ");
+}
+
+function checkSalesFilters(params: SalesReportParams) {
   const filters: Prisma.Sql[] = [
     Prisma.sql`c.date is not null`,
     Prisma.sql`coalesce(c.deletion_mark, false) = false`,
@@ -39,11 +58,10 @@ function dateFilters(params: SalesReportParams) {
   return Prisma.join(filters, " and ");
 }
 
-function salesChecksCte(params: SalesReportParams) {
-  const checksTable = qualifiedTable("document_chek_kkm");
+function retailReportsCte(params: SalesReportParams) {
   const reportsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah");
-  const itemsTable = qualifiedTable("document_chek_kkm_tovary");
-  const whereSql = dateFilters(params);
+  const itemsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah_tovary");
+  const whereSql = retailSalesFilters(params);
   const unknownStore = "Без магазина";
   const emptyRef = "00000000-0000-0000-0000-000000000000";
 
@@ -58,17 +76,36 @@ function salesChecksCte(params: SalesReportParams) {
     ),
     checks as (
       select
+        r.ref_key,
+        r.date as sale_at,
+        coalesce(r.summa_dokumenta, 0)::float8 as revenue,
+        coalesce(i.item_quantity, null) as item_quantity,
+        nullif(r.ref_key, ${emptyRef}) as retail_report_key,
+        coalesce(nullif(r.magazin_key, ''), ${unknownStore}) as store_key
+      from ${reportsTable} r
+      left join item_totals i on i.parent_ref_key = r.ref_key
+      where ${whereSql}
+    )
+  `;
+}
+
+function checkHeatmapCte(params: SalesReportParams) {
+  const checksTable = qualifiedTable("document_chek_kkm");
+  const reportsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah");
+  const whereSql = checkSalesFilters(params);
+  const unknownStore = "Без магазина";
+
+  return Prisma.sql`
+    with checks as (
+      select
         c.ref_key,
         c.date as sale_at,
         coalesce(c.summa_dokumenta, 0)::float8 as revenue,
-        coalesce(i.item_quantity, null) as item_quantity,
-        nullif(r.ref_key, ${emptyRef}) as retail_report_key,
         coalesce(nullif(r.magazin_key, ''), nullif(c.magazin_key, ''), ${unknownStore}) as store_key
       from ${checksTable} c
       left join ${reportsTable} r
         on r.ref_key = c.otchet_o_roznichnyh_prodazhah_key
         and coalesce(r.deletion_mark, false) = false
-      left join item_totals i on i.parent_ref_key = c.ref_key
       where ${whereSql}
     )
   `;
@@ -98,7 +135,7 @@ export async function getSalesReport(params: SalesReportParams) {
       report_count: bigint | number;
     }>
   >`
-    ${salesChecksCte(params)}
+    ${retailReportsCte(params)}
     select
       min(sale_at) as date_from,
       max(sale_at) as date_to,
@@ -119,7 +156,7 @@ export async function getSalesReport(params: SalesReportParams) {
       avg_items_per_check: number | null;
     }>
   >`
-    ${salesChecksCte(params)}
+    ${retailReportsCte(params)}
     select
       date_trunc(${params.period}, sale_at) as bucket,
       coalesce(sum(revenue), 0)::float8 as revenue,
@@ -139,7 +176,7 @@ export async function getSalesReport(params: SalesReportParams) {
       order_count: bigint | number;
     }>
   >`
-    ${salesChecksCte(params)},
+    ${checkHeatmapCte(params)},
     store_totals as (
       select
         store_key,
@@ -170,7 +207,7 @@ export async function getSalesReport(params: SalesReportParams) {
       order_count: bigint | number;
     }>
   >`
-    ${salesChecksCte(params)},
+    ${checkHeatmapCte(params)},
     store_totals as (
       select
         store_key,

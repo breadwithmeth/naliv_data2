@@ -23,6 +23,7 @@ export async function getInventoryReport(params: InventoryParams) {
   const reportsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah");
   const reportItemsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah_tovary");
   const nomenklaturaTable = qualifiedTable("catalog_nomenklatura");
+  const balanceTable = qualifiedTable("accumulation_register_tovary_na_skladah_balance");
 
   // Recent sales filter
   const recentFilters: Prisma.Sql[] = [
@@ -40,6 +41,18 @@ export async function getInventoryReport(params: InventoryParams) {
   }
 
   const recentWhere = Prisma.join(recentFilters, " and ");
+  const balanceFilters: Prisma.Sql[] = [Prisma.sql`b.balance_period is not null`];
+
+  if (params.from) {
+    balanceFilters.push(Prisma.sql`b.balance_period >= ${params.from}`);
+  }
+
+  if (params.to) {
+    balanceFilters.push(Prisma.sql`b.balance_period < ${params.to}`);
+  }
+
+  const balanceWhere = Prisma.join(balanceFilters, " and ");
+  const referenceDate = params.to ?? new Date();
 
   const rows = await prisma.$queryRaw<
     Array<{
@@ -48,6 +61,8 @@ export async function getInventoryReport(params: InventoryParams) {
       total_purchased: number;
       total_sold: number;
       stock_qty: number;
+      reserved_qty: number;
+      warehouse_count: number;
       recent_sold_qty: number;
       recent_days_active: number;
       daily_sales_rate: number;
@@ -57,9 +72,27 @@ export async function getInventoryReport(params: InventoryParams) {
       last_sale_date: Date | null;
       last_purchase_date: Date | null;
       days_since_last_sale: number | null;
+      stock_period: Date | null;
     }>
   >`
     with
+    latest_balance_period as (
+      select max(b.balance_period) as balance_period
+      from ${balanceTable} b
+      where ${balanceWhere}
+    ),
+    balance_stock as (
+      select
+        b.nomenklatura_key,
+        coalesce(sum(b.kolichestvo_balance), 0)::float8 as stock_qty,
+        coalesce(sum(b.rezerv_balance), 0)::float8 as reserved_qty,
+        count(distinct b.sklad_key)::int as warehouse_count,
+        max(b.balance_period) as stock_period
+      from ${balanceTable} b
+      join latest_balance_period lbp on lbp.balance_period = b.balance_period
+      where b.nomenklatura_key is not null
+      group by b.nomenklatura_key
+    ),
     all_purchases as (
       select
         pt.nomenklatura_key,
@@ -114,19 +147,26 @@ export async function getInventoryReport(params: InventoryParams) {
     ),
     stock_calc as (
       select
-        coalesce(ap.nomenklatura_key, as_.nomenklatura_key, rs.nomenklatura_key) as nomenklatura_key,
+        coalesce(bs.nomenklatura_key, ap.nomenklatura_key, as_.nomenklatura_key, rs.nomenklatura_key) as nomenklatura_key,
         coalesce(ap.total_purchased, 0) as total_purchased,
         coalesce(as_.total_sold, 0) as total_sold,
-        coalesce(ap.total_purchased, 0) - coalesce(as_.total_sold, 0) as stock_qty,
+        coalesce(bs.stock_qty, coalesce(ap.total_purchased, 0) - coalesce(as_.total_sold, 0)) as stock_qty,
+        coalesce(bs.reserved_qty, 0) as reserved_qty,
+        coalesce(bs.warehouse_count, 0) as warehouse_count,
         coalesce(rs.recent_sold_qty, 0) as recent_sold_qty,
         coalesce(rs.recent_days_active, 0) as recent_days_active,
         coalesce(ic.avg_purchase_price, 0) as avg_purchase_price,
         rs.last_sale_date,
-        ap.last_purchase_date
-      from all_purchases ap
-      full outer join all_sales as_ on as_.nomenklatura_key = ap.nomenklatura_key
-      left join recent_sales rs on rs.nomenklatura_key = coalesce(ap.nomenklatura_key, as_.nomenklatura_key)
-      left join item_costs ic on ic.nomenklatura_key = coalesce(ap.nomenklatura_key, as_.nomenklatura_key)
+        ap.last_purchase_date,
+        bs.stock_period
+      from balance_stock bs
+      full outer join all_purchases ap on ap.nomenklatura_key = bs.nomenklatura_key
+      full outer join all_sales as_
+        on as_.nomenklatura_key = coalesce(bs.nomenklatura_key, ap.nomenklatura_key)
+      left join recent_sales rs
+        on rs.nomenklatura_key = coalesce(bs.nomenklatura_key, ap.nomenklatura_key, as_.nomenklatura_key)
+      left join item_costs ic
+        on ic.nomenklatura_key = coalesce(bs.nomenklatura_key, ap.nomenklatura_key, as_.nomenklatura_key)
     )
     select
       sc.nomenklatura_key,
@@ -134,6 +174,8 @@ export async function getInventoryReport(params: InventoryParams) {
       sc.total_purchased,
       sc.total_sold,
       greatest(sc.stock_qty, 0)::float8 as stock_qty,
+      greatest(sc.reserved_qty, 0)::float8 as reserved_qty,
+      sc.warehouse_count,
       sc.recent_sold_qty,
       sc.recent_days_active,
       case when sc.recent_days_active > 0
@@ -149,20 +191,22 @@ export async function getInventoryReport(params: InventoryParams) {
       sc.last_sale_date,
       sc.last_purchase_date,
       case when sc.last_sale_date is not null
-        then (current_date - sc.last_sale_date::date)::int
+        then (${referenceDate}::date - sc.last_sale_date::date)::int
         else null
-      end as days_since_last_sale
+      end as days_since_last_sale,
+      sc.stock_period
     from stock_calc sc
     left join ${nomenklaturaTable} n on n.ref_key = sc.nomenklatura_key
     group by
       sc.nomenklatura_key, sc.total_purchased, sc.total_sold, sc.stock_qty,
-      sc.recent_sold_qty, sc.recent_days_active, sc.avg_purchase_price,
-      sc.last_sale_date, sc.last_purchase_date
+      sc.reserved_qty, sc.warehouse_count, sc.recent_sold_qty, sc.recent_days_active,
+      sc.avg_purchase_price, sc.last_sale_date, sc.last_purchase_date, sc.stock_period
     order by stock_cost desc
   `;
 
   const items = rows.map((row) => {
     const stockQty = Number(row.stock_qty);
+    const reservedQty = Number(row.reserved_qty);
     const dailyRate = Number(row.daily_sales_rate);
     const daysOfStock = row.days_of_stock !== null ? Number(row.days_of_stock) : null;
     const daysSinceLastSale = row.days_since_last_sale !== null ? Number(row.days_since_last_sale) : null;
@@ -195,6 +239,9 @@ export async function getInventoryReport(params: InventoryParams) {
       totalPurchased: Number(row.total_purchased),
       totalSold: Number(row.total_sold),
       stockQty,
+      reservedQty,
+      availableQty: Math.max(stockQty - reservedQty, 0),
+      warehouseCount: Number(row.warehouse_count),
       recentSoldQty: recentSold,
       recentDaysActive: Number(row.recent_days_active),
       dailySalesRate: dailyRate,
@@ -204,6 +251,7 @@ export async function getInventoryReport(params: InventoryParams) {
       stockRetailValue: Number(row.stock_retail_value),
       lastSaleDate: row.last_sale_date?.toISOString() ?? null,
       lastPurchaseDate: row.last_purchase_date?.toISOString() ?? null,
+      stockPeriod: row.stock_period?.toISOString() ?? null,
       daysSinceLastSale,
       category
     };
@@ -225,7 +273,9 @@ export async function getInventoryReport(params: InventoryParams) {
       outOfStockCount: outOfStock.length,
       overstockCount: overstock.length,
       slowMovingCount: slowMoving.length,
-      deadCount: dead.length
+      deadCount: dead.length,
+      reservedQty: withStock.reduce((s, i) => s + i.reservedQty, 0),
+      stockPeriod: items.find((item) => item.stockPeriod)?.stockPeriod ?? null
     },
     items,
     outOfStock,

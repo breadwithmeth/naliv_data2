@@ -2,6 +2,8 @@ import {
   BarChart3,
   Boxes,
   CalendarDays,
+  ChevronDown,
+  ChevronRight,
   Clock,
   Database,
   LayoutDashboard,
@@ -9,6 +11,7 @@ import {
   Megaphone,
   Package,
   Receipt,
+  RotateCcw,
   Search,
   ShieldCheck,
   ShoppingCart,
@@ -30,12 +33,16 @@ import {
 } from "recharts";
 import {
   api,
+  type DataGroup,
+  type ExitProduct,
+  type ExitProductReason,
   type IncomeReport,
   type InventoryReport,
   type ItemAnalysis,
   type MarketingReport,
   type NomenclatureReport,
   type Overview,
+  type ReportDateRange,
   type SalesPeriod,
   type SalesReport,
   type TableProfile,
@@ -286,10 +293,7 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
         </header>
 
         {currentPage === "reports" ? (
-          <>
-            <SalesReports />
-            <IncomeReports />
-          </>
+          <ReportsPage />
         ) : currentPage === "nomenclature" ? (
           <NomenclatureReports />
         ) : currentPage === "marketing" ? (
@@ -331,6 +335,8 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
                   />
                 </section>
 
+                <DataCatalogOverview overview={overview} onSelectTable={setSelectedTable} />
+
                 <section className="chart-band">
                   <div className="section-heading">
                     <h2>Крупнейшие таблицы</h2>
@@ -369,13 +375,242 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
   );
 }
 
+const dataGroupCopy: Record<
+  DataGroup["key"],
+  { title: string; description: string; reportUse: string }
+> = {
+  documents: {
+    title: "Документы 1С",
+    description:
+      "Заказы, поступления, списания, кассовые ордера, перемещения, установки цен и себестоимости, инвентаризация.",
+    reportUse:
+      "Операционные отчеты по движениям, суммам документов, активности магазинов и проведенным операциям."
+  },
+  documentLines: {
+    title: "Табличные части",
+    description:
+      "Строки товаров, оплат, цен, инвентаризации и других документов, связанные через _parent_ref_key и _parent_line_index.",
+    reportUse:
+      "Детализация отчетов до товара, склада, характеристики, цены, количества и суммы строки."
+  },
+  catalogs: {
+    title: "Справочники",
+    description:
+      "Номенклатура, магазины, склады, скидки, наценки, информационные и дисконтные карты.",
+    reportUse:
+      "Расшифровка ссылок 1С, группировки по товарам, магазинам, складам и маркетинговым признакам."
+  },
+  balances: {
+    title: "Срезы остатков",
+    description:
+      "Остатки товаров по дням, складам, номенклатуре, характеристикам, количеству и резерву.",
+    reportUse:
+      "Отчеты по запасам, доступности товара, резервам, динамике остатков и стоимости склада."
+  },
+  other: {
+    title: "Прочие таблицы",
+    description: "Дополнительные сущности OData, которые не попали в основные группы raw_1c.",
+    reportUse: "Профилирование, контроль полноты загрузки и дополнительные аналитические срезы."
+  }
+};
+
+function DataCatalogOverview({
+  overview,
+  onSelectTable
+}: {
+  overview: Overview;
+  onSelectTable: (tableName: string) => void;
+}) {
+  const visibleServiceFields = overview.serviceFieldCoverage.filter(
+    (field) => field.tableCount > 0
+  );
+
+  return (
+    <section className="data-catalog" aria-label="Описание данных raw_1c">
+      <div className="section-heading">
+        <div>
+          <h2>Состав данных raw_1c</h2>
+          <span>группы таблиц, доступные для построения отчетов</span>
+        </div>
+      </div>
+
+      <div className="data-group-grid">
+        {overview.dataGroups.map((group) => {
+          const copy = dataGroupCopy[group.key];
+
+          return (
+            <article key={group.key} className="data-group-card">
+              <div className="data-group-title">
+                <div className="metric-icon">
+                  <DataGroupIcon group={group.key} />
+                </div>
+                <div>
+                  <h3>{copy.title}</h3>
+                  <span>
+                    {formatNumber(group.tableCount)} таблиц ·{" "}
+                    {formatCompact(group.estimatedRows)} строк
+                  </span>
+                </div>
+              </div>
+              <p>{copy.description}</p>
+              <p className="muted">{copy.reportUse}</p>
+              <div className="data-group-stats">
+                <span>{formatNumber(group.columnCount)} колонок</span>
+                <span>{formatNumber(group.numericColumnCount)} числовых</span>
+                <span>{formatNumber(group.temporalColumnCount)} дат</span>
+              </div>
+              {group.sampleTables.length > 0 ? (
+                <div className="table-chip-list">
+                  {group.sampleTables.map((table) => (
+                    <button
+                      key={table}
+                      type="button"
+                      onClick={() => onSelectTable(table)}
+                      title={table}
+                    >
+                      {table}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+
+      {visibleServiceFields.length > 0 ? (
+        <div className="service-field-strip">
+          <strong>Служебные поля</strong>
+          <div>
+            {visibleServiceFields.map((field) => (
+              <span key={field.name}>
+                {field.name}: {formatNumber(field.tableCount)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function DataGroupIcon({ group }: { group: DataGroup["key"] }) {
+  if (group === "documents") {
+    return <Receipt size={18} />;
+  }
+
+  if (group === "documentLines") {
+    return <Table2 size={18} />;
+  }
+
+  if (group === "catalogs") {
+    return <Database size={18} />;
+  }
+
+  if (group === "balances") {
+    return <Boxes size={18} />;
+  }
+
+  return <LayoutDashboard size={18} />;
+}
+
 const periodOptions: Array<{ value: SalesPeriod; label: string }> = [
   { value: "day", label: "Дни" },
   { value: "week", label: "Недели" },
   { value: "month", label: "Месяцы" }
 ];
 
-function SalesReports() {
+type DateRangeValue = Required<Pick<ReportDateRange, "from" | "to">>;
+
+const emptyDateRange: DateRangeValue = { from: "", to: "" };
+
+function ReportsPage() {
+  const [dateRange, setDateRange] = useState<DateRangeValue>(emptyDateRange);
+
+  return (
+    <>
+      <SalesReports dateRange={dateRange} onDateRangeChange={setDateRange} />
+      <IncomeReports dateRange={dateRange} onDateRangeChange={setDateRange} />
+    </>
+  );
+}
+
+function ReportFilterBar({
+  period,
+  onPeriodChange,
+  dateRange,
+  onDateRangeChange,
+  periodLabel = "Группировка"
+}: {
+  period: SalesPeriod;
+  onPeriodChange: (period: SalesPeriod) => void;
+  dateRange: DateRangeValue;
+  onDateRangeChange: (dateRange: DateRangeValue) => void;
+  periodLabel?: string;
+}) {
+  const hasDateRange = Boolean(dateRange.from || dateRange.to);
+
+  return (
+    <div className="report-controls">
+      <div className="segmented-control" aria-label={periodLabel}>
+        {periodOptions.map((option) => (
+          <button
+            key={option.value}
+            className={option.value === period ? "active" : ""}
+            onClick={() => onPeriodChange(option.value)}
+            type="button"
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="date-range-control" aria-label="Диапазон дат отчета">
+        <label>
+          <span>С</span>
+          <input
+            type="date"
+            value={dateRange.from}
+            max={dateRange.to || undefined}
+            onChange={(event) =>
+              onDateRangeChange({ ...dateRange, from: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          <span>По</span>
+          <input
+            type="date"
+            value={dateRange.to}
+            min={dateRange.from || undefined}
+            onChange={(event) =>
+              onDateRangeChange({ ...dateRange, to: event.target.value })
+            }
+          />
+        </label>
+        {hasDateRange ? (
+          <button
+            className="date-reset-button"
+            type="button"
+            onClick={() => onDateRangeChange(emptyDateRange)}
+            title="Сбросить диапазон дат"
+          >
+            <RotateCcw size={15} />
+            <span>Сбросить</span>
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SalesReports({
+  dateRange,
+  onDateRangeChange
+}: {
+  dateRange: DateRangeValue;
+  onDateRangeChange: (dateRange: DateRangeValue) => void;
+}) {
   const [period, setPeriod] = useState<SalesPeriod>("day");
   const [reportState, setReportState] = useState<LoadState<SalesReport>>({
     status: "loading"
@@ -384,7 +619,7 @@ function SalesReports() {
   useEffect(() => {
     setReportState({ status: "loading" });
     api
-      .salesReport(period)
+      .salesReport({ period, ...dateRange })
       .then((report) => setReportState({ status: "success", data: report }))
       .catch((caught) =>
         setReportState({
@@ -392,27 +627,22 @@ function SalesReports() {
           error: caught instanceof Error ? caught.message : "Не удалось загрузить отчеты"
         })
       );
-  }, [period]);
+  }, [dateRange.from, dateRange.to, period]);
 
   return (
     <section className="reports-section">
       <div className="section-heading row">
         <div>
-          <h2>Отчеты по продажам</h2>
-          <span>document_chek_kkm · document_otchet_o_roznichnyh_prodazhah</span>
+          <h2>Отчеты по розничным продажам</h2>
+          <span>document_otchet_o_roznichnyh_prodazhah · document_otchet_o_roznichnyh_prodazhah_tovary</span>
         </div>
-        <div className="segmented-control" aria-label="Группировка выручки">
-          {periodOptions.map((option) => (
-            <button
-              key={option.value}
-              className={option.value === period ? "active" : ""}
-              onClick={() => setPeriod(option.value)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <ReportFilterBar
+          period={period}
+          onPeriodChange={setPeriod}
+          dateRange={dateRange}
+          onDateRangeChange={onDateRangeChange}
+          periodLabel="Группировка выручки"
+        />
       </div>
 
       {reportState.status === "loading" ? (
@@ -437,7 +667,15 @@ function SalesReportBody({
   report: SalesReport;
   period: SalesPeriod;
 }) {
-  const [heatmapView, setHeatmapView] = useState<HeatmapView>("dates");
+  const [selectedWeekday, setSelectedWeekday] = useState(1);
+  const heatmapWeekdays = useMemo(
+    () => getHeatmapWeekdays(report.heatmap.days),
+    [report.heatmap.days]
+  );
+  const activeWeekday =
+    heatmapWeekdays.find((weekday) => weekday.value === selectedWeekday) ??
+    heatmapWeekdays[0] ??
+    null;
 
   return (
     <>
@@ -449,17 +687,17 @@ function SalesReportBody({
         />
         <MetricCard
           icon={<ShoppingCart size={18} />}
-          label="Количество чеков"
+          label="Отчетов розницы"
           value={formatNumber(report.summary.orderCount)}
         />
         <MetricCard
           icon={<CalendarDays size={18} />}
-          label="Средний чек"
+          label="Средняя сумма"
           value={formatMoney(report.summary.avgCheck)}
         />
         <MetricCard
           icon={<Store size={18} />}
-          label="Товаров в чеке"
+          label="Товаров в отчете"
           value={formatDecimal(report.summary.avgItemsPerCheck, 2)}
         />
       </section>
@@ -489,7 +727,7 @@ function SalesReportBody({
                       name === "revenue"
                         ? formatMoney(Number(value))
                         : formatNumber(Number(value)),
-                      name === "revenue" ? "Выручка" : "Чеки"
+                      name === "revenue" ? "Выручка" : "Отчеты"
                     ]}
                     labelStyle={{ color: "#172033" }}
                   />
@@ -527,55 +765,63 @@ function SalesReportBody({
         </section>
       </div>
 
-      <div className="heatmap-toolbar">
-        <div>
-          <strong>Представление heatmap</strong>
-          <span>
-            {heatmapView === "dates"
-              ? "каждая строка показывает конкретную дату и магазин"
-              : "данные свернуты по дням недели и магазинам"}
-          </span>
+      {heatmapWeekdays.length > 0 ? (
+        <div className="heatmap-weekday-toolbar">
+          <strong>День недели</strong>
+          <div className="weekday-selector" aria-label="День недели для тепловой карты">
+            {heatmapWeekdays.map((weekday) => (
+              <button
+                key={weekday.key}
+                className={activeWeekday?.value === weekday.value ? "active" : ""}
+                onClick={() => setSelectedWeekday(weekday.value)}
+                title={`${weekday.label}\nДаты: ${weekday.title}`}
+                type="button"
+              >
+                {weekday.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="segmented-control" aria-label="Представление heatmap">
-          {heatmapViewOptions.map((option) => (
-            <button
-              key={option.value}
-              className={option.value === heatmapView ? "active" : ""}
-              onClick={() => setHeatmapView(option.value)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      ) : null}
 
       <section className="panel">
         <div className="panel-title">
           <h3>Тепловая карта чеков</h3>
-          <span>{heatmapView === "dates" ? "строка = день и магазин" : "строка = день недели и магазин"}, колонка = час</span>
+          <span>источник: document_chek_kkm, строка = магазин, колонка = час</span>
         </div>
-        <SalesHeatmap report={report} metric="checks" view={heatmapView} />
+        {activeWeekday ? (
+          <SalesHeatmap
+            report={report}
+            metric="checks"
+            weekday={activeWeekday.value}
+            weekdayLabel={activeWeekday.label}
+          />
+        ) : (
+          <div className="empty-state inset">Нет данных для тепловой карты</div>
+        )}
       </section>
 
       <section className="panel">
         <div className="panel-title">
           <h3>Тепловая карта суммы продаж</h3>
-          <span>{heatmapView === "dates" ? "строка = день и магазин" : "строка = день недели и магазин"}, колонка = час</span>
+          <span>источник: document_chek_kkm, строка = магазин, колонка = час</span>
         </div>
-        <SalesHeatmap report={report} metric="revenue" view={heatmapView} />
+        {activeWeekday ? (
+          <SalesHeatmap
+            report={report}
+            metric="revenue"
+            weekday={activeWeekday.value}
+            weekdayLabel={activeWeekday.label}
+          />
+        ) : (
+          <div className="empty-state inset">Нет данных для тепловой карты</div>
+        )}
       </section>
     </>
   );
 }
 
 type HeatmapMetric = "checks" | "revenue";
-type HeatmapView = "dates" | "weekdays";
-
-const heatmapViewOptions: Array<{ value: HeatmapView; label: string }> = [
-  { value: "dates", label: "По датам" },
-  { value: "weekdays", label: "По дням недели" }
-];
 
 const weekdayLabels = [
   "",
@@ -588,22 +834,44 @@ const weekdayLabels = [
   "Воскресенье"
 ];
 
+function getHeatmapWeekdays(days: string[]) {
+  return Array.from(new Set(days.map(getIsoWeekday)))
+    .filter((weekday) => weekday > 0)
+    .sort((left, right) => left - right)
+    .map((weekday) => {
+      const weekdayDays = days
+        .filter((day) => getIsoWeekday(day) === weekday)
+        .sort();
+
+      return {
+        key: `weekday-${weekday}`,
+        value: weekday,
+        label: weekdayLabels[weekday],
+        title: formatHeatmapDateList(weekdayDays)
+      };
+    });
+}
+
 function SalesHeatmap({
   report,
   metric,
-  view
+  weekday,
+  weekdayLabel
 }: {
   report: SalesReport;
   metric: HeatmapMetric;
-  view: HeatmapView;
+  weekday: number;
+  weekdayLabel: string;
 }) {
   const aggregatedCells = useMemo(() => {
     const cells = new Map<string, { revenue: number; orderCount: number }>();
 
     for (const cell of report.heatmap.cells) {
-      const groupKey =
-        view === "weekdays" ? `weekday-${getIsoWeekday(cell.day)}` : cell.day;
-      const key = `${groupKey}-${cell.storeKey}-${cell.hour}`;
+      if (getIsoWeekday(cell.day) !== weekday) {
+        continue;
+      }
+
+      const key = `${cell.storeKey}-${cell.hour}`;
       const current = cells.get(key) ?? { revenue: 0, orderCount: 0 };
       current.revenue += cell.revenue;
       current.orderCount += cell.orderCount;
@@ -611,28 +879,17 @@ function SalesHeatmap({
     }
 
     return cells;
-  }, [report.heatmap.cells, view]);
-  const heatmapRows = useMemo(
-    () => {
-      const groups =
-        view === "weekdays"
-          ? Array.from(new Set(report.heatmap.days.map(getIsoWeekday)))
-              .filter((weekday) => weekday > 0)
-              .sort((left, right) => left - right)
-              .map((weekday) => ({
-                key: `weekday-${weekday}`,
-                label: weekdayLabels[weekday]
-              }))
-          : report.heatmap.days.map((day) => ({
-              key: day,
-              label: formatHeatmapDay(day)
-            }));
+  }, [report.heatmap.cells, weekday]);
 
-      return groups.flatMap((group) =>
-        report.heatmap.stores.map((store) => ({ group, store }))
-      );
-    },
-    [report.heatmap.days, report.heatmap.stores, view]
+  const heatmapRows = useMemo(
+    () =>
+      report.heatmap.stores.filter((store) =>
+        report.heatmap.hours.some((hour) => {
+          const cell = aggregatedCells.get(`${store.key}-${hour}`);
+          return Boolean(cell && (cell.orderCount > 0 || cell.revenue > 0));
+        })
+      ),
+    [aggregatedCells, report.heatmap.hours, report.heatmap.stores]
   );
   const maxMetricValue = useMemo(() => {
     return Math.max(
@@ -647,6 +904,10 @@ function SalesHeatmap({
     return <div className="empty-state inset">Нет данных для тепловой карты</div>;
   }
 
+  if (heatmapRows.length === 0) {
+    return <div className="empty-state inset">Нет данных за {weekdayLabel}</div>;
+  }
+
   return (
     <div className="heatmap-scroll">
       <div
@@ -657,39 +918,36 @@ function SalesHeatmap({
           } as CSSProperties
         }
       >
-        <div className="heatmap-label heatmap-head">День / магазин</div>
+        <div className="heatmap-label heatmap-head">Магазин</div>
         {report.heatmap.hours.map((hour) => (
           <div key={hour} className="heatmap-hour heatmap-head">
             {hour}
           </div>
         ))}
 
-        {heatmapRows.map(({ group, store }) => (
-          <Fragment key={`${group.key}-${store.key}`}>
-            <div
-              className="heatmap-label stacked"
-              title={`${group.label} · ${store.name}`}
-            >
+        {heatmapRows.map((store) => (
+          <Fragment key={store.key}>
+            <div className="heatmap-label stacked" title={store.name}>
               <Store size={14} />
               <div>
-                <b>{group.label}</b>
-                <span>{store.name}</span>
+                <b>{store.name}</b>
+                <span>{weekdayLabel}</span>
               </div>
             </div>
             {report.heatmap.hours.map((hour) => {
-              const cell = aggregatedCells.get(`${group.key}-${store.key}-${hour}`);
+              const cell = aggregatedCells.get(`${store.key}-${hour}`);
               const metricValue =
                 metric === "revenue" ? (cell?.revenue ?? 0) : (cell?.orderCount ?? 0);
               const intensity = maxMetricValue > 0 ? metricValue / maxMetricValue : 0;
 
               return (
                 <div
-                  key={`${group.key}-${store.key}-${hour}`}
+                  key={`${store.key}-${hour}`}
                   className={metric === "revenue" ? "heatmap-cell money" : "heatmap-cell"}
                   title={
                     metric === "revenue"
-                      ? `${group.label}, ${store.name}, ${hour}:00 · ${formatMoney(cell?.revenue ?? 0)}`
-                      : `${group.label}, ${store.name}, ${hour}:00 · ${formatNumber(cell?.orderCount ?? 0)} чеков · ${formatMoney(cell?.revenue ?? 0)}`
+                      ? `${store.name}, ${weekdayLabel}, ${hour}:00 · ${formatMoney(cell?.revenue ?? 0)}`
+                      : `${store.name}, ${weekdayLabel}, ${hour}:00 · ${formatNumber(cell?.orderCount ?? 0)} чеков · ${formatMoney(cell?.revenue ?? 0)}`
                   }
                   style={{ "--heat": intensity } as CSSProperties}
                 >
@@ -708,8 +966,8 @@ function SalesHeatmap({
         <Clock size={14} />
         <span>
           {metric === "revenue"
-            ? "Цвет и значение показывают сумму продаж в конкретный день и час по магазину."
-            : "Цвет и значение показывают количество чеков в конкретный день и час по магазину."}
+            ? `Цвет и значение показывают сумму продаж по магазинам за ${weekdayLabel.toLowerCase()} по часам.`
+            : `Цвет и значение показывают количество чеков по магазинам за ${weekdayLabel.toLowerCase()} по часам.`}
         </span>
       </div>
     </div>
@@ -739,6 +997,19 @@ function formatHeatmapDay(value: string) {
   }).format(date);
 }
 
+function formatHeatmapDateList(days: string[]) {
+  if (days.length === 0) {
+    return "нет дат";
+  }
+
+  const visibleDays = days.slice(0, 24).map(formatHeatmapDay);
+  const hiddenCount = days.length - visibleDays.length;
+
+  return hiddenCount > 0
+    ? `${visibleDays.join(", ")} и еще ${formatNumber(hiddenCount)}`
+    : visibleDays.join(", ");
+}
+
 function formatBucket(value: string, period: SalesPeriod) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -765,7 +1036,13 @@ function formatBucket(value: string, period: SalesPeriod) {
   }).format(date);
 }
 
-function IncomeReports() {
+function IncomeReports({
+  dateRange,
+  onDateRangeChange
+}: {
+  dateRange: DateRangeValue;
+  onDateRangeChange: (dateRange: DateRangeValue) => void;
+}) {
   const [period, setPeriod] = useState<SalesPeriod>("day");
   const [reportState, setReportState] = useState<LoadState<IncomeReport>>({
     status: "loading"
@@ -774,7 +1051,7 @@ function IncomeReports() {
   useEffect(() => {
     setReportState({ status: "loading" });
     api
-      .incomeReport(period)
+      .incomeReport({ period, ...dateRange })
       .then((report) => setReportState({ status: "success", data: report }))
       .catch((caught) =>
         setReportState({
@@ -782,7 +1059,7 @@ function IncomeReports() {
           error: caught instanceof Error ? caught.message : "Не удалось загрузить отчет о доходе"
         })
       );
-  }, [period]);
+  }, [dateRange.from, dateRange.to, period]);
 
   return (
     <section className="reports-section">
@@ -791,18 +1068,13 @@ function IncomeReports() {
           <h2>Доход</h2>
           <span>document_otchet_o_roznichnyh_prodazhah · document_postuplenie_tovarov</span>
         </div>
-        <div className="segmented-control" aria-label="Группировка дохода">
-          {periodOptions.map((option) => (
-            <button
-              key={option.value}
-              className={option.value === period ? "active" : ""}
-              onClick={() => setPeriod(option.value)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <ReportFilterBar
+          period={period}
+          onPeriodChange={setPeriod}
+          dateRange={dateRange}
+          onDateRangeChange={onDateRangeChange}
+          periodLabel="Группировка дохода"
+        />
       </div>
 
       {reportState.status === "loading" ? (
@@ -1094,12 +1366,13 @@ function IncomeReportBody({
 
 function MarketingReports() {
   const [period, setPeriod] = useState<SalesPeriod>("day");
+  const [dateRange, setDateRange] = useState<DateRangeValue>(emptyDateRange);
   const [state, setState] = useState<LoadState<MarketingReport>>({ status: "loading" });
 
   useEffect(() => {
     setState({ status: "loading" });
     api
-      .marketingReport(period)
+      .marketingReport({ period, ...dateRange })
       .then((report) => setState({ status: "success", data: report }))
       .catch((caught) =>
         setState({
@@ -1107,27 +1380,21 @@ function MarketingReports() {
           error: caught instanceof Error ? caught.message : "Не удалось загрузить маркетинговый отчет"
         })
       );
-  }, [period]);
+  }, [dateRange.from, dateRange.to, period]);
 
   return (
     <section className="reports-section">
       <div className="section-heading row">
         <div>
           <h2>Маркетинг</h2>
-          <span>document_chek_kkm · document_chek_kkm_skidki_natsenki</span>
+          <span>document_chek_kkm_tovary · document_chek_kkm_skidki_natsenki · document_marketingovaya_aktsiya</span>
         </div>
-        <div className="segmented-control" aria-label="Группировка">
-          {periodOptions.map((option) => (
-            <button
-              key={option.value}
-              className={option.value === period ? "active" : ""}
-              onClick={() => setPeriod(option.value)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <ReportFilterBar
+          period={period}
+          onPeriodChange={setPeriod}
+          dateRange={dateRange}
+          onDateRangeChange={setDateRange}
+        />
       </div>
 
       {state.status === "loading" ? <div className="empty-state">Загружаем маркетинговый отчет</div> : null}
@@ -1172,7 +1439,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
         />
         <MetricCard
           icon={<ShoppingCart size={18} />}
-          label="Чеков всего"
+          label="Продаж всего"
           value={formatNumber(report.summary.totalChecks)}
         />
         <MetricCard
@@ -1194,7 +1461,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
           </div>
           <div className="stack-list">
             <div className="summary-row">
-              <strong>Чеков</strong>
+              <strong>Продаж</strong>
               <span>{formatNumber(report.salesWithoutDiscounts.checkCount)}</span>
             </div>
             <div className="summary-row">
@@ -1214,7 +1481,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
           </div>
           <div className="stack-list">
             <div className="summary-row">
-              <strong>Чеков</strong>
+              <strong>Продаж</strong>
               <span>{formatNumber(report.salesWithDiscounts.checkCount)}</span>
             </div>
             <div className="summary-row">
@@ -1256,7 +1523,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
               <thead>
                 <tr>
                   <th>Акция</th>
-                  <th className="num">Чеков</th>
+                  <th className="num">Продаж</th>
                   <th className="num">Выручка</th>
                   <th className="num">Скидка</th>
                   <th className="num">Средняя скидка</th>
@@ -1288,6 +1555,8 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
         )}
       </section>
 
+      <PromoAnalyticsTree promos={report.promoAnalytics} />
+
       {/* Скидки по магазинам */}
       <section className="panel">
         <div className="panel-title">
@@ -1311,7 +1580,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
               <thead>
                 <tr>
                   <th>Магазин</th>
-                  <th className="num">Чеков всего</th>
+                  <th className="num">Продаж всего</th>
                   <th className="num">Со скидкой</th>
                   <th className="num">Выручка</th>
                   <th className="num">Скидка</th>
@@ -1353,7 +1622,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
                 <thead>
                   <tr>
                     <th>Акция</th>
-                    <th className="num">Чеков</th>
+                    <th className="num">Продаж</th>
                     <th className="num">Выручка</th>
                     <th className="num">Скидка</th>
                     <th className="num">Средняя скидка</th>
@@ -1391,7 +1660,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
         </div>
         <div className="stack-list">
           <div className="summary-row">
-            <strong>Доля чеков со скидкой</strong>
+            <strong>Доля продаж со скидкой</strong>
             <span>
               {report.summary.totalChecks > 0
                 ? `${formatDecimal(
@@ -1434,15 +1703,168 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
   );
 }
 
+function PromoAnalyticsTree({
+  promos
+}: {
+  promos: MarketingReport["promoAnalytics"];
+}) {
+  const [expandedPromos, setExpandedPromos] = useState<Record<string, boolean>>({});
+  const [expandedStores, setExpandedStores] = useState<Record<string, boolean>>({});
+
+  function togglePromo(key: string) {
+    setExpandedPromos((current) => ({ ...current, [key]: !current[key] }));
+  }
+
+  function toggleStore(key: string) {
+    setExpandedStores((current) => ({ ...current, [key]: !current[key] }));
+  }
+
+  return (
+    <section className="panel promo-analytics">
+      <div className="panel-title">
+        <div>
+          <h3>Полная аналитика по акциям</h3>
+          <span>{formatNumber(promos.length)} акций · магазины · номенклатура</span>
+        </div>
+      </div>
+
+      {promos.length === 0 ? (
+        <div className="empty-state inset">Нет товарной аналитики по акциям</div>
+      ) : (
+        <div className="promo-tree">
+          {promos.map((promo) => {
+            const isExpanded = Boolean(expandedPromos[promo.key]);
+            const promoRevenue = promo.itemRevenue > 0 ? promo.itemRevenue : promo.checkRevenue;
+
+            return (
+              <article key={promo.key} className="promo-node">
+                <button
+                  type="button"
+                  className="promo-node-header"
+                  onClick={() => togglePromo(promo.key)}
+                  aria-expanded={isExpanded}
+                >
+                  <span className="promo-toggle-icon">
+                    {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  </span>
+                  <span className="promo-node-title">
+                    <strong>{promo.name}</strong>
+                    <span>
+                      {formatNumber(promo.checkCount)} продаж · {formatNumber(promo.storeCount)} магазинов · {formatNumber(promo.itemCount)} товаров · документы {formatMoneyCompact(promo.checkRevenue)}
+                    </span>
+                  </span>
+                  <span className="promo-node-metrics">
+                    <PromoStat label="Кол-во" value={formatDecimal(promo.quantity, 1)} />
+                    <PromoStat label="Выручка тов." value={formatMoneyCompact(promoRevenue)} />
+                    <PromoStat label="Скидка" value={formatMoneyCompact(promo.discountAmount)} />
+                    <PromoStat label="Ср. скидка" value={`${formatDecimal(promo.avgDiscountPct, 1)}%`} />
+                    <PromoStat label="ROI" value={`${formatDecimal(promo.roi, 1)}x`} />
+                  </span>
+                </button>
+
+                {isExpanded ? (
+                  <div className="promo-store-list">
+                    {promo.stores.map((store) => {
+                      const storeExpansionKey = `${promo.key}:${store.key}`;
+                      const isStoreExpanded = Boolean(expandedStores[storeExpansionKey]);
+                      const storeRevenue = store.itemRevenue > 0 ? store.itemRevenue : store.checkRevenue;
+
+                      return (
+                        <div key={store.key} className="promo-store-node">
+                          <button
+                            type="button"
+                            className="promo-store-header"
+                            onClick={() => toggleStore(storeExpansionKey)}
+                            aria-expanded={isStoreExpanded}
+                          >
+                            <span className="promo-toggle-icon">
+                              {isStoreExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                            </span>
+                            <span className="promo-node-title">
+                              <strong>{store.name}</strong>
+                              <span>
+                                {formatNumber(store.checkCount)} продаж · {formatNumber(store.itemCount)} товаров · документы {formatMoneyCompact(store.checkRevenue)}
+                              </span>
+                            </span>
+                            <span className="promo-node-metrics compact">
+                              <PromoStat label="Кол-во" value={formatDecimal(store.quantity, 1)} />
+                              <PromoStat label="Выручка тов." value={formatMoneyCompact(storeRevenue)} />
+                              <PromoStat label="Скидка" value={formatMoneyCompact(store.discountAmount)} />
+                              <PromoStat label="ROI" value={`${formatDecimal(store.roi, 1)}x`} />
+                            </span>
+                          </button>
+
+                          {isStoreExpanded ? (
+                            store.items.length > 0 ? (
+                              <div className="heatmap-scroll promo-items-table">
+                                <table className="data-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Номенклатура</th>
+                                      <th className="num">Продаж</th>
+                                      <th className="num">Кол-во</th>
+                                      <th className="num">Выручка</th>
+                                      <th className="num">Скидка</th>
+                                      <th className="num">Средняя цена</th>
+                                      <th className="num">Средняя скидка</th>
+                                      <th className="num">ROI</th>
+                                      <th className="num">Последняя продажа</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {store.items.map((item) => (
+                                      <tr key={item.key}>
+                                        <td>{item.name}</td>
+                                        <td className="num">{formatNumber(item.checkCount)}</td>
+                                        <td className="num">{formatDecimal(item.quantity, 1)}</td>
+                                        <td className="num">{formatMoney(item.revenue)}</td>
+                                        <td className="num">{formatMoney(item.discountAmount)}</td>
+                                        <td className="num">{formatMoney(item.avgPrice)}</td>
+                                        <td className="num">{formatDecimal(item.avgDiscountPct, 1)}%</td>
+                                        <td className="num">{formatDecimal(item.roi, 1)}x</td>
+                                        <td className="num">{formatDate(item.lastSaleDate)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ) : (
+                              <div className="empty-state inset">Нет товарной детализации</div>
+                            )
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PromoStat({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="promo-stat">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </span>
+  );
+}
+
 function InventoryReports() {
   const [period, setPeriod] = useState<SalesPeriod>("day");
+  const [dateRange, setDateRange] = useState<DateRangeValue>(emptyDateRange);
   const [state, setState] = useState<LoadState<InventoryReport>>({ status: "loading" });
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     setState({ status: "loading" });
     api
-      .inventoryReport(period)
+      .inventoryReport({ period, ...dateRange })
       .then((report) => {
         setState({ status: "success", data: report });
         setExpandedSections({});
@@ -1453,11 +1875,7 @@ function InventoryReports() {
           error: caught instanceof Error ? caught.message : "Не удалось загрузить отчет по запасам"
         })
       );
-  }, [period]);
-
-  if (state.status === "loading") return <div className="empty-state">Загружаем отчет по запасам</div>;
-  if (state.status === "error") return <div className="empty-state">{state.error}</div>;
-  if (!state.data) return <div className="empty-state">Нет данных по запасам</div>;
+  }, [dateRange.from, dateRange.to, period]);
 
   const report = state.data;
 
@@ -1514,6 +1932,9 @@ function InventoryReports() {
   const stockColumns: ColumnDef<InventoryReport["items"][0]>[] = [
     { key: "name", label: "Товар", render: (r) => r.name },
     { key: "stockQty", label: "Остаток", num: true, render: (r) => formatDecimal(r.stockQty, 1) },
+    { key: "reservedQty", label: "Резерв", num: true, render: (r) => formatDecimal(r.reservedQty, 1) },
+    { key: "availableQty", label: "Доступно", num: true, render: (r) => formatDecimal(r.availableQty, 1) },
+    { key: "warehouseCount", label: "Складов", num: true, render: (r) => formatNumber(r.warehouseCount) },
     { key: "dailySalesRate", label: "Продаж/день", num: true, render: (r) => formatDecimal(r.dailySalesRate, 2) },
     { key: "daysOfStock", label: "Дней запаса", num: true, render: (r) => r.daysOfStock !== null ? formatDecimal(r.daysOfStock, 0) : "—" },
     { key: "depletionDays", label: "Прогноз оконч.", num: true, render: (r) => r.depletionDays !== null ? formatDecimal(r.depletionDays, 0) : "—" },
@@ -1524,6 +1945,8 @@ function InventoryReports() {
   const shortColumns: ColumnDef<InventoryReport["items"][0]>[] = [
     { key: "name", label: "Товар", render: (r) => r.name },
     { key: "stockQty", label: "Остаток", num: true, render: (r) => formatDecimal(r.stockQty, 1) },
+    { key: "reservedQty", label: "Резерв", num: true, render: (r) => formatDecimal(r.reservedQty, 1) },
+    { key: "availableQty", label: "Доступно", num: true, render: (r) => formatDecimal(r.availableQty, 1) },
     { key: "stockCost", label: "Себест-ть", num: true, render: (r) => formatMoney(r.stockCost) },
     { key: "daysOfStock", label: "Дней запаса", num: true, render: (r) => r.daysOfStock !== null ? formatDecimal(r.daysOfStock, 0) : "—" },
     { key: "daysSinceLastSale", label: "Дней без продаж", num: true, render: (r) => r.daysSinceLastSale !== null ? formatNumber(r.daysSinceLastSale) : "—" }
@@ -1534,82 +1957,84 @@ function InventoryReports() {
       <div className="section-heading row">
         <div>
           <h2>Запасы</h2>
-          <span>document_postuplenie_tovarov · document_otchet_o_roznichnyh_prodazhah</span>
+          <span>accumulation_register_tovary_na_skladah_balance · document_otchet_o_roznichnyh_prodazhah</span>
         </div>
-        <div className="segmented-control" aria-label="Группировка">
-          {periodOptions.map((option) => (
-            <button
-              key={option.value}
-              className={option.value === period ? "active" : ""}
-              onClick={() => setPeriod(option.value)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <ReportFilterBar
+          period={period}
+          onPeriodChange={setPeriod}
+          dateRange={dateRange}
+          onDateRangeChange={setDateRange}
+        />
       </div>
 
-      <section className="metric-grid report-metric-grid" aria-label="Метрики запасов">
-        <MetricCard icon={<Boxes size={18} />} label="Товаров с остатком" value={formatNumber(report.summary.itemsWithStock)} />
-        <MetricCard icon={<ShoppingCart size={18} />} label="Сумма запаса (себест.)" value={formatMoney(report.summary.totalStockCost)} />
-        <MetricCard icon={<BarChart3 size={18} />} label="Out of Stock" value={formatNumber(report.summary.outOfStockCount)} />
-        <MetricCard icon={<TrendingUp size={18} />} label="Overstock" value={formatNumber(report.summary.overstockCount)} />
-      </section>
+      {state.status === "loading" ? <div className="empty-state">Загружаем отчет по запасам</div> : null}
+      {state.status === "error" ? <div className="empty-state">{state.error}</div> : null}
+      {state.status !== "loading" && state.status !== "error" && !report ? (
+        <div className="empty-state">Нет данных по запасам</div>
+      ) : null}
 
-      {/* Остатки — основная таблица */}
-      {renderSection("Остатки", "stock", report.items, stockColumns)}
+      {report ? (
+        <>
+          <section className="metric-grid report-metric-grid" aria-label="Метрики запасов">
+            <MetricCard icon={<Boxes size={18} />} label="Товаров с остатком" value={formatNumber(report.summary.itemsWithStock)} />
+            <MetricCard icon={<ShoppingCart size={18} />} label="Сумма запаса (себест.)" value={formatMoney(report.summary.totalStockCost)} />
+            <MetricCard icon={<BarChart3 size={18} />} label="Out of Stock" value={formatNumber(report.summary.outOfStockCount)} />
+            <MetricCard icon={<TrendingUp size={18} />} label="Overstock" value={formatNumber(report.summary.overstockCount)} />
+          </section>
 
-      {/* Out of Stock */}
-      {renderSection("Out of Stock", "outOfStock", report.outOfStock, shortColumns)}
+          {renderSection("Остатки", "stock", report.items, stockColumns)}
+          {renderSection("Out of Stock", "outOfStock", report.outOfStock, shortColumns)}
+          {renderSection("Overstock", "overstock", report.overstock, shortColumns)}
+          {renderSection("Медленно оборачиваемые товары", "slowMoving", report.slowMoving, shortColumns)}
+          {renderSection("Неликвид", "dead", report.dead, shortColumns)}
 
-      {/* Overstock */}
-      {renderSection("Overstock", "overstock", report.overstock, shortColumns)}
-
-      {/* Медленно оборачиваемые */}
-      {renderSection("Медленно оборачиваемые товары", "slowMoving", report.slowMoving, shortColumns)}
-
-      {/* Неликвид */}
-      {renderSection("Неликвид", "dead", report.dead, shortColumns)}
-
-      {/* Summary stats */}
-      <section className="panel">
-        <div className="panel-title"><h3>Сводка по запасам</h3></div>
-        <div className="stack-list">
-          <div className="summary-row">
-            <strong>Всего товаров в анализе</strong>
-            <span>{formatNumber(report.summary.totalItems)}</span>
-          </div>
-          <div className="summary-row">
-            <strong>Товаров с остатком</strong>
-            <span>{formatNumber(report.summary.itemsWithStock)}</span>
-          </div>
-          <div className="summary-row">
-            <strong>Общая себестоимость запаса</strong>
-            <span>{formatMoney(report.summary.totalStockCost)}</span>
-          </div>
-          <div className="summary-row">
-            <strong>Розничная стоимость запаса</strong>
-            <span>{formatMoney(report.summary.totalStockRetail)}</span>
-          </div>
-          <div className="summary-row">
-            <strong>Out of Stock</strong>
-            <span>{formatNumber(report.summary.outOfStockCount)}</span>
-          </div>
-          <div className="summary-row">
-            <strong>Overstock (&gt; 90 дн)</strong>
-            <span>{formatNumber(report.summary.overstockCount)}</span>
-          </div>
-          <div className="summary-row">
-            <strong>Медленно оборачиваемые</strong>
-            <span>{formatNumber(report.summary.slowMovingCount)}</span>
-          </div>
-          <div className="summary-row">
-            <strong>Неликвид</strong>
-            <span>{formatNumber(report.summary.deadCount)}</span>
-          </div>
-        </div>
-      </section>
+          <section className="panel">
+            <div className="panel-title"><h3>Сводка по запасам</h3></div>
+            <div className="stack-list">
+              <div className="summary-row">
+                <strong>Всего товаров в анализе</strong>
+                <span>{formatNumber(report.summary.totalItems)}</span>
+              </div>
+              <div className="summary-row">
+                <strong>Товаров с остатком</strong>
+                <span>{formatNumber(report.summary.itemsWithStock)}</span>
+              </div>
+              <div className="summary-row">
+                <strong>Дата среза остатков</strong>
+                <span>{formatDate(report.summary.stockPeriod)}</span>
+              </div>
+              <div className="summary-row">
+                <strong>Зарезервировано</strong>
+                <span>{formatDecimal(report.summary.reservedQty, 1)}</span>
+              </div>
+              <div className="summary-row">
+                <strong>Общая себестоимость запаса</strong>
+                <span>{formatMoney(report.summary.totalStockCost)}</span>
+              </div>
+              <div className="summary-row">
+                <strong>Розничная стоимость запаса</strong>
+                <span>{formatMoney(report.summary.totalStockRetail)}</span>
+              </div>
+              <div className="summary-row">
+                <strong>Out of Stock</strong>
+                <span>{formatNumber(report.summary.outOfStockCount)}</span>
+              </div>
+              <div className="summary-row">
+                <strong>Overstock (&gt; 90 дн)</strong>
+                <span>{formatNumber(report.summary.overstockCount)}</span>
+              </div>
+              <div className="summary-row">
+                <strong>Медленно оборачиваемые</strong>
+                <span>{formatNumber(report.summary.slowMovingCount)}</span>
+              </div>
+              <div className="summary-row">
+                <strong>Неликвид</strong>
+                <span>{formatNumber(report.summary.deadCount)}</span>
+              </div>
+            </div>
+          </section>
+        </>
+      ) : null}
     </section>
   );
 }
@@ -1632,19 +2057,29 @@ const ageLabels: Record<string, string> = {
   old: "Старые (> 180 дн)"
 };
 
+const exitReasonLabels: Record<ExitProductReason, string> = {
+  no_sales: "Нет продаж",
+  dead_stock: "Старая последняя продажа",
+  slow_moving: "Редко продается",
+  overstock: "Запас > 90 дн",
+  old_stock: "Долго на складе"
+};
+
 function NomenclatureReports() {
   const [period, setPeriod] = useState<SalesPeriod>("day");
+  const [dateRange, setDateRange] = useState<DateRangeValue>(emptyDateRange);
   const [state, setState] = useState<LoadState<NomenclatureReport>>({ status: "loading" });
   const [showAllTop, setShowAllTop] = useState(false);
   const [showAllAnti, setShowAllAnti] = useState(false);
   const [showAllVelocity, setShowAllVelocity] = useState(false);
   const [showAllProfit, setShowAllProfit] = useState(false);
   const [showAllLost, setShowAllLost] = useState(false);
+  const [showAllExit, setShowAllExit] = useState(false);
 
   useEffect(() => {
     setState({ status: "loading" });
     api
-      .nomenclatureReport(period)
+      .nomenclatureReport({ period, ...dateRange })
       .then((report) => setState({ status: "success", data: report }))
       .catch((caught) =>
         setState({
@@ -1652,16 +2087,18 @@ function NomenclatureReports() {
           error: caught instanceof Error ? caught.message : "Не удалось загрузить анализ номенклатуры"
         })
       );
-  }, [period]);
+  }, [dateRange.from, dateRange.to, period]);
 
   const report = state.data;
   const items = report?.items ?? [];
+  const exitItems = report?.exitItems ?? [];
 
   const topSellers = useMemo(() => items.slice(0, showAllTop ? items.length : 15), [items, showAllTop]);
   const antiLeaders = useMemo(() => [...items].sort((a, b) => a.revenue - b.revenue).slice(0, showAllAnti ? items.length : 15), [items, showAllAnti]);
   const byVelocity = useMemo(() => [...items].sort((a, b) => b.salesVelocity - a.salesVelocity).slice(0, showAllVelocity ? items.length : 15), [items, showAllVelocity]);
   const byProfit = useMemo(() => [...items].sort((a, b) => b.marginPct - a.marginPct).slice(0, showAllProfit ? items.length : 15), [items, showAllProfit]);
   const lostSales = useMemo(() => [...items].filter((i) => i.daysWithoutSales > 0).sort((a, b) => b.daysWithoutSales - a.daysWithoutSales).slice(0, showAllLost ? items.length : 15), [items, showAllLost]);
+  const exitProducts = useMemo(() => exitItems.slice(0, showAllExit ? exitItems.length : 15), [exitItems, showAllExit]);
 
   const abcGroups = useMemo(() => ({
     A: items.filter((i) => i.abcClass === "A"),
@@ -1698,18 +2135,12 @@ function NomenclatureReports() {
           <h2>Номенклатура</h2>
           <span>catalog_nomenklatura · document_otchet_o_roznichnyh_prodazhah</span>
         </div>
-        <div className="segmented-control" aria-label="Группировка">
-          {periodOptions.map((option) => (
-            <button
-              key={option.value}
-              className={option.value === period ? "active" : ""}
-              onClick={() => setPeriod(option.value)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <ReportFilterBar
+          period={period}
+          onPeriodChange={setPeriod}
+          dateRange={dateRange}
+          onDateRangeChange={setDateRange}
+        />
       </div>
 
       {state.status === "loading" ? <div className="empty-state">Загружаем анализ номенклатуры</div> : null}
@@ -1722,7 +2153,21 @@ function NomenclatureReports() {
             <MetricCard icon={<CalendarDays size={18} />} label="Дней в анализе" value={formatNumber(report.totalDays)} />
             <MetricCard icon={<TrendingUp size={18} />} label="ABC: A-класс" value={formatNumber(abcGroups.A.length)} />
             <MetricCard icon={<BarChart3 size={18} />} label="XYZ: X-класс" value={formatNumber(xyzGroups.X.length)} />
+            <MetricCard icon={<Boxes size={18} />} label="Товары на выход" value={formatNumber(report.exitSummary.totalItems)} />
+            <MetricCard icon={<Package size={18} />} label="Остаток на выход" value={formatDecimal(report.exitSummary.stockQty, 1)} />
+            <MetricCard icon={<Clock size={18} />} label="Без продаж" value={formatNumber(report.exitSummary.noSalesCount + report.exitSummary.deadStockCount)} />
+            <MetricCard icon={<TrendingUp size={18} />} label="Стоимость остатка" value={formatMoneyCompact(report.exitSummary.stockCost)} />
           </section>
+
+          <ExpandableTable
+            title="Товары на выход"
+            subtitle={`остаток на ${formatDate(report.exitSummary.stockPeriod)} · ${formatNumber(exitItems.length)} товаров`}
+            items={exitProducts}
+            expanded={showAllExit}
+            onToggle={() => setShowAllExit((v) => !v)}
+            totalCount={exitItems.length}
+            columns={exitProductColumns}
+          />
 
           {/* ТОП продаваемых */}
           <ExpandableTable
@@ -1949,6 +2394,34 @@ const nomenclatureColumns = [
   { key: "marginPct", label: "Маржа", num: true, render: (r: ItemAnalysis) => `${formatDecimal(r.marginPct, 1)}%` },
   { key: "abcClass", label: "ABC", num: true, render: (r: ItemAnalysis) => r.abcClass },
   { key: "xyzClass", label: "XYZ", num: true, render: (r: ItemAnalysis) => r.xyzClass }
+];
+
+const exitProductColumns = [
+  { key: "name", label: "Товар", render: (r: ExitProduct) => r.name },
+  { key: "reason", label: "Причина", render: (r: ExitProduct) => exitReasonLabels[r.reason] },
+  { key: "stockQty", label: "Остаток", num: true, render: (r: ExitProduct) => formatDecimal(r.stockQty, 1) },
+  { key: "recentSoldQty", label: "Продано", num: true, render: (r: ExitProduct) => formatDecimal(r.recentSoldQty, 1) },
+  { key: "dailySalesRate", label: "Ед/день", num: true, render: (r: ExitProduct) => formatDecimal(r.dailySalesRate, 3) },
+  {
+    key: "daysOfStock",
+    label: "Дней запаса",
+    num: true,
+    render: (r: ExitProduct) => (r.daysOfStock === null ? "—" : formatNumber(Math.round(r.daysOfStock)))
+  },
+  {
+    key: "daysSinceLastSale",
+    label: "Дней без продаж",
+    num: true,
+    render: (r: ExitProduct) => (r.daysSinceLastSale === null ? "—" : formatNumber(r.daysSinceLastSale))
+  },
+  {
+    key: "daysSinceLastPurchase",
+    label: "Дней с поступления",
+    num: true,
+    render: (r: ExitProduct) => (r.daysSinceLastPurchase === null ? "—" : formatNumber(r.daysSinceLastPurchase))
+  },
+  { key: "stockCost", label: "Себест-ть остатка", num: true, render: (r: ExitProduct) => formatMoney(r.stockCost) },
+  { key: "lastSaleDate", label: "Последняя продажа", num: true, render: (r: ExitProduct) => formatDate(r.lastSaleDate) }
 ];
 
 type ColumnDef<T> = {
