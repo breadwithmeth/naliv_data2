@@ -1555,6 +1555,8 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
         )}
       </section>
 
+      <PromoItemFlatTable promos={report.promoAnalytics} />
+
       <PromoAnalyticsTree promos={report.promoAnalytics} />
 
       {/* Скидки по магазинам */}
@@ -1700,6 +1702,89 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
         </div>
       </section>
     </>
+  );
+}
+
+function PromoItemFlatTable({
+  promos
+}: {
+  promos: MarketingReport["promoAnalytics"];
+}) {
+  const [showAllRows, setShowAllRows] = useState(false);
+  const rows = useMemo(
+    () =>
+      promos.flatMap((promo) =>
+        promo.stores.flatMap((store) =>
+          store.items.map((item) => ({
+            key: `${promo.key}:${store.key}:${item.key}`,
+            promoName: promo.name,
+            storeName: store.name,
+            itemName: item.name,
+            avgPrice: item.avgPrice,
+            discountPct: item.avgDiscountPct,
+            discountAmount: item.discountAmount,
+            quantity: item.quantity,
+            revenue: item.revenue
+          }))
+        )
+      ),
+    [promos]
+  );
+  const visibleRows = showAllRows ? rows : rows.slice(0, 100);
+
+  return (
+    <section className="panel">
+      <div className="panel-title">
+        <div>
+          <h3>Таблица по акциям, магазинам и номенклатуре</h3>
+          <span>{formatNumber(rows.length)} строк</span>
+        </div>
+        {rows.length > 100 ? (
+          <button
+            onClick={() => setShowAllRows((value) => !value)}
+            type="button"
+            style={{ border: "1px solid #e4e7ec", borderRadius: "6px", padding: "4px 12px", cursor: "pointer", background: "#fff", fontSize: "13px" }}
+          >
+            {showAllRows ? "Свернуть" : `Показать все (${formatNumber(rows.length)})`}
+          </button>
+        ) : null}
+      </div>
+
+      {visibleRows.length > 0 ? (
+        <div className="heatmap-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Акция</th>
+                <th>Магазин</th>
+                <th>Номенклатура</th>
+                <th className="num">Цена</th>
+                <th className="num">Скидка</th>
+                <th className="num">Сумма скидки</th>
+                <th className="num">Кол-во продаж</th>
+                <th className="num">Сумма</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((row) => (
+                <tr key={row.key}>
+                  <td title={row.promoName}>{row.promoName}</td>
+                  <td title={row.storeName}>{row.storeName}</td>
+                  <td title={row.itemName}>{row.itemName}</td>
+                  <td className="num">{formatMoney(row.avgPrice)}</td>
+                  <td className="num">{formatDecimal(row.discountPct, 1)}%</td>
+                  <td className="num">{formatMoney(row.discountAmount)}</td>
+                  <td className="num">{formatDecimal(row.quantity, 1)}</td>
+                  <td className="num">{formatMoney(row.revenue)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="empty-state inset">Нет данных по номенклатуре в акциях</div>
+      )}
+    </section>
   );
 }
 
