@@ -475,7 +475,7 @@ export async function getIncomeReport(params: IncomeReportParams) {
     )
     select
       ipd.nomenklatura_key,
-      coalesce(nullif(max(n.naimenovanie_polnoe), ''), nullif(max(n.description), ''), ipd.nomenklatura_key) as item_name,
+      max(n.description) as item_name,
       ipd.sold_qty,
       ipd.revenue,
       ipd.cost,
@@ -521,7 +521,7 @@ export async function getIncomeReport(params: IncomeReportParams) {
       sip.magazin_key,
       coalesce(nullif(max(m.description), ''), sip.magazin_key) as store_name,
       sip.nomenklatura_key,
-      coalesce(nullif(max(n.naimenovanie_polnoe), ''), nullif(max(n.description), ''), sip.nomenklatura_key) as item_name,
+      max(n.description) as item_name,
       sip.sold_qty,
       sip.revenue,
       sip.cost,

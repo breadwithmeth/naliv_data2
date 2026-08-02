@@ -413,7 +413,7 @@ export async function getNomenclatureReport(
     )
     select
       r.nomenklatura_key,
-      coalesce(nullif(max(n.naimenovanie_polnoe), ''), nullif(max(n.description), ''), r.nomenklatura_key) as item_name,
+      max(n.description) as item_name,
       r.total_qty,
       r.total_revenue,
       r.total_cost,
@@ -520,7 +520,7 @@ export async function getNomenclatureReport(
     )
     select
       bs.nomenklatura_key,
-      coalesce(nullif(max(n.naimenovanie_polnoe), ''), nullif(max(n.description), ''), bs.nomenklatura_key) as item_name,
+      max(n.description) as item_name,
       greatest(bs.stock_qty, 0)::float8 as stock_qty,
       greatest(bs.reserved_qty, 0)::float8 as reserved_qty,
       bs.warehouse_count,
