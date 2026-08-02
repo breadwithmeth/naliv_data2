@@ -170,7 +170,7 @@ export async function getInventoryReport(params: InventoryParams) {
     )
     select
       sc.nomenklatura_key,
-      coalesce(nullif(max(n.description), ''), sc.nomenklatura_key) as item_name,
+      coalesce(nullif(max(n.naimenovanie_polnoe), ''), nullif(max(n.description), ''), sc.nomenklatura_key) as item_name,
       sc.total_purchased,
       sc.total_sold,
       greatest(sc.stock_qty, 0)::float8 as stock_qty,
