@@ -16,6 +16,13 @@
 body {
   margin: 0;
   min-width: 320px;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+#root {
+  min-width: 0;
+  max-width: 100%;
 }
 
 button,
@@ -128,8 +135,11 @@ select:focus {
 
 .app-shell {
   min-height: 100vh;
+  min-width: 0;
+  max-width: 100%;
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
+  overflow-x: hidden;
 }
 
 .sidebar {
@@ -243,6 +253,8 @@ select:focus {
 
 .workspace {
   min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
   padding: 28px;
 }
 
@@ -297,6 +309,8 @@ select:focus {
 .metric-card,
 .panel,
 .chart-band {
+  min-width: 0;
+  max-width: 100%;
   background: #ffffff;
   border: 1px solid #dce4ef;
   border-radius: 8px;
@@ -334,6 +348,8 @@ select:focus {
 }
 
 .reports-section {
+  min-width: 0;
+  max-width: 100%;
   display: grid;
   gap: 18px;
   margin-bottom: 18px;
@@ -441,6 +457,8 @@ select:focus {
 }
 
 .report-controls {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   justify-content: flex-end;
   align-items: flex-start;
@@ -449,6 +467,8 @@ select:focus {
 }
 
 .date-range-control {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -480,10 +500,12 @@ select:focus {
   outline: none;
 }
 
-.date-reset-button {
+.date-reset-button,
+.date-apply-button {
   min-height: 38px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
   border: 1px solid #d0d5dd;
   border-radius: 8px;
@@ -491,6 +513,19 @@ select:focus {
   color: #344054;
   background: #ffffff;
   font-weight: 700;
+}
+
+.date-apply-button {
+  border-color: #2864d8;
+  color: #ffffff;
+  background: #2864d8;
+}
+
+.date-apply-button:disabled {
+  border-color: #d0d5dd;
+  color: #98a2b3;
+  background: #f2f4f7;
+  cursor: default;
 }
 
 .segmented-control {
@@ -522,6 +557,8 @@ select:focus {
 }
 
 .reports-grid {
+  min-width: 0;
+  max-width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
   gap: 18px;
@@ -600,7 +637,10 @@ select:focus {
 
 .section-heading,
 .panel-title {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
   align-items: center;
@@ -609,6 +649,20 @@ select:focus {
 
 .section-heading.row {
   align-items: flex-start;
+}
+
+.section-heading.row > :first-child {
+  min-width: 0;
+  flex: 1 1 280px;
+}
+
+.section-heading.row > .report-controls {
+  flex: 0 1 auto;
+}
+
+.section-heading > *,
+.panel-title > * {
+  min-width: 0;
 }
 
 .section-heading h2,
@@ -621,9 +675,12 @@ select:focus {
 .muted {
   color: #667085;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .chart-wrap {
+  min-width: 0;
+  max-width: 100%;
   width: 100%;
   min-height: 260px;
 }
@@ -854,7 +911,11 @@ select:focus {
 }
 
 .heatmap-scroll {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-inline: contain;
 }
 
 .heatmap-grid {
@@ -1087,7 +1148,8 @@ select:focus {
     width: 100%;
   }
 
-  .date-reset-button {
+  .date-reset-button,
+  .date-apply-button {
     width: 100%;
     justify-content: center;
   }

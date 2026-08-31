@@ -9,6 +9,7 @@ import { analyticsRouter } from "./routes/analytics.js";
 import { authRouter } from "./routes/auth.js";
 import { inventoryRouter } from "./routes/inventory.js";
 import { marketingRouter } from "./routes/marketing.js";
+import { requireAuth, restrictMarketingApiSurface } from "./middleware/auth.js";
 import { nomenclatureRouter } from "./routes/nomenclature.js";
 import { reportsRouter } from "./routes/reports.js";
 
@@ -22,12 +23,17 @@ app.use(
 );
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
 app.use("/api/auth", authRouter);
+app.use("/api", requireAuth, restrictMarketingApiSurface);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/reports", reportsRouter);
 app.use("/api/nomenclature", nomenclatureRouter);

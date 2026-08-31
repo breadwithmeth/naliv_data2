@@ -348,7 +348,7 @@ export async function getNomenclatureReport(
     balanceFilters.push(Prisma.sql`b.balance_period < ${params.to}`);
   }
 
-  const rows = await prisma.$queryRaw<NomenclatureRow[]>`
+  const rowsQuery = prisma.$queryRaw<NomenclatureRow[]>`
     with
     ${dailySalesCte(params)},
     ${itemCostsCte()},
@@ -449,7 +449,7 @@ export async function getNomenclatureReport(
     order by r.total_revenue desc
   `;
 
-  const exitRows = await prisma.$queryRaw<ExitProductRow[]>`
+  const exitRowsQuery = prisma.$queryRaw<ExitProductRow[]>`
     with
     latest_balance_period as (
       select max(b.balance_period) as balance_period
@@ -547,6 +547,8 @@ export async function getNomenclatureReport(
       ls.last_sale_date, p.last_purchase_date, p.avg_purchase_price,
       bs.stock_period, sb.period_start, sb.period_end
   `;
+
+  const [rows, exitRows] = await Promise.all([rowsQuery, exitRowsQuery]);
 
   const totalDays = rows.length > 0 ? Number(rows[0].total_days_in_period) : 0;
 

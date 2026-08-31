@@ -38,26 +38,6 @@ function retailSalesFilters(params: SalesReportParams) {
   return Prisma.join(filters, " and ");
 }
 
-function checkSalesFilters(params: SalesReportParams) {
-  const filters: Prisma.Sql[] = [
-    Prisma.sql`c.date is not null`,
-    Prisma.sql`coalesce(c.deletion_mark, false) = false`,
-    Prisma.sql`coalesce(c.posted, false) = true`,
-    Prisma.sql`coalesce(c.vid_operatsii, 'Продажа') = 'Продажа'`,
-    Prisma.sql`coalesce(c.summa_dokumenta, 0) > 0`
-  ];
-
-  if (params.from) {
-    filters.push(Prisma.sql`c.date >= ${params.from}`);
-  }
-
-  if (params.to) {
-    filters.push(Prisma.sql`c.date < ${params.to}`);
-  }
-
-  return Prisma.join(filters, " and ");
-}
-
 function retailReportsCte(params: SalesReportParams) {
   const reportsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah");
   const itemsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah_tovary");
@@ -89,28 +69,6 @@ function retailReportsCte(params: SalesReportParams) {
   `;
 }
 
-function checkHeatmapCte(params: SalesReportParams) {
-  const checksTable = qualifiedTable("document_chek_kkm");
-  const reportsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah");
-  const whereSql = checkSalesFilters(params);
-  const unknownStore = "Без магазина";
-
-  return Prisma.sql`
-    with checks as (
-      select
-        c.ref_key,
-        c.date as sale_at,
-        coalesce(c.summa_dokumenta, 0)::float8 as revenue,
-        coalesce(nullif(r.magazin_key, ''), nullif(c.magazin_key, ''), ${unknownStore}) as store_key
-      from ${checksTable} c
-      left join ${reportsTable} r
-        on r.ref_key = c.otchet_o_roznichnyh_prodazhah_key
-        and coalesce(r.deletion_mark, false) = false
-      where ${whereSql}
-    )
-  `;
-}
-
 function displayStoreName(name: string | null, key: string) {
   if (name && name !== key) {
     return name;
@@ -124,7 +82,7 @@ function displayStoreName(name: string | null, key: string) {
 }
 
 export async function getSalesReport(params: SalesReportParams) {
-  const summaryRows = await prisma.$queryRaw<
+  const summaryQuery = prisma.$queryRaw<
     Array<{
       date_from: Date | null;
       date_to: Date | null;
@@ -147,7 +105,7 @@ export async function getSalesReport(params: SalesReportParams) {
     from checks
   `;
 
-  const seriesRows = await prisma.$queryRaw<
+  const seriesQuery = prisma.$queryRaw<
     Array<{
       bucket: Date;
       revenue: number | null;
@@ -168,7 +126,7 @@ export async function getSalesReport(params: SalesReportParams) {
     order by 1 asc
   `;
 
-  const storeRows = await prisma.$queryRaw<
+  const storeQuery = prisma.$queryRaw<
     Array<{
       store_key: string;
       store_name: string | null;
@@ -176,7 +134,7 @@ export async function getSalesReport(params: SalesReportParams) {
       order_count: bigint | number;
     }>
   >`
-    ${checkHeatmapCte(params)},
+    ${retailReportsCte(params)},
     store_totals as (
       select
         store_key,
@@ -198,7 +156,7 @@ export async function getSalesReport(params: SalesReportParams) {
     order by st.revenue desc
   `;
 
-  const heatmapRows = await prisma.$queryRaw<
+  const heatmapQuery = prisma.$queryRaw<
     Array<{
       sale_day: Date;
       store_key: string;
@@ -207,7 +165,7 @@ export async function getSalesReport(params: SalesReportParams) {
       order_count: bigint | number;
     }>
   >`
-    ${checkHeatmapCte(params)},
+    ${retailReportsCte(params)},
     store_totals as (
       select
         store_key,
@@ -228,6 +186,13 @@ export async function getSalesReport(params: SalesReportParams) {
     group by date_trunc('day', c.sale_at), c.store_key, extract(hour from c.sale_at)::int
     order by sale_day, c.store_key, hour
   `;
+
+  const [summaryRows, seriesRows, storeRows, heatmapRows] = await Promise.all([
+    summaryQuery,
+    seriesQuery,
+    storeQuery,
+    heatmapQuery
+  ]);
 
   const maxHeatRevenue = Math.max(
     ...heatmapRows.map((row) => Number(row.revenue ?? 0)),
@@ -344,7 +309,7 @@ export async function getIncomeReport(params: IncomeReportParams) {
   const nomenklaturaTable = qualifiedTable("catalog_nomenklatura");
   const magazinyTable = qualifiedTable("catalog_magaziny");
 
-  const summaryRows = await prisma.$queryRaw<
+  const summaryQuery = prisma.$queryRaw<
     Array<{
       date_from: Date | null;
       date_to: Date | null;
@@ -377,7 +342,7 @@ export async function getIncomeReport(params: IncomeReportParams) {
     from item_profit ip
   `;
 
-  const seriesRows = await prisma.$queryRaw<
+  const seriesQuery = prisma.$queryRaw<
     Array<{
       bucket: Date;
       revenue: number | null;
@@ -411,7 +376,7 @@ export async function getIncomeReport(params: IncomeReportParams) {
     order by pp.bucket asc
   `;
 
-  const storeRows = await prisma.$queryRaw<
+  const storeQuery = prisma.$queryRaw<
     Array<{
       magazin_key: string;
       store_name: string | null;
@@ -449,7 +414,7 @@ export async function getIncomeReport(params: IncomeReportParams) {
     order by sp.revenue desc
   `;
 
-  const itemRows = await prisma.$queryRaw<
+  const itemQuery = prisma.$queryRaw<
     Array<{
       nomenklatura_key: string;
       item_name: string | null;
@@ -490,7 +455,7 @@ export async function getIncomeReport(params: IncomeReportParams) {
     order by ipd.revenue desc
   `;
 
-  const storeItemRows = await prisma.$queryRaw<
+  const storeItemQuery = prisma.$queryRaw<
     Array<{
       magazin_key: string;
       store_name: string | null;
@@ -536,6 +501,15 @@ export async function getIncomeReport(params: IncomeReportParams) {
     group by sip.magazin_key, sip.nomenklatura_key, sip.sold_qty, sip.revenue, sip.cost
     order by sip.magazin_key, sip.revenue desc
   `;
+
+  const [summaryRows, seriesRows, storeRows, itemRows, storeItemRows] =
+    await Promise.all([
+      summaryQuery,
+      seriesQuery,
+      storeQuery,
+      itemQuery,
+      storeItemQuery
+    ]);
 
   const summary = summaryRows[0];
 

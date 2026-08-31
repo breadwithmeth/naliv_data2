@@ -1,5 +1,6 @@
 export type User = {
   email: string;
+  role: "admin" | "marketing";
 };
 
 export type DbTable = {
@@ -447,36 +448,36 @@ export const api = {
   overview() {
     return request<Overview>("/api/analytics/overview");
   },
-  salesReport(filters: ReportRequest) {
+  salesReport(filters: ReportRequest, signal?: AbortSignal) {
     const params = new URLSearchParams({
       period: filters.period,
       storeLimit: String(filters.storeLimit ?? 12)
     });
     appendReportParams(params, filters);
-    return request<SalesReport>(`/api/reports/sales?${params}`);
+    return request<SalesReport>(`/api/reports/sales?${params}`, { signal });
   },
-  incomeReport(filters: ReportRequest) {
+  incomeReport(filters: ReportRequest, signal?: AbortSignal) {
     const params = new URLSearchParams({
       period: filters.period,
       storeLimit: String(filters.storeLimit ?? 12)
     });
     appendReportParams(params, filters);
-    return request<IncomeReport>(`/api/reports/income?${params}`);
+    return request<IncomeReport>(`/api/reports/income?${params}`, { signal });
   },
-  nomenclatureReport(filters: ReportRequest) {
+  nomenclatureReport(filters: ReportRequest, signal?: AbortSignal) {
     const params = new URLSearchParams({ period: filters.period });
     appendReportParams(params, filters);
-    return request<NomenclatureReport>(`/api/nomenclature?${params}`);
+    return request<NomenclatureReport>(`/api/nomenclature?${params}`, { signal });
   },
-  marketingReport(filters: ReportRequest) {
+  marketingReport(filters: ReportRequest, signal?: AbortSignal) {
     const params = new URLSearchParams({ period: filters.period });
     appendReportParams(params, filters);
-    return request<MarketingReport>(`/api/marketing?${params}`);
+    return request<MarketingReport>(`/api/marketing?${params}`, { signal });
   },
-  inventoryReport(filters: ReportRequest) {
+  inventoryReport(filters: ReportRequest, signal?: AbortSignal) {
     const params = new URLSearchParams({ period: filters.period });
     appendReportParams(params, filters);
-    return request<InventoryReport>(`/api/inventory?${params}`);
+    return request<InventoryReport>(`/api/inventory?${params}`, { signal });
   },
   table(tableName: string) {
     return request<TableProfile>(

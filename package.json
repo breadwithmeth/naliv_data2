@@ -7,13 +7,14 @@
     "dev": "concurrently -k -n api,web -c green,cyan \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx watch api/src/server.ts",
     "dev:web": "vite --host 0.0.0.0",
-    "build": "DATABASE_URL=\"${DATABASE_URL:-postgresql://dummy:dummy@localhost:5432/dummy}\" npx prisma generate --schema prisma/schema.prisma && npm run build:api && npm run build:web",
+    "build": "npm run prisma:generate && npm run build:api && npm run build:web",
     "build:api": "tsc -p api/tsconfig.json",
     "build:web": "tsc -p web/tsconfig.json && vite build",
     "start": "node dist/api/server.js",
     "start:api": "node dist/api/server.js",
     "prisma:generate": "prisma generate",
     "prisma:pull": "prisma db pull --schema prisma/schema.prisma",
+    "test": "node --import tsx --test api/test/auth.test.ts",
     "typecheck": "npm run build:api && tsc -p web/tsconfig.json"
   },
   "dependencies": {

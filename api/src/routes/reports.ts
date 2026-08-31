@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler, jsonSafe } from "../lib/http.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 import { getSalesReport, getIncomeReport } from "../services/reports.js";
 
 const querySchema = z.object({
@@ -13,7 +13,7 @@ const querySchema = z.object({
 
 export const reportsRouter = Router();
 
-reportsRouter.use(requireAuth);
+reportsRouter.use(requireAuth, requireRole("admin"));
 
 reportsRouter.get(
   "/sales",

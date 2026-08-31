@@ -1,12 +1,12 @@
 import { PrismaClient } from "@prisma/client";
 import { config } from "./config.js";
 
-function databaseUrlWithPoolLimit(url: string) {
+function databaseUrlWithPoolLimit(url: string, connectionLimit: number) {
   try {
     const parsed = new URL(url);
 
     if (!parsed.searchParams.has("connection_limit")) {
-      parsed.searchParams.set("connection_limit", "1");
+      parsed.searchParams.set("connection_limit", String(connectionLimit));
     }
 
     if (!parsed.searchParams.has("pool_timeout")) {
@@ -22,7 +22,7 @@ function databaseUrlWithPoolLimit(url: string) {
 export const prisma = new PrismaClient({
   datasources: {
     db: {
-      url: databaseUrlWithPoolLimit(config.DATABASE_URL)
+      url: databaseUrlWithPoolLimit(config.DATABASE_URL, config.DB_CONNECTION_LIMIT)
     }
   },
   log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"]

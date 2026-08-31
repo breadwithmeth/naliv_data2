@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler, jsonSafe } from "../lib/http.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   getOverview,
   getTableProfile,
@@ -11,7 +11,7 @@ import {
 
 export const analyticsRouter = Router();
 
-analyticsRouter.use(requireAuth);
+analyticsRouter.use(requireAuth, requireRole("admin"));
 
 analyticsRouter.get(
   "/overview",

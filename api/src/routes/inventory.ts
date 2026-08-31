@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler, jsonSafe } from "../lib/http.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 import { getInventoryReport } from "../services/inventory.js";
 
 const querySchema = z.object({
@@ -12,7 +12,7 @@ const querySchema = z.object({
 
 export const inventoryRouter = Router();
 
-inventoryRouter.use(requireAuth);
+inventoryRouter.use(requireAuth, requireRole("admin"));
 
 inventoryRouter.get(
   "/",

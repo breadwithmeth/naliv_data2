@@ -92,7 +92,7 @@ export function App() {
 }
 
 function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
-  const [email, setEmail] = useState("admin@naliv.local");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -153,14 +153,22 @@ function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
 }
 
 function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
-  const [currentPage, setCurrentPage] = useState<AppPage>("reports");
-  const [overviewState, setOverviewState] = useState<LoadState<Overview>>({
-    status: "loading"
-  });
+  const marketingOnly = user.role === "marketing";
+  const [requestedPage, setCurrentPage] = useState<AppPage>(() =>
+    marketingOnly ? "marketing" : "reports"
+  );
+  const currentPage: AppPage = marketingOnly ? "marketing" : requestedPage;
+  const [overviewState, setOverviewState] = useState<LoadState<Overview>>(() =>
+    marketingOnly ? { status: "idle" } : { status: "loading" }
+  );
   const [selectedTable, setSelectedTable] = useState<string>("");
   const [search, setSearch] = useState("");
 
   useEffect(() => {
+    if (marketingOnly) {
+      return;
+    }
+
     api
       .overview()
       .then((overview) => {
@@ -173,7 +181,7 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
           error: caught instanceof Error ? caught.message : "Не удалось загрузить аналитику"
         })
       );
-  }, []);
+  }, [marketingOnly]);
 
   async function logout() {
     await api.logout().catch(() => undefined);
@@ -199,27 +207,31 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
           </div>
           <div>
             <strong>Naliv Analytics</strong>
-            <span>{overview?.schema ?? "raw_1c"}</span>
+            <span>{marketingOnly ? "Маркетинг" : overview?.schema ?? "raw_1c"}</span>
           </div>
         </div>
 
         <nav className="page-nav" aria-label="Разделы">
-          <button
-            className={currentPage === "reports" ? "active" : ""}
-            onClick={() => setCurrentPage("reports")}
-            type="button"
-          >
-            <Receipt size={16} />
-            <span>Отчеты</span>
-          </button>
-          <button
-            className={currentPage === "nomenclature" ? "active" : ""}
-            onClick={() => setCurrentPage("nomenclature")}
-            type="button"
-          >
-            <Package size={16} />
-            <span>Номенклатура</span>
-          </button>
+          {!marketingOnly ? (
+            <>
+              <button
+                className={currentPage === "reports" ? "active" : ""}
+                onClick={() => setCurrentPage("reports")}
+                type="button"
+              >
+                <Receipt size={16} />
+                <span>Отчеты</span>
+              </button>
+              <button
+                className={currentPage === "nomenclature" ? "active" : ""}
+                onClick={() => setCurrentPage("nomenclature")}
+                type="button"
+              >
+                <Package size={16} />
+                <span>Номенклатура</span>
+              </button>
+            </>
+          ) : null}
           <button
             className={currentPage === "marketing" ? "active" : ""}
             onClick={() => setCurrentPage("marketing")}
@@ -228,22 +240,26 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
             <Megaphone size={16} />
             <span>Маркетинг</span>
           </button>
-          <button
-            className={currentPage === "inventory" ? "active" : ""}
-            onClick={() => setCurrentPage("inventory")}
-            type="button"
-          >
-            <Boxes size={16} />
-            <span>Запасы</span>
-          </button>
-          <button
-            className={currentPage === "overview" ? "active" : ""}
-            onClick={() => setCurrentPage("overview")}
-            type="button"
-          >
-            <Database size={16} />
-            <span>База данных</span>
-          </button>
+          {!marketingOnly ? (
+            <>
+              <button
+                className={currentPage === "inventory" ? "active" : ""}
+                onClick={() => setCurrentPage("inventory")}
+                type="button"
+              >
+                <Boxes size={16} />
+                <span>Запасы</span>
+              </button>
+              <button
+                className={currentPage === "overview" ? "active" : ""}
+                onClick={() => setCurrentPage("overview")}
+                type="button"
+              >
+                <Database size={16} />
+                <span>База данных</span>
+              </button>
+            </>
+          ) : null}
         </nav>
 
         {currentPage === "overview" ? (
@@ -548,7 +564,18 @@ function ReportFilterBar({
   onDateRangeChange: (dateRange: DateRangeValue) => void;
   periodLabel?: string;
 }) {
-  const hasDateRange = Boolean(dateRange.from || dateRange.to);
+  const [draftRange, setDraftRange] = useState<DateRangeValue>(dateRange);
+
+  useEffect(() => {
+    setDraftRange(dateRange);
+  }, [dateRange.from, dateRange.to]);
+
+  const hasDateRange = Boolean(draftRange.from || draftRange.to);
+  const hasChanges =
+    draftRange.from !== dateRange.from || draftRange.to !== dateRange.to;
+  const invalidRange = Boolean(
+    draftRange.from && draftRange.to && draftRange.from > draftRange.to
+  );
 
   return (
     <div className="report-controls">
@@ -570,10 +597,10 @@ function ReportFilterBar({
           <span>С</span>
           <input
             type="date"
-            value={dateRange.from}
-            max={dateRange.to || undefined}
+            value={draftRange.from}
+            max={draftRange.to || undefined}
             onChange={(event) =>
-              onDateRangeChange({ ...dateRange, from: event.target.value })
+              setDraftRange({ ...draftRange, from: event.target.value })
             }
           />
         </label>
@@ -581,10 +608,10 @@ function ReportFilterBar({
           <span>По</span>
           <input
             type="date"
-            value={dateRange.to}
-            min={dateRange.from || undefined}
+            value={draftRange.to}
+            min={draftRange.from || undefined}
             onChange={(event) =>
-              onDateRangeChange({ ...dateRange, to: event.target.value })
+              setDraftRange({ ...draftRange, to: event.target.value })
             }
           />
         </label>
@@ -592,13 +619,24 @@ function ReportFilterBar({
           <button
             className="date-reset-button"
             type="button"
-            onClick={() => onDateRangeChange(emptyDateRange)}
+            onClick={() => {
+              setDraftRange(emptyDateRange);
+              onDateRangeChange(emptyDateRange);
+            }}
             title="Сбросить диапазон дат"
           >
             <RotateCcw size={15} />
             <span>Сбросить</span>
           </button>
         ) : null}
+        <button
+          className="date-apply-button"
+          type="button"
+          disabled={!hasChanges || invalidRange}
+          onClick={() => onDateRangeChange(draftRange)}
+        >
+          Применить
+        </button>
       </div>
     </div>
   );
@@ -617,16 +655,27 @@ function SalesReports({
   });
 
   useEffect(() => {
+    const controller = new AbortController();
     setReportState({ status: "loading" });
     api
-      .salesReport({ period, ...dateRange })
-      .then((report) => setReportState({ status: "success", data: report }))
-      .catch((caught) =>
+      .salesReport({ period, ...dateRange }, controller.signal)
+      .then((report) => {
+        if (!controller.signal.aborted) {
+          setReportState({ status: "success", data: report });
+        }
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
         setReportState({
           status: "error",
           error: caught instanceof Error ? caught.message : "Не удалось загрузить отчеты"
-        })
-      );
+        });
+      });
+
+    return () => controller.abort();
   }, [dateRange.from, dateRange.to, period]);
 
   return (
@@ -682,7 +731,7 @@ function SalesReportBody({
       <section className="metric-grid report-metric-grid" aria-label="Метрики продаж">
         <MetricCard
           icon={<Receipt size={18} />}
-          label="Выручка"
+          label="Выручка за выбранный период"
           value={formatMoney(report.summary.revenue)}
         />
         <MetricCard
@@ -786,8 +835,8 @@ function SalesReportBody({
 
       <section className="panel">
         <div className="panel-title">
-          <h3>Тепловая карта чеков</h3>
-          <span>источник: document_chek_kkm, строка = магазин, колонка = час</span>
+          <h3>Тепловая карта отчетов розницы</h3>
+          <span>источник: document_otchet_o_roznichnyh_prodazhah, строка = магазин, колонка = час</span>
         </div>
         {activeWeekday ? (
           <SalesHeatmap
@@ -804,7 +853,7 @@ function SalesReportBody({
       <section className="panel">
         <div className="panel-title">
           <h3>Тепловая карта суммы продаж</h3>
-          <span>источник: document_chek_kkm, строка = магазин, колонка = час</span>
+          <span>источник: document_otchet_o_roznichnyh_prodazhah, строка = магазин, колонка = час</span>
         </div>
         {activeWeekday ? (
           <SalesHeatmap
@@ -947,7 +996,7 @@ function SalesHeatmap({
                   title={
                     metric === "revenue"
                       ? `${store.name}, ${weekdayLabel}, ${hour}:00 · ${formatMoney(cell?.revenue ?? 0)}`
-                      : `${store.name}, ${weekdayLabel}, ${hour}:00 · ${formatNumber(cell?.orderCount ?? 0)} чеков · ${formatMoney(cell?.revenue ?? 0)}`
+                      : `${store.name}, ${weekdayLabel}, ${hour}:00 · ${formatNumber(cell?.orderCount ?? 0)} отчетов · ${formatMoney(cell?.revenue ?? 0)}`
                   }
                   style={{ "--heat": intensity } as CSSProperties}
                 >
@@ -967,7 +1016,7 @@ function SalesHeatmap({
         <span>
           {metric === "revenue"
             ? `Цвет и значение показывают сумму продаж по магазинам за ${weekdayLabel.toLowerCase()} по часам.`
-            : `Цвет и значение показывают количество чеков по магазинам за ${weekdayLabel.toLowerCase()} по часам.`}
+            : `Цвет и значение показывают количество отчетов розницы по магазинам за ${weekdayLabel.toLowerCase()} по часам.`}
         </span>
       </div>
     </div>
@@ -1049,16 +1098,27 @@ function IncomeReports({
   });
 
   useEffect(() => {
+    const controller = new AbortController();
     setReportState({ status: "loading" });
     api
-      .incomeReport({ period, ...dateRange })
-      .then((report) => setReportState({ status: "success", data: report }))
-      .catch((caught) =>
+      .incomeReport({ period, ...dateRange }, controller.signal)
+      .then((report) => {
+        if (!controller.signal.aborted) {
+          setReportState({ status: "success", data: report });
+        }
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
         setReportState({
           status: "error",
           error: caught instanceof Error ? caught.message : "Не удалось загрузить отчет о доходе"
-        })
-      );
+        });
+      });
+
+    return () => controller.abort();
   }, [dateRange.from, dateRange.to, period]);
 
   return (
@@ -1126,7 +1186,7 @@ function IncomeReportBody({
       <section className="metric-grid report-metric-grid" aria-label="Метрики дохода">
         <MetricCard
           icon={<Receipt size={18} />}
-          label="Выручка"
+          label="Выручка за выбранный период"
           value={formatMoney(report.summary.revenue)}
         />
         <MetricCard
@@ -1370,16 +1430,27 @@ function MarketingReports() {
   const [state, setState] = useState<LoadState<MarketingReport>>({ status: "loading" });
 
   useEffect(() => {
+    const controller = new AbortController();
     setState({ status: "loading" });
     api
-      .marketingReport({ period, ...dateRange })
-      .then((report) => setState({ status: "success", data: report }))
-      .catch((caught) =>
+      .marketingReport({ period, ...dateRange }, controller.signal)
+      .then((report) => {
+        if (!controller.signal.aborted) {
+          setState({ status: "success", data: report });
+        }
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
         setState({
           status: "error",
           error: caught instanceof Error ? caught.message : "Не удалось загрузить маркетинговый отчет"
-        })
-      );
+        });
+      });
+
+    return () => controller.abort();
   }, [dateRange.from, dateRange.to, period]);
 
   return (
@@ -1387,7 +1458,7 @@ function MarketingReports() {
       <div className="section-heading row">
         <div>
           <h2>Маркетинг</h2>
-          <span>document_chek_kkm_tovary · document_chek_kkm_skidki_natsenki · document_marketingovaya_aktsiya</span>
+          <span>document_otchet_o_roznichnyh_prodazhah · document_otchet_o_roznichnyh_prodazhah_tovary</span>
         </div>
         <ReportFilterBar
           period={period}
@@ -1439,7 +1510,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
         />
         <MetricCard
           icon={<ShoppingCart size={18} />}
-          label="Продаж всего"
+          label="Отчетов розницы"
           value={formatNumber(report.summary.totalChecks)}
         />
         <MetricCard
@@ -1461,7 +1532,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
           </div>
           <div className="stack-list">
             <div className="summary-row">
-              <strong>Продаж</strong>
+              <strong>Отчетов</strong>
               <span>{formatNumber(report.salesWithoutDiscounts.checkCount)}</span>
             </div>
             <div className="summary-row">
@@ -1469,7 +1540,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
               <span>{formatMoney(report.salesWithoutDiscounts.revenue)}</span>
             </div>
             <div className="summary-row">
-              <strong>Средний чек</strong>
+              <strong>Средняя сумма отчета</strong>
               <span>{formatMoney(report.salesWithoutDiscounts.avgCheck)}</span>
             </div>
           </div>
@@ -1481,7 +1552,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
           </div>
           <div className="stack-list">
             <div className="summary-row">
-              <strong>Продаж</strong>
+              <strong>Отчетов</strong>
               <span>{formatNumber(report.salesWithDiscounts.checkCount)}</span>
             </div>
             <div className="summary-row">
@@ -1493,7 +1564,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
               <span>{formatMoney(report.salesWithDiscounts.discountAmount)}</span>
             </div>
             <div className="summary-row">
-              <strong>Средний чек</strong>
+              <strong>Средняя сумма отчета</strong>
               <span>{formatMoney(report.salesWithDiscounts.avgCheck)}</span>
             </div>
           </div>
@@ -1523,7 +1594,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
               <thead>
                 <tr>
                   <th>Акция</th>
-                  <th className="num">Продаж</th>
+                  <th className="num">Отчетов</th>
                   <th className="num">Выручка</th>
                   <th className="num">Скидка</th>
                   <th className="num">Средняя скидка</th>
@@ -1582,7 +1653,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
               <thead>
                 <tr>
                   <th>Магазин</th>
-                  <th className="num">Продаж всего</th>
+                  <th className="num">Отчетов всего</th>
                   <th className="num">Со скидкой</th>
                   <th className="num">Выручка</th>
                   <th className="num">Скидка</th>
@@ -1624,7 +1695,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
                 <thead>
                   <tr>
                     <th>Акция</th>
-                    <th className="num">Продаж</th>
+                    <th className="num">Отчетов</th>
                     <th className="num">Выручка</th>
                     <th className="num">Скидка</th>
                     <th className="num">Средняя скидка</th>
@@ -1662,7 +1733,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
         </div>
         <div className="stack-list">
           <div className="summary-row">
-            <strong>Доля продаж со скидкой</strong>
+            <strong>Доля отчетов со скидкой</strong>
             <span>
               {report.summary.totalChecks > 0
                 ? `${formatDecimal(
@@ -1696,7 +1767,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
             </span>
           </div>
           <div className="summary-row">
-            <strong>Средняя скидка по всем чекам</strong>
+            <strong>Средняя скидка по всем отчетам</strong>
             <span>{formatDecimal(report.summary.avgDiscountPct, 1)}%</span>
           </div>
         </div>
@@ -1835,7 +1906,7 @@ function PromoAnalyticsTree({
                   <span className="promo-node-title">
                     <strong>{promo.name}</strong>
                     <span>
-                      {formatNumber(promo.checkCount)} продаж · {formatNumber(promo.storeCount)} магазинов · {formatNumber(promo.itemCount)} товаров · документы {formatMoneyCompact(promo.checkRevenue)}
+                      {formatNumber(promo.checkCount)} отчетов · {formatNumber(promo.storeCount)} магазинов · {formatNumber(promo.itemCount)} товаров · сумма отчетов {formatMoneyCompact(promo.checkRevenue)}
                     </span>
                   </span>
                   <span className="promo-node-metrics">
@@ -1868,7 +1939,7 @@ function PromoAnalyticsTree({
                             <span className="promo-node-title">
                               <strong>{store.name}</strong>
                               <span>
-                                {formatNumber(store.checkCount)} продаж · {formatNumber(store.itemCount)} товаров · документы {formatMoneyCompact(store.checkRevenue)}
+                                {formatNumber(store.checkCount)} отчетов · {formatNumber(store.itemCount)} товаров · сумма отчетов {formatMoneyCompact(store.checkRevenue)}
                               </span>
                             </span>
                             <span className="promo-node-metrics compact">
@@ -1886,7 +1957,7 @@ function PromoAnalyticsTree({
                                   <thead>
                                     <tr>
                                       <th>Номенклатура</th>
-                                      <th className="num">Продаж</th>
+                                      <th className="num">Отчетов</th>
                                       <th className="num">Кол-во</th>
                                       <th className="num">Выручка</th>
                                       <th className="num">Скидка</th>
@@ -1947,19 +2018,28 @@ function InventoryReports() {
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
+    const controller = new AbortController();
     setState({ status: "loading" });
     api
-      .inventoryReport({ period, ...dateRange })
+      .inventoryReport({ period, ...dateRange }, controller.signal)
       .then((report) => {
-        setState({ status: "success", data: report });
-        setExpandedSections({});
+        if (!controller.signal.aborted) {
+          setState({ status: "success", data: report });
+          setExpandedSections({});
+        }
       })
-      .catch((caught) =>
+      .catch((caught) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
         setState({
           status: "error",
           error: caught instanceof Error ? caught.message : "Не удалось загрузить отчет по запасам"
-        })
-      );
+        });
+      });
+
+    return () => controller.abort();
   }, [dateRange.from, dateRange.to, period]);
 
   const report = state.data;
@@ -2162,16 +2242,27 @@ function NomenclatureReports() {
   const [showAllExit, setShowAllExit] = useState(false);
 
   useEffect(() => {
+    const controller = new AbortController();
     setState({ status: "loading" });
     api
-      .nomenclatureReport({ period, ...dateRange })
-      .then((report) => setState({ status: "success", data: report }))
-      .catch((caught) =>
+      .nomenclatureReport({ period, ...dateRange }, controller.signal)
+      .then((report) => {
+        if (!controller.signal.aborted) {
+          setState({ status: "success", data: report });
+        }
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
         setState({
           status: "error",
           error: caught instanceof Error ? caught.message : "Не удалось загрузить анализ номенклатуры"
-        })
-      );
+        });
+      });
+
+    return () => controller.abort();
   }, [dateRange.from, dateRange.to, period]);
 
   const report = state.data;
