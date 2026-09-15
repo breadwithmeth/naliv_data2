@@ -280,54 +280,38 @@ async function getSampleRows(tableName: string) {
   );
 }
 
-async function getNumericSummaries(tableName: string, columns: DbColumn[]) {
-  const targets = columns.filter((column) => column.isNumeric).slice(0, 8);
+export async function getColumnSummaries(tableName: string, columns: DbColumn[]) {
+  const numeric = columns.filter((column) => column.isNumeric).slice(0, 8);
+  const temporal = columns.filter((column) => column.isTemporal).slice(0, 8);
+  const targets = [...numeric, ...temporal];
+  if (!targets.length) return { numericSummaries: [], temporalSummaries: [] };
 
-  return Promise.all(
-    targets.map(async (column) => {
-      const rows = await prisma.$queryRawUnsafe<
-        Array<{ min: unknown; max: unknown; avg: number | null; filled: bigint | number }>
-      >(
-        `select min(${quoteIdent(column.name)})::text as min,
-                max(${quoteIdent(column.name)})::text as max,
-                avg(${quoteIdent(column.name)})::float8 as avg,
-                count(${quoteIdent(column.name)}) as filled
-         from ${qualifiedTable(tableName)}`
-      );
-
-      return {
-        column: column.name,
-        min: rows[0]?.min ?? null,
-        max: rows[0]?.max ?? null,
-        avg: rows[0]?.avg ?? null,
-        filled: Number(rows[0]?.filled ?? 0)
-      };
-    })
+  // All min/max/average/count metrics share one scan of the source table.
+  const expressions = targets.flatMap((column, index) => {
+    const name = quoteIdent(column.name);
+    return [
+      `min(${name})::text as "min_${index}"`,
+      `max(${name})::text as "max_${index}"`,
+      `count(${name}) as "filled_${index}"`,
+      ...(index < numeric.length ? [`avg(${name})::float8 as "avg_${index}"`] : [])
+    ];
+  });
+  const [row] = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+    `select ${expressions.join(", ")} from ${qualifiedTable(tableName)}`
   );
-}
-
-async function getTemporalSummaries(tableName: string, columns: DbColumn[]) {
-  const targets = columns.filter((column) => column.isTemporal).slice(0, 8);
-
-  return Promise.all(
-    targets.map(async (column) => {
-      const rows = await prisma.$queryRawUnsafe<
-        Array<{ min: string | null; max: string | null; filled: bigint | number }>
-      >(
-        `select min(${quoteIdent(column.name)})::text as min,
-                max(${quoteIdent(column.name)})::text as max,
-                count(${quoteIdent(column.name)}) as filled
-         from ${qualifiedTable(tableName)}`
-      );
-
-      return {
-        column: column.name,
-        min: rows[0]?.min ?? null,
-        max: rows[0]?.max ?? null,
-        filled: Number(rows[0]?.filled ?? 0)
-      };
-    })
-  );
+  const summary = (column: DbColumn, index: number) => ({
+    column: column.name,
+    min: row?.[`min_${index}`] ?? null,
+    max: row?.[`max_${index}`] ?? null,
+    filled: Number(row?.[`filled_${index}`] ?? 0)
+  });
+  return {
+    numericSummaries: numeric.map((column, index) => ({
+      ...summary(column, index),
+      avg: row?.[`avg_${index}`] ?? null
+    })),
+    temporalSummaries: temporal.map((column, index) => summary(column, numeric.length + index))
+  };
 }
 
 async function getTopValues(tableName: string, columns: DbColumn[]) {
@@ -362,11 +346,10 @@ export async function getTableProfile(tableName: string) {
 
   const [tables, columns] = await Promise.all([getTables(), getColumns(tableName)]);
   const meta = tables.find((table) => table.name === tableName);
-  const [sampleRows, numericSummaries, temporalSummaries, topValues] =
+  const [sampleRows, { numericSummaries, temporalSummaries }, topValues] =
     await Promise.all([
       getSampleRows(tableName),
-      getNumericSummaries(tableName, columns),
-      getTemporalSummaries(tableName, columns),
+      getColumnSummaries(tableName, columns),
       getTopValues(tableName, columns)
     ]);
 

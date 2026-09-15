@@ -14,8 +14,9 @@
     "start:api": "node dist/api/server.js",
     "prisma:generate": "prisma generate",
     "prisma:pull": "prisma db pull --schema prisma/schema.prisma",
-    "test": "node --import tsx --test api/test/auth.test.ts",
-    "typecheck": "npm run build:api && tsc -p web/tsconfig.json"
+    "test": "node --import tsx --test api/test/*.test.ts",
+    "typecheck": "npm run build:api && tsc -p web/tsconfig.json",
+    "db:optimize": "tsx api/src/scripts/optimize-db.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.10.1",

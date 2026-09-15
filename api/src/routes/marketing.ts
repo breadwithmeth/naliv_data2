@@ -1,6 +1,7 @@
+import { sendCachedJson } from "../lib/cached-json.js";
 import { Router } from "express";
 import { z } from "zod";
-import { asyncHandler, jsonSafe } from "../lib/http.js";
+import { asyncHandler } from "../lib/http.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { getMarketingReport } from "../services/marketing.js";
 
@@ -18,6 +19,6 @@ marketingRouter.get(
   "/",
   asyncHandler(async (req, res) => {
     const query = querySchema.parse(req.query);
-    res.json(jsonSafe(await getMarketingReport(query)));
+    await sendCachedJson(req, res, ["getMarketingReport", query], () => getMarketingReport(query));
   })
 );

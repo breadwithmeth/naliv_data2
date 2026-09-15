@@ -31,9 +31,9 @@ function dailySalesCte(params: NomenclatureParams) {
 
   const filters: Prisma.Sql[] = [
     Prisma.sql`r.date is not null`,
-    Prisma.sql`coalesce(r.deletion_mark, false) = false`,
-    Prisma.sql`coalesce(r.posted, false) = true`,
-    Prisma.sql`coalesce(r.summa_dokumenta, 0) > 0`
+    Prisma.sql`r.deletion_mark is not true`,
+    Prisma.sql`r.posted = true`,
+    Prisma.sql`r.summa_dokumenta > 0`
   ];
 
   if (params.from) {
@@ -55,7 +55,7 @@ function dailySalesCte(params: NomenclatureParams) {
       join ${reportsTable} r on r.ref_key = ri."_parent_ref_key"
       where ${Prisma.join(filters, " and ")}
         and ri.nomenklatura_key is not null
-        and coalesce(ri.kolichestvo, 0) > 0
+        and ri.kolichestvo > 0
       group by date_trunc('day', r.date), ri.nomenklatura_key
     )
   `;
@@ -72,8 +72,8 @@ function itemCostsCte() {
         avg(pt.tsena)::float8 as avg_purchase_price
       from ${postuplenieTovaryTable} pt
       join ${postuplenieTable} p on p.ref_key = pt."_parent_ref_key"
-      where coalesce(p.deletion_mark, false) = false
-        and coalesce(p.posted, false) = true
+      where p.deletion_mark is not true
+        and p.posted = true
         and pt.nomenklatura_key is not null
         and pt.tsena is not null
         and pt.tsena > 0
@@ -323,21 +323,6 @@ export async function getNomenclatureReport(
   const postuplenieTable = qualifiedTable("document_postuplenie_tovarov");
   const postuplenieItemsTable = qualifiedTable("document_postuplenie_tovarov_tovary");
 
-  const reportFilters: Prisma.Sql[] = [
-    Prisma.sql`r.date is not null`,
-    Prisma.sql`coalesce(r.deletion_mark, false) = false`,
-    Prisma.sql`coalesce(r.posted, false) = true`,
-    Prisma.sql`coalesce(r.summa_dokumenta, 0) > 0`
-  ];
-
-  if (params.from) {
-    reportFilters.push(Prisma.sql`r.date >= ${params.from}`);
-  }
-
-  if (params.to) {
-    reportFilters.push(Prisma.sql`r.date < ${params.to}`);
-  }
-
   const balanceFilters: Prisma.Sql[] = [Prisma.sql`b.balance_period is not null`];
 
   if (params.from) {
@@ -449,6 +434,21 @@ export async function getNomenclatureReport(
     order by r.total_revenue desc
   `;
 
+  // Period-scoped predicate. The merged sales_activity CTE applies it as an
+  // aggregate filter over rows that must also feed each item's last sale date,
+  // so it can no longer sit in the WHERE clause of a separate period query.
+  const periodFilters: Prisma.Sql[] = [Prisma.sql`r.summa_dokumenta > 0`];
+
+  if (params.from) {
+    periodFilters.push(Prisma.sql`r.date >= ${params.from}`);
+  }
+
+  if (params.to) {
+    periodFilters.push(Prisma.sql`r.date < ${params.to}`);
+  }
+
+  const periodOnly = Prisma.join(periodFilters, " and ");
+
   const exitRowsQuery = prisma.$queryRaw<ExitProductRow[]>`
     with
     latest_balance_period as (
@@ -468,40 +468,30 @@ export async function getNomenclatureReport(
       where b.nomenklatura_key is not null
       group by b.nomenklatura_key
     ),
-    sales_in_period as (
+    -- Period metrics, period bounds, and each item's last sale all come from the
+    -- same rows; conditional aggregates over one scan replace three scans.
+    sales_activity as (
       select
         ri.nomenklatura_key,
-        coalesce(sum(ri.kolichestvo), 0)::float8 as recent_sold_qty,
-        coalesce(sum(ri.summa), 0)::float8 as recent_revenue,
-        count(distinct date_trunc('day', r.date))::int as recent_days_active,
-        max(r.date) as last_sale_in_period
-      from ${reportItemsTable} ri
-      join ${reportsTable} r on r.ref_key = ri."_parent_ref_key"
-      where ${Prisma.join(reportFilters, " and ")}
-        and ri.nomenklatura_key is not null
-        and coalesce(ri.kolichestvo, 0) > 0
-      group by ri.nomenklatura_key
-    ),
-    sales_bounds as (
-      select min(r.date) as period_start, max(r.date) as period_end
-      from ${reportItemsTable} ri
-      join ${reportsTable} r on r.ref_key = ri."_parent_ref_key"
-      where ${Prisma.join(reportFilters, " and ")}
-        and ri.nomenklatura_key is not null
-        and coalesce(ri.kolichestvo, 0) > 0
-    ),
-    last_sales as (
-      select
-        ri.nomenklatura_key,
-        max(r.date) as last_sale_date
+        coalesce(sum(ri.kolichestvo) filter (where ${periodOnly}), 0)::float8 as recent_sold_qty,
+        coalesce(sum(ri.summa) filter (where ${periodOnly}), 0)::float8 as recent_revenue,
+        count(distinct date_trunc('day', r.date)) filter (where ${periodOnly})::int as recent_days_active,
+        max(r.date) filter (where ${periodOnly}) as last_sale_in_period,
+        max(r.date) as last_sale_date,
+        min(r.date) filter (where ${periodOnly}) as period_start,
+        max(r.date) filter (where ${periodOnly}) as period_end
       from ${reportItemsTable} ri
       join ${reportsTable} r on r.ref_key = ri."_parent_ref_key"
       where r.date is not null
-        and coalesce(r.deletion_mark, false) = false
-        and coalesce(r.posted, false) = true
+        and r.deletion_mark is not true
+        and r.posted = true
         and ri.nomenklatura_key is not null
-        and coalesce(ri.kolichestvo, 0) > 0
+        and ri.kolichestvo > 0
       group by ri.nomenklatura_key
+    ),
+    sales_bounds as (
+      select min(period_start) as period_start, max(period_end) as period_end
+      from sales_activity
     ),
     purchases as (
       select
@@ -511,8 +501,8 @@ export async function getNomenclatureReport(
       from ${postuplenieItemsTable} pt
       join ${postuplenieTable} p on p.ref_key = pt."_parent_ref_key"
       where p.date is not null
-        and coalesce(p.deletion_mark, false) = false
-        and coalesce(p.posted, false) = true
+        and p.deletion_mark is not true
+        and p.posted = true
         and pt.nomenklatura_key is not null
         and pt.tsena is not null
         and pt.tsena > 0
@@ -524,11 +514,11 @@ export async function getNomenclatureReport(
       greatest(bs.stock_qty, 0)::float8 as stock_qty,
       greatest(bs.reserved_qty, 0)::float8 as reserved_qty,
       bs.warehouse_count,
-      coalesce(sp.recent_sold_qty, 0)::float8 as recent_sold_qty,
-      coalesce(sp.recent_revenue, 0)::float8 as recent_revenue,
-      coalesce(sp.recent_days_active, 0)::int as recent_days_active,
-      sp.last_sale_in_period,
-      ls.last_sale_date,
+      coalesce(sa.recent_sold_qty, 0)::float8 as recent_sold_qty,
+      coalesce(sa.recent_revenue, 0)::float8 as recent_revenue,
+      coalesce(sa.recent_days_active, 0)::int as recent_days_active,
+      sa.last_sale_in_period,
+      sa.last_sale_date,
       p.last_purchase_date,
       coalesce(p.avg_purchase_price, 0)::float8 as avg_purchase_price,
       bs.stock_period,
@@ -536,15 +526,14 @@ export async function getNomenclatureReport(
       sb.period_end
     from balance_stock bs
     cross join sales_bounds sb
-    left join sales_in_period sp on sp.nomenklatura_key = bs.nomenklatura_key
-    left join last_sales ls on ls.nomenklatura_key = bs.nomenklatura_key
+    left join sales_activity sa on sa.nomenklatura_key = bs.nomenklatura_key
     left join purchases p on p.nomenklatura_key = bs.nomenklatura_key
     left join ${nomenklaturaTable} n on n.ref_key = bs.nomenklatura_key
     where bs.stock_qty > 0
     group by
       bs.nomenklatura_key, bs.stock_qty, bs.reserved_qty, bs.warehouse_count,
-      sp.recent_sold_qty, sp.recent_revenue, sp.recent_days_active, sp.last_sale_in_period,
-      ls.last_sale_date, p.last_purchase_date, p.avg_purchase_price,
+      sa.recent_sold_qty, sa.recent_revenue, sa.recent_days_active, sa.last_sale_in_period,
+      sa.last_sale_date, p.last_purchase_date, p.avg_purchase_price,
       bs.stock_period, sb.period_start, sb.period_end
   `;
 

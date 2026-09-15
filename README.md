@@ -60,7 +60,86 @@ compatibility flag is supplied. Detailed commands are in
 
 ## Performance tuning
 
+Install the analytics indexes once for each populated database:
+
+```powershell
+npm run db:optimize                  # print the SQL without changing the database
+npm run db:optimize -- --apply       # build indexes concurrently, then ANALYZE
+```
+
+For a production installation with only compiled files, use
+`node dist/api/scripts/optimize-db.js --apply`. The command uses `DATABASE_URL`
+and `PGSCHEMA`, requires the table owner's database privileges, and can be rerun.
+It uses a dedicated single-connection pool and builds one index at a time outside
+a transaction. Normal reads and writes can continue during index creation.
+An interrupted concurrent build may leave an invalid index; the script reports
+that condition rather than silently treating the invalid index as installed.
+
+The exporter creates partial unique indexes for upserts. Those do not cover
+analytics joins on `_parent_ref_key`; full reference-key indexes also allow
+joins without assuming every source key is nonempty. Date and balance-period
+indexes support bounded reports. These indexes persist across normal exports.
+Sales now filters reports before aggregating their lines, marketing derives its
+summary from the store aggregate, and table profiles compute numeric and date
+summaries in a single table scan.
+
+Authenticated report responses have a bounded, per-process cache: by default
+`REPORT_CACHE_TTL_SECONDS=60`, `REPORT_CACHE_MAX_MB=64`, and at most 128 entries.
+Identical simultaneous requests share one load. Keys include the schema, role,
+endpoint, and validated parameters. Authentication and role checks run before
+every lookup; browser responses remain `Cache-Control: no-store`. Data can lag
+an export by at most the TTL after a report finishes computing. Set the TTL to
+`0` to disable retention while retaining concurrent-request sharing. Restarting
+the API clears its cache. Errors and oversized responses are not retained.
+`X-Report-Cache` (`miss`, `shared`, `hit`) and `Server-Timing` expose request
+timings in browser developer tools without logging report contents.
+
 Independent report queries use the database pool concurrently. The default
 pool size is `DB_CONNECTION_LIMIT=5`; increase it only when PostgreSQL has spare
 connection and CPU capacity. A `connection_limit` already present in
 `DATABASE_URL` takes precedence.
+
+Validation on 2026-09-07 for `from=2026-08-24&to=2026-09-01&period=day`:
+
+| Request | Before | After (uncached service) |
+| --- | ---: | ---: |
+| Marketing | 110.84 s | 0.47 s |
+| Sales | 1.49 s | 0.34 s |
+| Income | — | 0.73 s |
+| Inventory | — | 2.53 s |
+| Nomenclature | — | 0.30 s |
+
+These are individual measurements against the configured database, not load-test
+percentiles. Marketing and sales responses matched their captured baselines
+within floating-point rounding. After installing the indexes, the public
+marketing URL also returned HTTP 200 in 0.51 s before deploying the API changes.
+The API code and cache require a normal application rebuild/redeployment.
+
+Each report now spends one scan per source line table. Sales and income compute
+their period series and grand summary in one `GROUPING SETS` scan, and derive
+per-store and per-item totals from the heatmap cells or store-item rows instead
+of re-aggregating the same lines. Measured on 2026-09-15 against the same
+database, one uncached service call per endpoint, so the before and after values
+below are a same-day pair on the range above:
+
+| Request | Queries per request | Before | After |
+| --- | ---: | ---: | ---: |
+| Sales | 4 → 2 | 0.88 s | 0.52 s |
+| Income | 5 → 2 | 1.04 s | 0.50 s |
+
+Inventory reads each of the two line tables once instead of twice (2.17 s →
+2.03 s, four alternating raw-query runs per query on the range above; the service
+call adds row mapping on top of both). The nomenclature exit query merges its
+period metrics, period bounds, and per-item last-sale lookups into one pass
+(3.7 s → 1.7 s for `from=2026-06-02&to=2026-09-16`, where stock balances exist —
+the standard range has no balance snapshot, so that query returns no rows there
+and reports nothing either way). All rewrites were verified row-for-row against
+the previous implementations on the same database, except for floating-point
+summation order; the report integration test pins the derived income totals and
+the inventory key set.
+
+Run `npm test` for cache and authorization regressions and `npm run build` for
+the API and web build. Set `ANALYTICS_TEST_DATABASE_URL` to a PostgreSQL connection
+URL to enable the additional report integration test. That test uses only
+connection-local temporary tables, including discount, null, duplicate-catalog,
+empty-period, and date-boundary fixtures; it does not modify source data.

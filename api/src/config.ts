@@ -8,6 +8,8 @@ const configSchema = z
     DATABASE_URL: z.string().min(1),
     PGSCHEMA: z.string().min(1).default("raw_1c"),
     DB_CONNECTION_LIMIT: z.coerce.number().int().positive().max(50).default(5),
+    REPORT_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(3600).default(60),
+    REPORT_CACHE_MAX_MB: z.coerce.number().int().positive().max(1024).default(64),
     PORT: z.coerce.number().int().positive().default(4000),
     WEB_ORIGIN: z.string().url().default("http://localhost:5173"),
     APP_ADMIN_EMAIL: z.string().email(),

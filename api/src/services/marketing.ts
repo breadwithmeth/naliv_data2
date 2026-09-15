@@ -47,9 +47,9 @@ type PromoAnalyticsRow = {
 function retailReportFilters(params: MarketingParams) {
   const filters: Prisma.Sql[] = [
     Prisma.sql`r.date is not null`,
-    Prisma.sql`coalesce(r.deletion_mark, false) = false`,
-    Prisma.sql`coalesce(r.posted, false) = true`,
-    Prisma.sql`coalesce(r.summa_dokumenta, 0) > 0`
+    Prisma.sql`r.deletion_mark is not true`,
+    Prisma.sql`r.posted = true`,
+    Prisma.sql`r.summa_dokumenta > 0`
   ];
 
   if (params.from) {
@@ -81,46 +81,6 @@ export async function getMarketingReport(params: MarketingParams) {
   const whereSql = retailReportFilters(params);
   const unknownStore = "Без магазина";
 
-  const summaryQuery = prisma.$queryRaw<
-    Array<{
-      total_report_count: bigint | number;
-      discounted_report_count: bigint | number;
-      total_revenue: number | null;
-      revenue_with_discounts: number | null;
-      revenue_without_discounts: number | null;
-      total_discount_amount: number | null;
-    }>
-  >`
-    with report_discounts as (
-      select
-        r."_id" as report_id,
-        coalesce(r.summa_dokumenta, 0)::float8 as revenue,
-        coalesce(bool_or(coalesce(t.protsent_skidki_natsenki, 0) > 0), false) as has_discount,
-        coalesce(sum(
-          case
-            when coalesce(t.protsent_skidki_natsenki, 0) > 0
-              and coalesce(t.protsent_skidki_natsenki, 0) < 100
-            then coalesce(t.summa, 0)::numeric
-              * t.protsent_skidki_natsenki::numeric
-              / (100 - t.protsent_skidki_natsenki)::numeric
-            else 0
-          end
-        ), 0)::float8 as discount_amount
-      from ${reportsTable} r
-      left join ${itemsTable} t on t."_parent_ref_key" = r.ref_key
-      where ${whereSql}
-      group by r."_id", r.summa_dokumenta
-    )
-    select
-      count(*) as total_report_count,
-      count(*) filter (where has_discount) as discounted_report_count,
-      coalesce(sum(revenue), 0)::float8 as total_revenue,
-      coalesce(sum(revenue) filter (where has_discount), 0)::float8 as revenue_with_discounts,
-      coalesce(sum(revenue) filter (where not has_discount), 0)::float8 as revenue_without_discounts,
-      coalesce(sum(discount_amount), 0)::float8 as total_discount_amount
-    from report_discounts
-  `;
-
   const storeQuery = prisma.$queryRaw<
     Array<{
       magazin_key: string;
@@ -129,6 +89,8 @@ export async function getMarketingReport(params: MarketingParams) {
       total_revenue: number | null;
       discounted_reports: bigint | number;
       discount_amount: number | null;
+      revenue_with_discounts: number | null;
+      revenue_without_discounts: number | null;
     }>
   >`
     with report_discounts as (
@@ -136,10 +98,10 @@ export async function getMarketingReport(params: MarketingParams) {
         r."_id" as report_id,
         coalesce(nullif(r.magazin_key, ''), ${unknownStore}) as store_key,
         coalesce(r.summa_dokumenta, 0)::float8 as revenue,
-        coalesce(bool_or(coalesce(t.protsent_skidki_natsenki, 0) > 0), false) as has_discount,
+        coalesce(bool_or(t.protsent_skidki_natsenki > 0), false) as has_discount,
         coalesce(sum(
           case
-            when coalesce(t.protsent_skidki_natsenki, 0) > 0
+            when t.protsent_skidki_natsenki > 0
               and coalesce(t.protsent_skidki_natsenki, 0) < 100
             then coalesce(t.summa, 0)::numeric
               * t.protsent_skidki_natsenki::numeric
@@ -158,6 +120,8 @@ export async function getMarketingReport(params: MarketingParams) {
         count(*) as total_reports,
         coalesce(sum(revenue), 0)::float8 as total_revenue,
         count(*) filter (where has_discount) as discounted_reports,
+        coalesce(sum(revenue) filter (where has_discount), 0)::float8 as revenue_with_discounts,
+        coalesce(sum(revenue) filter (where not has_discount), 0)::float8 as revenue_without_discounts,
         coalesce(sum(discount_amount), 0)::float8 as discount_amount
       from report_discounts
       group by store_key
@@ -168,7 +132,9 @@ export async function getMarketingReport(params: MarketingParams) {
       st.total_reports,
       st.total_revenue,
       st.discounted_reports,
-      st.discount_amount
+      st.discount_amount,
+      st.revenue_with_discounts,
+      st.revenue_without_discounts
     from store_totals st
     left join ${storesTable} m on m.ref_key = st.store_key
     group by
@@ -176,7 +142,9 @@ export async function getMarketingReport(params: MarketingParams) {
       st.total_reports,
       st.total_revenue,
       st.discounted_reports,
-      st.discount_amount
+      st.discount_amount,
+      st.revenue_with_discounts,
+      st.revenue_without_discounts
     order by st.total_revenue desc
   `;
 
@@ -213,8 +181,8 @@ export async function getMarketingReport(params: MarketingParams) {
       from retail_reports rr
       join ${itemsTable} t on t."_parent_ref_key" = rr.ref_key
       where t.nomenklatura_key is not null
-        and coalesce(t.kolichestvo, 0) > 0
-        and coalesce(t.protsent_skidki_natsenki, 0) > 0
+        and t.kolichestvo > 0
+        and t.protsent_skidki_natsenki > 0
     ),
     promo_item_lines as (
       select
@@ -354,22 +322,15 @@ export async function getMarketingReport(params: MarketingParams) {
     order by pt.item_revenue desc, srt.item_revenue desc, it.item_revenue desc
   `;
 
-  // These independent aggregates are intentionally concurrent. Marketing used
-  // to execute many receipt-level queries serially, which made this page slow.
-  const [summaryRows, storeRows, promoRows] = await Promise.all([
-    summaryQuery,
-    storeQuery,
-    promoQuery
-  ]);
-
-  const summary = summaryRows[0];
-  const totalRevenue = Number(summary?.total_revenue ?? 0);
-  const totalReports = Number(summary?.total_report_count ?? 0);
-  const discountedReports = Number(summary?.discounted_report_count ?? 0);
+  // The store aggregate already contains everything needed for the summary.
+  const [storeRows, promoRows] = await Promise.all([storeQuery, promoQuery]);
+  const totalRevenue = storeRows.reduce((sum, row) => sum + Number(row.total_revenue ?? 0), 0);
+  const totalReports = storeRows.reduce((sum, row) => sum + Number(row.total_reports ?? 0), 0);
+  const discountedReports = storeRows.reduce((sum, row) => sum + Number(row.discounted_reports ?? 0), 0);
   const noDiscountReports = Math.max(totalReports - discountedReports, 0);
-  const revenueWithDiscounts = Number(summary?.revenue_with_discounts ?? 0);
-  const revenueWithoutDiscounts = Number(summary?.revenue_without_discounts ?? 0);
-  const totalDiscountAmount = Number(summary?.total_discount_amount ?? 0);
+  const revenueWithDiscounts = storeRows.reduce((sum, row) => sum + Number(row.revenue_with_discounts ?? 0), 0);
+  const revenueWithoutDiscounts = storeRows.reduce((sum, row) => sum + Number(row.revenue_without_discounts ?? 0), 0);
+  const totalDiscountAmount = storeRows.reduce((sum, row) => sum + Number(row.discount_amount ?? 0), 0);
   const promoAnalytics = buildPromoAnalytics(promoRows);
 
   const promos = promoAnalytics.map((promo) => ({

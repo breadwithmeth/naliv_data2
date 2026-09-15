@@ -28,8 +28,8 @@ export async function getInventoryReport(params: InventoryParams) {
   // Recent sales filter
   const recentFilters: Prisma.Sql[] = [
     Prisma.sql`r.date is not null`,
-    Prisma.sql`coalesce(r.deletion_mark, false) = false`,
-    Prisma.sql`coalesce(r.posted, false) = true`
+    Prisma.sql`r.deletion_mark is not true`,
+    Prisma.sql`r.posted = true`
   ];
 
   if (params.from) {
@@ -93,80 +93,67 @@ export async function getInventoryReport(params: InventoryParams) {
       where b.nomenklatura_key is not null
       group by b.nomenklatura_key
     ),
-    all_purchases as (
+    -- Each source line table is read once: lifetime totals and period- or
+    -- price-filtered aggregates are conditional aggregates over the same rows,
+    -- so they no longer need separate CTE scans.
+    purchase_stats as (
       select
         pt.nomenklatura_key,
         coalesce(sum(pt.kolichestvo), 0)::float8 as total_purchased,
-        max(p.date) as last_purchase_date
+        max(p.date) filter (where pt.kolichestvo is not null) as last_purchase_date,
+        coalesce(avg(pt.tsena) filter (where pt.tsena > 0), 0)::float8 as avg_purchase_price,
+        coalesce(max(pt.summa / nullif(pt.kolichestvo, 0)) filter (where pt.tsena > 0), 0)::float8 as last_purchase_price,
+        -- A key whose purchase lines all lack a quantity produced no row in the
+        -- former all_purchases scan; keep that so the outer joins below cannot
+        -- surface extra zeroed items.
+        bool_or(pt.kolichestvo is not null) as has_quantity_line
       from ${postuplenieItemsTable} pt
       join ${postuplenieTable} p on p.ref_key = pt."_parent_ref_key"
-      where coalesce(p.deletion_mark, false) = false
-        and coalesce(p.posted, false) = true
+      where p.deletion_mark is not true
+        and p.posted = true
         and pt.nomenklatura_key is not null
-        and pt.kolichestvo is not null
       group by pt.nomenklatura_key
     ),
-    all_sales as (
+    sales_stats as (
       select
         ri.nomenklatura_key,
-        coalesce(sum(ri.kolichestvo), 0)::float8 as total_sold
+        coalesce(sum(ri.kolichestvo), 0)::float8 as total_sold,
+        coalesce(sum(ri.kolichestvo) filter (where ${recentWhere} and ri.kolichestvo is not null), 0)::float8 as recent_sold_qty,
+        count(distinct date_trunc('day', r.date)) filter (where ${recentWhere} and ri.kolichestvo is not null)::int as recent_days_active,
+        max(r.date) filter (where ${recentWhere} and ri.kolichestvo is not null) as last_sale_date,
+        bool_or(ri.kolichestvo is not null) as has_quantity_line
       from ${reportItemsTable} ri
       join ${reportsTable} r on r.ref_key = ri."_parent_ref_key"
-      where coalesce(r.deletion_mark, false) = false
-        and coalesce(r.posted, false) = true
+      where r.deletion_mark is not true
+        and r.posted = true
         and ri.nomenklatura_key is not null
-        and ri.kolichestvo is not null
       group by ri.nomenklatura_key
-    ),
-    recent_sales as (
-      select
-        ri.nomenklatura_key,
-        coalesce(sum(ri.kolichestvo), 0)::float8 as recent_sold_qty,
-        count(distinct date_trunc('day', r.date))::int as recent_days_active,
-        max(r.date) as last_sale_date
-      from ${reportItemsTable} ri
-      join ${reportsTable} r on r.ref_key = ri."_parent_ref_key"
-      where ${recentWhere}
-        and ri.nomenklatura_key is not null
-        and ri.kolichestvo is not null
-      group by ri.nomenklatura_key
-    ),
-    item_costs as (
-      select
-        pt.nomenklatura_key,
-        avg(pt.tsena)::float8 as avg_purchase_price,
-        coalesce(max(pt.summa / nullif(pt.kolichestvo, 0)), 0)::float8 as last_purchase_price
-      from ${postuplenieItemsTable} pt
-      join ${postuplenieTable} p on p.ref_key = pt."_parent_ref_key"
-      where coalesce(p.deletion_mark, false) = false
-        and coalesce(p.posted, false) = true
-        and pt.nomenklatura_key is not null
-        and pt.tsena is not null
-        and pt.tsena > 0
-      group by pt.nomenklatura_key
     ),
     stock_calc as (
       select
-        coalesce(bs.nomenklatura_key, ap.nomenklatura_key, as_.nomenklatura_key, rs.nomenklatura_key) as nomenklatura_key,
-        coalesce(ap.total_purchased, 0) as total_purchased,
-        coalesce(as_.total_sold, 0) as total_sold,
-        coalesce(bs.stock_qty, coalesce(ap.total_purchased, 0) - coalesce(as_.total_sold, 0)) as stock_qty,
+        coalesce(bs.nomenklatura_key, ps.nomenklatura_key, ss.nomenklatura_key) as nomenklatura_key,
+        coalesce(ps.total_purchased, 0) as total_purchased,
+        coalesce(ss.total_sold, 0) as total_sold,
+        coalesce(bs.stock_qty, coalesce(ps.total_purchased, 0) - coalesce(ss.total_sold, 0)) as stock_qty,
         coalesce(bs.reserved_qty, 0) as reserved_qty,
         coalesce(bs.warehouse_count, 0) as warehouse_count,
-        coalesce(rs.recent_sold_qty, 0) as recent_sold_qty,
-        coalesce(rs.recent_days_active, 0) as recent_days_active,
-        coalesce(ic.avg_purchase_price, 0) as avg_purchase_price,
-        rs.last_sale_date,
-        ap.last_purchase_date,
+        coalesce(ss.recent_sold_qty, 0) as recent_sold_qty,
+        coalesce(ss.recent_days_active, 0) as recent_days_active,
+        coalesce(ps.avg_purchase_price, 0) as avg_purchase_price,
+        ss.last_sale_date,
+        ps.last_purchase_date,
         bs.stock_period
       from balance_stock bs
-      full outer join all_purchases ap on ap.nomenklatura_key = bs.nomenklatura_key
-      full outer join all_sales as_
-        on as_.nomenklatura_key = coalesce(bs.nomenklatura_key, ap.nomenklatura_key)
-      left join recent_sales rs
-        on rs.nomenklatura_key = coalesce(bs.nomenklatura_key, ap.nomenklatura_key, as_.nomenklatura_key)
-      left join item_costs ic
-        on ic.nomenklatura_key = coalesce(bs.nomenklatura_key, ap.nomenklatura_key, as_.nomenklatura_key)
+      full outer join purchase_stats ps on ps.nomenklatura_key = bs.nomenklatura_key
+      full outer join sales_stats ss
+        on ss.nomenklatura_key = coalesce(bs.nomenklatura_key, ps.nomenklatura_key)
+      -- Reproduce the former key set exactly: a key entered the result only via a
+      -- balance snapshot, a purchase line with a quantity, or a sales line with a
+      -- quantity. Purchase rows without any quantity still enrich prices for keys
+      -- that another source contributed.
+      where bs.nomenklatura_key is not null
+        or ps.has_quantity_line
+        or ss.has_quantity_line
     )
     select
       sc.nomenklatura_key,

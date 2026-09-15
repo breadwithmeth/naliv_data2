@@ -31,6 +31,14 @@ const [
 
 const app = express();
 app.use(cookieParser());
+const { sendCachedJson } = await import("../src/lib/cached-json.js");
+let cachedLoads = 0;
+app.get("/cached-report", requireAuth, requireRole("admin"), (req, res, next) => {
+  void sendCachedJson(req, res, ["auth-test-report"], async () => {
+    cachedLoads++;
+    return { count: 42n, date: new Date("2026-08-24") };
+  }).catch(next);
+});
 
 app.get(
   ["/analytics/overview", "/reports/sales", "/nomenclature", "/inventory"],
@@ -160,4 +168,25 @@ test("admin account retains access to all API groups", async () => {
     const response = await fetch(`${baseUrl}${path}`, { headers: { cookie } });
     assert.equal(response.status, 200, path);
   }
+});
+
+test("warm report cache still checks authentication and roles on every request", async () => {
+  const headers = { cookie: sessionCookie(process.env.APP_ADMIN_EMAIL!, "admin") };
+  const first = await fetch(`${baseUrl}/cached-report`, { headers });
+  assert.equal(first.headers.get("x-report-cache"), "miss");
+  assert.deepEqual(await first.json(), { count: 42, date: "2026-08-24T00:00:00.000Z" });
+  const second = await fetch(`${baseUrl}/cached-report`, { headers });
+  assert.equal(second.headers.get("x-report-cache"), "hit");
+  assert.equal(second.headers.get("cache-control"), "no-store");
+  assert.match(second.headers.get("server-timing")!, /^report;dur=/);
+  await second.arrayBuffer();
+  const anonymous = await fetch(`${baseUrl}/cached-report`);
+  assert.equal(anonymous.status, 401);
+  await anonymous.arrayBuffer();
+  const marketing = await fetch(`${baseUrl}/cached-report`, {
+    headers: { cookie: sessionCookie(process.env.APP_MARKETING_EMAIL!, "marketing") }
+  });
+  assert.equal(marketing.status, 403);
+  await marketing.arrayBuffer();
+  assert.equal(cachedLoads, 1);
 });
