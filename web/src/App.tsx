@@ -3255,6 +3255,22 @@ function SyncPanel() {
                 </span>
               </dd>
             </div>
+            <div>
+              <dt>Лог запуска на сервере экспорта</dt>
+              <dd>
+                {latest.log_file ? <code>{latest.log_file}</code> : <span className="muted">—</span>}
+              </dd>
+            </div>
+            <div>
+              <dt>Файл метрик</dt>
+              <dd>
+                {latest.metrics_file ? (
+                  <code>{latest.metrics_file}</code>
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </dd>
+            </div>
           </dl>
 
           {latest.error_class || failedChunk ? (
@@ -3263,10 +3279,22 @@ function SyncPanel() {
                 ? `Порция ${failedChunk.start} → ${failedChunk.end_exclusive} завершилась с кодом ${failedChunk.exit_code}. `
                 : ""}
               {latest.error_class ? `Причина: ${latest.error_class}. ` : ""}
-              Подробности — в логе запуска на сервере экспорта, метрики — в файле
-              {" "}
-              <code>metrics/…</code>.
+              Ниже — последние строки лога запуска; полный лог лежит на сервере
+              экспорта по пути из «Лог запуска».
             </p>
+          ) : null}
+
+          {latest.log_tail ? (
+            <details className="sync-log" open={latest.status !== "success"}>
+              <summary>
+                Последние строки лога запуска
+                <span className="muted">
+                  {" "}
+                  · {latest.log_tail.split("\n").length} строк
+                </span>
+              </summary>
+              <pre>{latest.log_tail}</pre>
+            </details>
           ) : null}
 
           <p className="panel-note">

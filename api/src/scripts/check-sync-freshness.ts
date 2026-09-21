@@ -67,7 +67,7 @@ if (args.json) {
     console.log(
       `\n! — больше ${STALE_AFTER_HOURS} ч без изменений: ${unchanged.map((row) => row.table).join(", ")}.` +
         "\n  Это либо отсутствие новых данных в 1C, либо таблица вне набора экспорта." +
-        "\n  Проверяется экспортером: python run_scheduled_export.py --lookback-days 3 -- --with-catalogs"
+        "\n  Проверяется экспортером: python run_scheduled_export.py --lookback-days 7 -- --with-catalogs"
     );
   }
 }

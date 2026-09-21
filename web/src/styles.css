@@ -907,6 +907,45 @@ select:focus {
   font-weight: 400;
 }
 
+.sync-facts dd code {
+  font-size: 12px;
+  font-weight: 400;
+  padding: 1px 5px;
+  background: #fff;
+  border: 1px solid #eef2f6;
+  border-radius: 4px;
+}
+
+.sync-log {
+  margin: 0 0 14px;
+  background: #f8fafc;
+  border: 1px solid #eef2f6;
+  border-radius: 7px;
+}
+
+.sync-log summary {
+  padding: 9px 12px;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sync-log pre {
+  max-height: 320px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  color: #1f2933;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #fff;
+  border-top: 1px solid #eef2f6;
+  border-radius: 0 0 7px 7px;
+}
+
 .sync-subtitle {
   margin: 18px 0 8px;
   font-size: 14px;

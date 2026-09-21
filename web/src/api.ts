@@ -115,6 +115,9 @@ export type SyncRun = {
   command: string | null;
   per_chunk: SyncRunChunk[];
   sync_source_sha256: string | null;
+  log_file: string | null;
+  metrics_file: string | null;
+  log_tail: string | null;
 };
 
 export type SyncTableFreshness = {

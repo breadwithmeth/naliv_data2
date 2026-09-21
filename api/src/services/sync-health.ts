@@ -96,6 +96,12 @@ export type SyncRun = {
   command: string | null;
   per_chunk: SyncRunChunk[];
   sync_source_sha256: string | null;
+  // Where the run's full log and metrics live on the export server, plus a
+  // bounded tail of that log. Null until a run written by the updated
+  // scheduler records them; the read below tolerates the older table.
+  log_file: string | null;
+  metrics_file: string | null;
+  log_tail: string | null;
 };
 
 export type SyncHealth = {
@@ -180,8 +186,14 @@ async function readSyncRuns(limit: number): Promise<SyncRun[]> {
            coverage_started_at, rows_read, rows_written, skipped_entities,
            restricted_optional_entities, deep_reread_status, deep_reread_month,
            duration_seconds, command, coalesce(per_chunk, '[]'::jsonb) as per_chunk,
-           metrics ->> 'build.sync_source_sha256' as sync_source_sha256
-    from ops.sync_runs
+           metrics ->> 'build.sync_source_sha256' as sync_source_sha256,
+           -- Extracted from the row instead of selected by name: the scheduler
+           -- adds these columns on its next run, and the panel must keep working
+           -- until then rather than reporting the whole table as unreadable.
+           to_jsonb(r) ->> 'log_file' as log_file,
+           to_jsonb(r) ->> 'metrics_file' as metrics_file,
+           to_jsonb(r) ->> 'log_tail' as log_tail
+    from ops.sync_runs r
     order by started_at desc nulls last, id desc
     limit ${limit}
   `);

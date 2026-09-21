@@ -74,6 +74,9 @@ test("admin sees the run record and the per-table freshness", {
   }
 
   if (!health.available) {
+    // Only the scheduler's missing table may degrade the panel; a read error
+    // (grants, a renamed column) must fail here instead of passing as one.
+    assert.equal(health.unavailableReason, null);
     assert.deepEqual(health.runs, []);
     assert.equal(health.latest, null);
     return;
@@ -90,6 +93,15 @@ test("admin sees the run record and the per-table freshness", {
   for (const run of health.runs) {
     assert.ok(Array.isArray(run.per_chunk));
     assert.equal(typeof run.id, "number");
+    // The panel shows the log path and a bounded tail, so the read must carry
+    // all three fields: null on rows written before they existed, text after.
+    assert.ok(run.log_file === null || typeof run.log_file === "string");
+    assert.ok(run.metrics_file === null || typeof run.metrics_file === "string");
+    assert.ok(run.log_tail === null || typeof run.log_tail === "string");
+    if (run.log_tail !== null) {
+      assert.ok(run.log_tail.length > 0, "хвост лога не должен быть пустым");
+      assert.equal(typeof run.log_file, "string");
+    }
   }
 });
 
