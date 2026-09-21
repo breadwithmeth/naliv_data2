@@ -33,6 +33,15 @@ Open <http://localhost:5173> and sign in with `APP_ADMIN_EMAIL` and
 `APP_ADMIN_PASSWORD`. Vite serves the web UI and proxies `/api` to the API port
 configured by `PORT` in the same `.env` file.
 
+Report endpoints (`/api/reports/sales`, `/api/reports/income`,
+`/api/nomenclature`, `/api/marketing`, `/api/inventory`) build a half-open
+window — `date >= from and date < to` — and default to the current calendar
+month (UTC boundaries) when a request carries no `from`/`to`. An empty range
+means "this month", never "every year"; pass an explicit range such as
+`?from=2026-01-01&to=2027-01-01` to widen it. The web UI prefills the same month
+and shows the end date inclusively, converting it to the exclusive bound before
+sending. `period` (`day`, `week`, `month`) only selects the chart bucket.
+
 The account configured by `APP_MARKETING_EMAIL` and `APP_MARKETING_PASSWORD`
 can open only the marketing section. This restriction is enforced by the API:
 the account may call `/api/marketing` and its own `/api/auth` session endpoints,

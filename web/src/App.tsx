@@ -539,10 +539,22 @@ const periodOptions: Array<{ value: SalesPeriod; label: string }> = [
 
 type DateRangeValue = Required<Pick<ReportDateRange, "from" | "to">>;
 
-const emptyDateRange: DateRangeValue = { from: "", to: "" };
+// Mirrors `currentMonthRange` in `api/src/lib/report-range.ts`, which applies the
+// same window when a request carries no range: the form always shows the month
+// the report was built from, so a blank range can never read as "all years".
+function currentMonthRange(): DateRangeValue {
+  const now = new Date();
+  const first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
+
+  return {
+    from: first.toISOString().slice(0, 10),
+    to: last.toISOString().slice(0, 10)
+  };
+}
 
 function ReportsPage() {
-  const [dateRange, setDateRange] = useState<DateRangeValue>(emptyDateRange);
+  const [dateRange, setDateRange] = useState<DateRangeValue>(currentMonthRange);
 
   return (
     <>
@@ -571,7 +583,9 @@ function ReportFilterBar({
     setDraftRange(dateRange);
   }, [dateRange.from, dateRange.to]);
 
-  const hasDateRange = Boolean(draftRange.from || draftRange.to);
+  const defaultRange = currentMonthRange();
+  const isDefaultRange =
+    draftRange.from === defaultRange.from && draftRange.to === defaultRange.to;
   const hasChanges =
     draftRange.from !== dateRange.from || draftRange.to !== dateRange.to;
   const invalidRange = Boolean(
@@ -616,25 +630,29 @@ function ReportFilterBar({
             }
           />
         </label>
-        {hasDateRange ? (
+        {isDefaultRange ? null : (
           <button
             className="date-reset-button"
             type="button"
             onClick={() => {
-              setDraftRange(emptyDateRange);
-              onDateRangeChange(emptyDateRange);
+              setDraftRange(defaultRange);
+              onDateRangeChange(defaultRange);
             }}
-            title="Сбросить диапазон дат"
+            title="Вернуть текущий месяц"
           >
             <RotateCcw size={15} />
-            <span>Сбросить</span>
+            <span>Текущий месяц</span>
           </button>
-        ) : null}
+        )}
         <button
           className="date-apply-button"
           type="button"
           disabled={!hasChanges || invalidRange}
-          onClick={() => onDateRangeChange(draftRange)}
+          onClick={() => {
+            const next = draftRange.from || draftRange.to ? draftRange : defaultRange;
+            setDraftRange(next);
+            onDateRangeChange(next);
+          }}
         >
           Применить
         </button>
@@ -1430,7 +1448,7 @@ function IncomeReportBody({
 
 function MarketingReports() {
   const [period, setPeriod] = useState<SalesPeriod>("day");
-  const [dateRange, setDateRange] = useState<DateRangeValue>(emptyDateRange);
+  const [dateRange, setDateRange] = useState<DateRangeValue>(currentMonthRange);
   const [state, setState] = useState<LoadState<MarketingReport>>({ status: "loading" });
 
   useEffect(() => {
@@ -2078,7 +2096,7 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
 
 function InventoryReports() {
   const [period, setPeriod] = useState<SalesPeriod>("day");
-  const [dateRange, setDateRange] = useState<DateRangeValue>(emptyDateRange);
+  const [dateRange, setDateRange] = useState<DateRangeValue>(currentMonthRange);
   const [state, setState] = useState<LoadState<InventoryReport>>({ status: "loading" });
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
 
@@ -2297,7 +2315,7 @@ const exitReasonLabels: Record<ExitProductReason, string> = {
 
 function NomenclatureReports() {
   const [period, setPeriod] = useState<SalesPeriod>("day");
-  const [dateRange, setDateRange] = useState<DateRangeValue>(emptyDateRange);
+  const [dateRange, setDateRange] = useState<DateRangeValue>(currentMonthRange);
   const [state, setState] = useState<LoadState<NomenclatureReport>>({ status: "loading" });
   const [showAllTop, setShowAllTop] = useState(false);
   const [showAllAnti, setShowAllAnti] = useState(false);

@@ -2,13 +2,13 @@ import { sendCachedJson } from "../lib/cached-json.js";
 import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../lib/http.js";
+import { reportRangeFields, resolveReportRange } from "../lib/report-range.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { getInventoryReport } from "../services/inventory.js";
 
 const querySchema = z.object({
   period: z.enum(["day", "week", "month"]).default("day"),
-  from: z.coerce.date().optional(),
-  to: z.coerce.date().optional()
+  ...reportRangeFields
 });
 
 export const inventoryRouter = Router();
@@ -18,7 +18,7 @@ inventoryRouter.use(requireAuth, requireRole("admin"));
 inventoryRouter.get(
   "/",
   asyncHandler(async (req, res) => {
-    const query = querySchema.parse(req.query);
+    const query = resolveReportRange(querySchema.parse(req.query));
     await sendCachedJson(req, res, ["getInventoryReport", query], () => getInventoryReport(query));
   })
 );
