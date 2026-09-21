@@ -1,7 +1,12 @@
 providers = ["node"]
 
 [phases.setup]
-nixPkgs = ["nodejs_22", "npm-9_x", "openssl"]
+# `nodejs_22` and `openssl` exist in the nixpkgs revision Nixpacks pins for Node
+# 22. Do not add `npm-9_x` here: that attribute name exists only in Nixpacks'
+# npm overlay (railwayapp/nix-npm-overlay), never in nixpkgs, and the node
+# provider already installs it (`from_overlay`) whenever package-lock.json is
+# lockfileVersion 3. `openssl` is also what the provider adds for prisma.
+nixPkgs = ["nodejs_22", "openssl"]
 
 [phases.install]
 cmds = ["npm ci"]
