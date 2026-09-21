@@ -98,6 +98,11 @@ promotion edited after its document date still refreshes) and
 runs the incremental `SCHEDULER_EXPORT_ARGS=--with-catalogs`, which is enough for
 this page, so the analytics follows the export without the heavyweight full set.
 
+`npm run check:sync-freshness` prints per synced table the row count, how often
+its content changed, and when it last changed, which is the quickest way to see
+whether the export is still feeding the site (`_loaded_at` moves only when a row
+changes, so an unchanged table looks old without being stale).
+
 `npm run verify:promo-attribution -- --from=2026-09-01 --to=2026-10-01`
 recomputes the whole attribution from a second implementation — PostgreSQL
 parses the segments and picks the rule with a lateral join instead of a window
