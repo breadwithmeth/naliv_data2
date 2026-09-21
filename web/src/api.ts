@@ -130,6 +130,27 @@ export type SyncTableFreshness = {
   unchangedForOverTwoDays: boolean;
 };
 
+export type SyncSchedulerStatus = {
+  status: string | null;
+  updatedAtUtc: string | null;
+  serviceStartedAt: string | null;
+  lastDecision: string | null;
+  lastReason: string | null;
+  lastDecisionAt: string | null;
+  lastDetail: string | null;
+  nextBypassAllowedAt: string | null;
+  nextRunAt: string | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  timezone: string | null;
+  runOnStartup: boolean | null;
+  ignoreWindow: boolean | null;
+  minIntervalHours: number | null;
+  heartbeatSeconds: number | null;
+  syncSourceSha256: string | null;
+  logTail: string | null;
+};
+
 export type SyncHealth = {
   available: boolean;
   unavailableReason: string | null;
@@ -138,6 +159,8 @@ export type SyncHealth = {
   schema: string;
   latest: SyncRun | null;
   runs: SyncRun[];
+  scheduler: SyncSchedulerStatus | null;
+  schedulerUnavailableReason: string | null;
   groups: Array<{ title: string; tables: SyncTableFreshness[] }>;
 };
 

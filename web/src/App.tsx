@@ -48,6 +48,7 @@ import {
   type SalesReport,
   type SyncHealth,
   type SyncRun,
+  type SyncSchedulerStatus,
   type SyncTableFreshness,
   type TableProfile,
   type TimeSeriesPoint,
@@ -3083,6 +3084,104 @@ function syncRangeLabel(run: SyncRun) {
   return `${formatDate(run.range_start)} → ${formatDate(run.range_end_exclusive)}`;
 }
 
+// The scheduler is the only component that can answer "why did the sync not
+// run?": a skip writes no run row, and its own output lives in the container.
+function schedulerStatusLabel(status: string | null | undefined) {
+  switch (status) {
+    case "running":
+      return "выполняет экспорт";
+    case "starting":
+      return "запускается";
+    case "idle":
+      return "ожидает по расписанию";
+    case "failed":
+      return "ошибка";
+    case "stopped":
+      return "остановлен";
+    default:
+      return "нет данных";
+  }
+}
+
+function schedulerStatusClass(status: string | null | undefined) {
+  if (status === "failed") {
+    return "failed";
+  }
+
+  if (status === "running" || status === "idle") {
+    return "active";
+  }
+
+  return "upcoming";
+}
+
+function schedulerReasonLabel(scheduler: SyncSchedulerStatus) {
+  const cooldown = scheduler.nextBypassAllowedAt
+    ? ` · обход окна доступен ${formatDateTime(scheduler.nextBypassAllowedAt)}`
+    : "";
+
+  switch (scheduler.lastReason) {
+    case "startup_bypass":
+      return "запуск при старте вне окна (SCHEDULE_STARTUP_IGNORE_WINDOW=true)";
+    case "schedule_window":
+      return "плановый запуск внутри окна обслуживания";
+    case "outside_window":
+      return `вне окна ${scheduler.windowStart ?? "—"}–${scheduler.windowEnd ?? "—"}`;
+    case "bypass_cooldown":
+      return `обход окна запрещён кулдауном${cooldown}`;
+    case "already_succeeded":
+      return `в этом окне уже был успешный запуск${cooldown}`;
+    case "run_on_startup_disabled":
+      return "запуск при старте выключен (SCHEDULE_RUN_ON_STARTUP=false)";
+    case "probe_failed":
+      return "1C недоступна: проверка сети не прошла, контейнер перезапускается";
+    case "export_failed":
+      return "экспорт завершился с ошибкой";
+    case "window_expired":
+      return "окно обслуживания истекло во время экспорта";
+    case "success":
+      return "экспорт завершён успешно";
+    case "stopped":
+      return "остановлен по сигналу";
+    case "interrupted":
+      return "прерван по сигналу";
+    case null:
+    case undefined:
+      return "решений пока не было";
+    default:
+      return scheduler.lastReason;
+  }
+}
+
+function schedulerDecisionLabel(decision: string | null | undefined) {
+  switch (decision) {
+    case "started":
+      return "запуск";
+    case "finished":
+      return "завершён";
+    case "skipped":
+      return "пропуск";
+    case "failed":
+      return "ошибка";
+    case "stopped":
+    case "interrupted":
+      return "остановлен";
+    default:
+      return decision ?? "—";
+  }
+}
+
+function schedulerSilent(scheduler: SyncSchedulerStatus) {
+  if (!scheduler.updatedAtUtc) {
+    return true;
+  }
+
+  const ageSeconds = (Date.now() - new Date(scheduler.updatedAtUtc).getTime()) / 1000;
+  // The scheduler publishes every heartbeat; a multiple of it means the
+  // container is gone even though the table still holds its last state.
+  return ageSeconds > Math.max(3 * (scheduler.heartbeatSeconds ?? 30), 180);
+}
+
 function SyncFreshnessTable({ rows }: { rows: SyncTableFreshness[] }) {
   if (rows.length === 0) {
     return <p className="muted">Таблиц этой группы в схеме нет.</p>;
@@ -3196,6 +3295,99 @@ function SyncPanel() {
         <p className="panel-note">
           Планировщик экспорта ещё не записал ни одного запуска в <code>ops.sync_runs</code>.
         </p>
+      ) : null}
+
+      {health?.schedulerUnavailableReason ? (
+        <p className="panel-note">
+          Состояние планировщика недоступно: {health.schedulerUnavailableReason}
+        </p>
+      ) : null}
+
+      {health?.scheduler ? (
+        <>
+          <dl className="sync-facts">
+            <div>
+              <dt>Планировщик на сервере экспорта</dt>
+              <dd>
+                <span
+                  className={`status-chip ${schedulerStatusClass(health.scheduler.status)}`}
+                >
+                  {schedulerStatusLabel(health.scheduler.status)}
+                </span>
+                <span className="muted">
+                  {" "}
+                  · на связи {formatDateTime(health.scheduler.updatedAtUtc)}
+                  {schedulerSilent(health.scheduler)
+                    ? " · сигналов нет, контейнер мог быть остановлен"
+                    : ""}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Последнее решение</dt>
+              <dd>
+                <span className="muted">
+                  {schedulerDecisionLabel(health.scheduler.lastDecision)}
+                  {" · "}
+                </span>
+                {schedulerReasonLabel(health.scheduler)}
+                <span className="muted">
+                  {health.scheduler.lastDecisionAt
+                    ? ` · ${formatDateTime(health.scheduler.lastDecisionAt)}`
+                    : ""}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Следующий плановый запуск</dt>
+              <dd>{formatDateTime(health.scheduler.nextRunAt)}</dd>
+            </div>
+            <div>
+              <dt>Запуск при старте и обход окна</dt>
+              <dd>
+                <code>SCHEDULE_RUN_ON_STARTUP={health.scheduler.runOnStartup ? "true" : "false"}</code>{" "}
+                <code>
+                  SCHEDULE_STARTUP_IGNORE_WINDOW=
+                  {health.scheduler.ignoreWindow ? "true" : "false"}
+                </code>
+                <span className="muted">
+                  {health.scheduler.minIntervalHours !== null
+                    ? ` · кулдаун обхода ${health.scheduler.minIntervalHours} ч`
+                    : ""}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Окно обслуживания</dt>
+              <dd>
+                {health.scheduler.windowStart ?? "—"}–{health.scheduler.windowEnd ?? "—"}
+                <span className="muted">
+                  {health.scheduler.timezone ? ` ${health.scheduler.timezone}` : ""}
+                </span>
+              </dd>
+            </div>
+          </dl>
+
+          {health.scheduler.logTail ? (
+            <details
+              className="sync-log"
+              open={
+                health.scheduler.status === "failed" ||
+                health.scheduler.lastReason === "bypass_cooldown" ||
+                health.scheduler.lastReason === "probe_failed"
+              }
+            >
+              <summary>
+                Последние строки лога планировщика
+                <span className="muted">
+                  {" "}
+                  · {health.scheduler.logTail.split("\n").length} строк
+                </span>
+              </summary>
+              <pre>{health.scheduler.logTail}</pre>
+            </details>
+          ) : null}
+        </>
       ) : null}
 
       {health && latest ? (

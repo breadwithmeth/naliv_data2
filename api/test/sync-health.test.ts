@@ -105,6 +105,59 @@ test("admin sees the run record and the per-table freshness", {
   }
 });
 
+test("admin receives the scheduler state that explains skipped runs", {
+  skip: !hasDatabase
+}, async () => {
+  const response = await fetch(`${base}/api/sync/health`, {
+    headers: { cookie: sessionCookie("admin") }
+  });
+  assert.equal(response.status, 200);
+
+  const health = await response.json();
+  // A scheduler that only ever skipped has a status row and no runs, so this
+  // read is independent of the run table.
+  assert.ok("scheduler" in health, "состояние планировщика не попало в ответ");
+  assert.ok(
+    health.schedulerUnavailableReason === null ||
+      typeof health.schedulerUnavailableReason === "string"
+  );
+  assert.ok(health.scheduler === null || typeof health.scheduler === "object");
+  if (health.scheduler === null) {
+    return;
+  }
+
+  const scheduler = health.scheduler;
+  for (const field of [
+    "status",
+    "updatedAtUtc",
+    "lastDecision",
+    "lastReason",
+    "lastDecisionAt",
+    "lastDetail",
+    "nextBypassAllowedAt",
+    "nextRunAt",
+    "windowStart",
+    "windowEnd",
+    "timezone",
+    "syncSourceSha256",
+    "logTail"
+  ]) {
+    assert.ok(
+      scheduler[field] === null || typeof scheduler[field] === "string",
+      `${field} вне контракта`
+    );
+  }
+  assert.ok(scheduler.runOnStartup === null || typeof scheduler.runOnStartup === "boolean");
+  assert.ok(scheduler.ignoreWindow === null || typeof scheduler.ignoreWindow === "boolean");
+  assert.ok(
+    scheduler.minIntervalHours === null || typeof scheduler.minIntervalHours === "number"
+  );
+  assert.ok(scheduler.heartbeatSeconds === null || typeof scheduler.heartbeatSeconds === "number");
+  if (scheduler.logTail !== null) {
+    assert.ok(scheduler.logTail.length > 0);
+  }
+});
+
 test("freshness covers the exported tables of every group", {
   skip: !hasDatabase
 }, async () => {

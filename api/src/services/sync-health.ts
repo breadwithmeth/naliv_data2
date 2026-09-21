@@ -45,6 +45,7 @@ export const SYNC_STALE_AFTER_HOURS = 48;
 
 const SYNC_RUNS_SCHEMA = "ops";
 const SYNC_RUNS_TABLE = "sync_runs";
+const SYNC_SCHEDULER_TABLE = "sync_scheduler";
 
 export type SyncTableFreshness = {
   group: string;
@@ -112,8 +113,52 @@ export type SyncHealth = {
   schema: string;
   latest: SyncRun | null;
   runs: SyncRun[];
+  scheduler: SyncSchedulerStatus | null;
+  schedulerUnavailableReason: string | null;
   groups: Array<{ title: string; tables: SyncTableFreshness[] }>;
 };
+
+// The scheduler's own state: what it last decided, why, and the flags the
+// container actually received. Written by naliv_data1/container_service.py. A
+// skip writes no run row, so this is the only place the page can answer "why
+// did the sync not run?" — including "the cooldown is holding your restart
+// back" and "the container never received SCHEDULE_STARTUP_IGNORE_WINDOW".
+export type SyncSchedulerStatus = {
+  status: string | null;
+  updatedAtUtc: string | null;
+  serviceStartedAt: string | null;
+  lastDecision: string | null;
+  lastReason: string | null;
+  lastDecisionAt: string | null;
+  lastDetail: string | null;
+  nextBypassAllowedAt: string | null;
+  nextRunAt: string | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  timezone: string | null;
+  runOnStartup: boolean | null;
+  ignoreWindow: boolean | null;
+  minIntervalHours: number | null;
+  heartbeatSeconds: number | null;
+  syncSourceSha256: string | null;
+  logTail: string | null;
+};
+
+function asText(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function asIso(value: unknown): string | null {
+  return value instanceof Date ? value.toISOString() : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
+}
+
+function asBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
 
 // `"` doubling keeps the identifier usable inside the quoted table name; the
 // names come from the constants above, never from a request.
@@ -178,6 +223,53 @@ async function syncRunsTableExists() {
   return rows[0]?.present === true;
 }
 
+async function syncSchedulerTableExists() {
+  const rows = await prisma.$queryRaw<Array<{ present: boolean }>>`
+    select exists (
+      select 1 from information_schema.tables
+      where table_schema = ${SYNC_RUNS_SCHEMA} and table_name = ${SYNC_SCHEDULER_TABLE}
+    ) as present
+  `;
+
+  return rows[0]?.present === true;
+}
+
+async function readSchedulerStatus(): Promise<SyncSchedulerStatus | null> {
+  const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
+    select status, service_started_at, last_decision, last_reason, last_decision_at,
+           last_detail, next_bypass_allowed_at, next_run_at, window_start, window_end,
+           timezone, run_on_startup, ignore_window, min_interval_hours,
+           heartbeat_seconds, sync_source_sha256, updated_at, log_tail
+    from ops.sync_scheduler
+    where id = 1
+  `);
+  const row = rows[0];
+  if (!row) {
+    return null;
+  }
+
+  return {
+    status: asText(row.status),
+    updatedAtUtc: asIso(row.updated_at),
+    serviceStartedAt: asIso(row.service_started_at),
+    lastDecision: asText(row.last_decision),
+    lastReason: asText(row.last_reason),
+    lastDecisionAt: asIso(row.last_decision_at),
+    lastDetail: asText(row.last_detail),
+    nextBypassAllowedAt: asIso(row.next_bypass_allowed_at),
+    nextRunAt: asIso(row.next_run_at),
+    windowStart: asText(row.window_start),
+    windowEnd: asText(row.window_end),
+    timezone: asText(row.timezone),
+    runOnStartup: asBoolean(row.run_on_startup),
+    ignoreWindow: asBoolean(row.ignore_window),
+    minIntervalHours: asNumber(row.min_interval_hours),
+    heartbeatSeconds: asNumber(row.heartbeat_seconds),
+    syncSourceSha256: asText(row.sync_source_sha256),
+    logTail: asText(row.log_tail)
+  };
+}
+
 async function readSyncRuns(limit: number): Promise<SyncRun[]> {
   const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
     select id, started_at, finished_at, status, exit_code, mode, error_class,
@@ -211,7 +303,7 @@ export async function getSyncHealth(limit = 10): Promise<SyncHealth> {
     schema: config.PGSCHEMA
   };
 
-  const [tables, runs] = await Promise.all([
+  const [tables, runs, scheduler] = await Promise.all([
     collectTableFreshness(config.PGSCHEMA),
     (async () => {
       if (!(await syncRunsTableExists())) {
@@ -228,6 +320,21 @@ export async function getSyncHealth(limit = 10): Promise<SyncHealth> {
           runs: [] as SyncRun[]
         };
       }
+    })(),
+    (async () => {
+      // Independent of the run table: a scheduler that only ever skips has a
+      // status row and no runs, which is exactly the case worth showing.
+      if (!(await syncSchedulerTableExists())) {
+        return { status: null, unavailableReason: null };
+      }
+      try {
+        return { status: await readSchedulerStatus(), unavailableReason: null };
+      } catch (error) {
+        return {
+          status: null,
+          unavailableReason: error instanceof Error ? error.message : String(error)
+        };
+      }
     })()
   ]);
 
@@ -237,6 +344,8 @@ export async function getSyncHealth(limit = 10): Promise<SyncHealth> {
     unavailableReason: runs.unavailableReason,
     latest: runs.runs[0] ?? null,
     runs: runs.runs,
+    scheduler: scheduler.status,
+    schedulerUnavailableReason: scheduler.unavailableReason,
     groups: SYNC_TABLE_GROUPS.map((group) => ({
       title: group.title,
       tables: tables.filter((row) => row.group === group.title)

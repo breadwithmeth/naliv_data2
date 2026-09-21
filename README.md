@@ -70,17 +70,21 @@ compatibility flag is supplied. Detailed commands are in
 ## Sync panel
 
 The "База данных" page starts with a read-only "Синхронизация" panel fed by
-`GET /api/sync/health` (admin only). It shows the newest run recorded by
-`naliv_data1` in `ops.sync_runs` (status, exit code, coverage, deep re-read
-month, failing chunk), where that run's log and metrics live on the export
-server, the last lines of its log, how current each exported table is, and the
-last ten runs. The log block is collapsed for a successful run and expanded for
-a failed or interrupted one; it is the tail the scheduler stored in the row
-(`log_tail`, bounded), not the file itself. `api/src/services/sync-health.ts`
-reads the table with a raw query — it has no Prisma model, and `docs`/`ops` are
-not part of the report path. The three log columns are read through `to_jsonb`
-so the panel still works in the window before the scheduler's next run adds
-them.
+`GET /api/sync/health` (admin only). It shows the scheduler's own state read from
+`ops.sync_scheduler` (is the container alive, what it last decided and why, the
+cooldown holding a startup sync back, the flags it actually received, the last
+lines of its log), then the newest run recorded by `naliv_data1` in
+`ops.sync_runs` (status, exit code, coverage, deep re-read month, failing chunk),
+where that run's log and metrics live on the export server, the last lines of its
+log, how current each exported table is, and the last ten runs. Both log blocks
+are collapsed for a normal state and expanded when something needs attention —
+a failed run, a probe failure, or a bypass cooldown. The run block shows the
+stored tail (`log_tail`, bounded), not the file itself.
+`api/src/services/sync-health.ts` reads both tables with raw queries — neither has
+a Prisma model, and `docs`/`ops` are not part of the report path. Each read
+degrades on its own: a missing `ops.sync_scheduler` leaves the run section
+intact, and the three log columns of a run are read through `to_jsonb` so the
+panel still works in the window before the scheduler's next run adds them.
 
 The panel is diagnostic, never a dependency: when the table does not exist yet,
 or the site's role cannot read schema `ops`, the endpoint answers
