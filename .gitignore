@@ -8,3 +8,6 @@ web/dist/
 *env
 
 
+verify-out/
+verify-out-*/
+verify-promo-out/

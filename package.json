@@ -16,7 +16,8 @@
     "prisma:pull": "prisma db pull --schema prisma/schema.prisma",
     "test": "node --import tsx --test api/test/*.test.ts",
     "typecheck": "npm run build:api && tsc -p web/tsconfig.json",
-    "db:optimize": "tsx api/src/scripts/optimize-db.ts"
+    "db:optimize": "tsx api/src/scripts/optimize-db.ts",
+    "verify:promo-attribution": "tsx api/src/scripts/verify-promo-attribution.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.10.1",

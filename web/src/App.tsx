@@ -39,6 +39,7 @@ import {
   type IncomeReport,
   type InventoryReport,
   type ItemAnalysis,
+  type MarketingPromotion,
   type MarketingReport,
   type NomenclatureReport,
   type Overview,
@@ -683,7 +684,10 @@ function SalesReports({
       <div className="section-heading row">
         <div>
           <h2>Отчеты по розничным продажам</h2>
-          <span>document_otchet_o_roznichnyh_prodazhah · document_otchet_o_roznichnyh_prodazhah_tovary</span>
+          <span>
+            document_marketingovaya_aktsiya · document_otchet_o_roznichnyh_prodazhah ·
+            document_otchet_o_roznichnyh_prodazhah_tovary · catalog_segmenty_nomenklatury
+          </span>
         </div>
         <ReportFilterBar
           period={period}
@@ -1478,197 +1482,479 @@ function MarketingReports() {
   );
 }
 
-function MarketingReportBody({ report }: { report: MarketingReport }) {
-  const [showAllPromos, setShowAllPromos] = useState(false);
-  const [showAllStores, setShowAllStores] = useState(false);
-  const visiblePromos = showAllPromos ? report.promos : report.promos.slice(0, 10);
-  const visibleStores = showAllStores ? report.stores : report.stores.slice(0, 10);
+type PromotionSortKey =
+  | "name"
+  | "startsOn"
+  | "discountPctMax"
+  | "storeCount"
+  | "itemCount"
+  | "reportCount"
+  | "quantity"
+  | "revenue"
+  | "discountAmount"
+  | "revenuePerDiscount";
 
-  const storePromoGroups = useMemo(() => {
-    const map = new Map<string, typeof report.storePromos>();
-    for (const sp of report.storePromos) {
-      const group = map.get(sp.storeKey);
-      if (group) {
-        group.push(sp);
-      } else {
-        map.set(sp.storeKey, [sp]);
+const promotionStatusLabels: Record<MarketingPromotion["status"], string> = {
+  active: "активна",
+  finished: "завершена",
+  upcoming: "предстоит"
+};
+
+const promotionStatusOptions: Array<{ value: "all" | MarketingPromotion["status"]; label: string }> = [
+  { value: "all", label: "Все" },
+  { value: "active", label: "Активные" },
+  { value: "finished", label: "Завершенные" }
+];
+
+function formatDiscountPct(min: number, max: number) {
+  if (min === 0 && max === 0) {
+    return "—";
+  }
+
+  const formatted = (value: number) => `${formatDecimal(value, 2)}%`;
+  return min === max ? formatted(min) : `${formatted(min)}–${formatted(max)}`;
+}
+
+function formatPromotionPeriod(startsOn: string | null, endsOn: string | null) {
+  if (!startsOn && !endsOn) {
+    return "—";
+  }
+
+  if (!startsOn || !endsOn) {
+    return formatDate(startsOn ?? endsOn);
+  }
+
+  return `${formatDate(startsOn)} — ${formatDate(endsOn)}`;
+}
+
+function MarketingReportBody({ report }: { report: MarketingReport }) {
+  const [showAllPromotions, setShowAllPromotions] = useState(false);
+  const [showAllItems, setShowAllItems] = useState(false);
+  const [showAllStores, setShowAllStores] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<"all" | MarketingPromotion["status"]>("all");
+  const [sortKey, setSortKey] = useState<PromotionSortKey>("revenue");
+  const [sortDescending, setSortDescending] = useState(true);
+  const [expandedPromotions, setExpandedPromotions] = useState<Record<string, boolean>>({});
+  const [expandedStores, setExpandedStores] = useState<Record<string, boolean>>({});
+
+  const summary = report.summary;
+
+  const sortedPromotions = useMemo(() => {
+    const filtered =
+      statusFilter === "all"
+        ? report.promotions
+        : report.promotions.filter((promotion) => promotion.status === statusFilter);
+    const direction = sortDescending ? -1 : 1;
+
+    return [...filtered].sort((left, right) => {
+      if (sortKey === "name") {
+        return left.name.localeCompare(right.name, "ru") * direction;
       }
+
+      if (sortKey === "startsOn") {
+        return (left.startsOn ?? "").localeCompare(right.startsOn ?? "") * direction;
+      }
+
+      return (left[sortKey] - right[sortKey]) * direction;
+    });
+  }, [report.promotions, sortDescending, sortKey, statusFilter]);
+
+  const visiblePromotions = showAllPromotions ? sortedPromotions : sortedPromotions.slice(0, 12);
+
+  const itemRows = useMemo(
+    () =>
+      report.promotions
+        .flatMap((promotion) =>
+          promotion.stores.flatMap((store) =>
+            store.items.map((item) => ({
+              key: `${promotion.key}:${store.key}:${item.key}`,
+              promotionName: promotion.name,
+              storeName: store.name,
+              itemName: item.name,
+              reportCount: item.reportCount,
+              quantity: item.quantity,
+              revenue: item.revenue,
+              discountAmount: item.discountAmount,
+              discountPct: item.discountPct,
+              avgPrice: item.avgPrice
+            }))
+          )
+        )
+        .sort((left, right) => right.revenue - left.revenue),
+    [report.promotions]
+  );
+  const visibleItemRows = showAllItems ? itemRows : itemRows.slice(0, 100);
+
+  const storeRows = useMemo(
+    () => [...report.stores].sort((left, right) => right.promoRevenue - left.promoRevenue),
+    [report.stores]
+  );
+  const visibleStoreRows = showAllStores ? storeRows : storeRows.slice(0, 10);
+
+  const toggleSort = (key: PromotionSortKey) => {
+    if (key === sortKey) {
+      setSortDescending((current) => !current);
+      return;
     }
-    const storeRevenue = new Map(report.stores.map((s) => [s.key, s.totalRevenue]));
-    return [...map.entries()].sort(
-      (a, b) => (storeRevenue.get(b[0]) ?? 0) - (storeRevenue.get(a[0]) ?? 0)
-    );
-  }, [report.storePromos, report.stores]);
+
+    setSortKey(key);
+    setSortDescending(key !== "name");
+  };
+
+  const sortIndicator = (key: PromotionSortKey) =>
+    key === sortKey ? (sortDescending ? " ↓" : " ↑") : "";
+
+  const togglePromotion = (key: string) => {
+    setExpandedPromotions((current) => ({ ...current, [key]: !current[key] }));
+  };
+
+  const toggleStore = (key: string) => {
+    setExpandedStores((current) => ({ ...current, [key]: !current[key] }));
+  };
 
   return (
     <>
       <section className="metric-grid report-metric-grid" aria-label="Метрики маркетинга">
         <MetricCard
-          icon={<Receipt size={18} />}
-          label="Общая выручка"
-          value={formatMoney(report.summary.totalRevenue)}
-        />
-        <MetricCard
-          icon={<ShoppingCart size={18} />}
-          label="Отчетов розницы"
-          value={formatNumber(report.summary.totalChecks)}
-        />
-        <MetricCard
           icon={<Megaphone size={18} />}
-          label="Сумма скидок"
-          value={formatMoney(report.summary.totalDiscountAmount)}
+          label="Выручка по акциям"
+          value={formatMoney(summary.promoRevenue)}
+          detail={`${formatDecimal(summary.promoSharePct, 2)}% выручки периода`}
         />
         <MetricCard
           icon={<BarChart3 size={18} />}
-          label="Средняя скидка"
-          value={`${formatDecimal(report.summary.avgDiscountPct, 1)}%`}
+          label="Скидки по акциям"
+          value={formatMoney(summary.promoDiscountAmount)}
+          detail={`средняя скидка ${formatDecimal(summary.avgDiscountPct, 2)}%`}
+        />
+        <MetricCard
+          icon={<Package size={18} />}
+          label="Продано единиц по акциям"
+          value={formatDecimal(summary.promoQuantity, 0)}
+          detail={`${formatNumber(summary.promoItemCount)} товаров · ${formatNumber(summary.promoLineCount)} строк`}
+        />
+        <MetricCard
+          icon={<Receipt size={18} />}
+          label="Отчетов с акциями"
+          value={formatNumber(summary.promoReportCount)}
+          detail={`из ${formatNumber(summary.totalReports)} отчетов периода`}
+        />
+        <MetricCard
+          icon={<TrendingUp size={18} />}
+          label="Выручка на 1 ₸ скидки"
+          value={formatDecimal(summary.revenuePerDiscount, 2)}
+          detail={`средний отчет ${formatMoney(summary.avgCheck)}`}
+        />
+        <MetricCard
+          icon={<Store size={18} />}
+          label="Магазинов в акциях"
+          value={formatNumber(summary.promoStoreCount)}
+          detail={`акций в периоде: ${formatNumber(summary.promotionCount)} · с продажами: ${formatNumber(summary.promotionWithSalesCount)}`}
         />
       </section>
 
-      <div className="reports-grid">
-        <section className="panel">
-          <div className="panel-title">
-            <h3>Продажи без скидок</h3>
-          </div>
-          <div className="stack-list">
-            <div className="summary-row">
-              <strong>Отчетов</strong>
-              <span>{formatNumber(report.salesWithoutDiscounts.checkCount)}</span>
-            </div>
-            <div className="summary-row">
-              <strong>Выручка</strong>
-              <span>{formatMoney(report.salesWithoutDiscounts.revenue)}</span>
-            </div>
-            <div className="summary-row">
-              <strong>Средняя сумма отчета</strong>
-              <span>{formatMoney(report.salesWithoutDiscounts.avgCheck)}</span>
-            </div>
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-title">
-            <h3>Продажи со скидками</h3>
-          </div>
-          <div className="stack-list">
-            <div className="summary-row">
-              <strong>Отчетов</strong>
-              <span>{formatNumber(report.salesWithDiscounts.checkCount)}</span>
-            </div>
-            <div className="summary-row">
-              <strong>Выручка</strong>
-              <span>{formatMoney(report.salesWithDiscounts.revenue)}</span>
-            </div>
-            <div className="summary-row">
-              <strong>Сумма скидок</strong>
-              <span>{formatMoney(report.salesWithDiscounts.discountAmount)}</span>
-            </div>
-            <div className="summary-row">
-              <strong>Средняя сумма отчета</strong>
-              <span>{formatMoney(report.salesWithDiscounts.avgCheck)}</span>
-            </div>
-          </div>
-        </section>
-      </div>
-
-      {/* Продажи по акциям — сводно */}
       <section className="panel">
         <div className="panel-title">
           <div>
-            <h3>Продажи по акциям — сводно</h3>
-            <span>{formatNumber(report.promos.length)} акций</span>
+            <h3>Продажи по акциям</h3>
+            <span>
+              {formatNumber(sortedPromotions.length)} акций
+              {statusFilter === "all" ? "" : ` (фильтр: ${promotionStatusLabels[statusFilter as MarketingPromotion["status"]]})`}
+            </span>
           </div>
-          {report.promos.length > 10 ? (
-            <button
-              onClick={() => setShowAllPromos((v) => !v)}
-              type="button"
-              style={{ border: "1px solid #e4e7ec", borderRadius: "6px", padding: "4px 12px", cursor: "pointer", background: "#fff", fontSize: "13px" }}
-            >
-              {showAllPromos ? "Свернуть" : `Показать все (${formatNumber(report.promos.length)})`}
-            </button>
-          ) : null}
+          <div className="panel-actions">
+            {promotionStatusOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className={option.value === statusFilter ? "chip chip-active" : "chip"}
+                onClick={() => setStatusFilter(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+            {sortedPromotions.length > 12 ? (
+              <button
+                type="button"
+                className="chip"
+                onClick={() => setShowAllPromotions((value) => !value)}
+              >
+                {showAllPromotions ? "Свернуть" : `Все (${formatNumber(sortedPromotions.length)})`}
+              </button>
+            ) : null}
+          </div>
         </div>
-        {visiblePromos.length > 0 ? (
+        <span className="panel-note">
+          Продажа отнесена к акции, когда магазин, дата, номенклатура и фактическая скидка строки
+          совпали с условиями акции; скидка строки восстановлена как 1 − сумма / (количество × цена).
+          Разверните акцию для детализации по магазинам и товарам.
+        </span>
+
+        {visiblePromotions.length > 0 ? (
           <div className="heatmap-scroll">
-            <table className="data-table">
+            <table className="data-table promo-table">
               <thead>
                 <tr>
-                  <th>Акция</th>
-                  <th className="num">Отчетов</th>
-                  <th className="num">Выручка</th>
-                  <th className="num">Скидка</th>
-                  <th className="num">Средняя скидка</th>
-                  <th className="num">ROI</th>
+                  <th className="expand-cell" />
+                  <th>
+                    <button type="button" className="sort-button" onClick={() => toggleSort("name")}>
+                      Акция{sortIndicator("name")}
+                    </button>
+                  </th>
+                  <th>№ документа</th>
+                  <th>
+                    <button type="button" className="sort-button" onClick={() => toggleSort("startsOn")}>
+                      Период{sortIndicator("startsOn")}
+                    </button>
+                  </th>
+                  <th>Статус</th>
+                  <th className="num">
+                    <button type="button" className="sort-button" onClick={() => toggleSort("discountPctMax")}>
+                      Скидка{sortIndicator("discountPctMax")}
+                    </button>
+                  </th>
+                  <th className="num">
+                    <button type="button" className="sort-button" onClick={() => toggleSort("storeCount")}>
+                      Магазинов{sortIndicator("storeCount")}
+                    </button>
+                  </th>
+                  <th className="num">
+                    <button type="button" className="sort-button" onClick={() => toggleSort("itemCount")}>
+                      Товаров{sortIndicator("itemCount")}
+                    </button>
+                  </th>
+                  <th className="num">
+                    <button type="button" className="sort-button" onClick={() => toggleSort("reportCount")}>
+                      Отчетов{sortIndicator("reportCount")}
+                    </button>
+                  </th>
+                  <th className="num">
+                    <button type="button" className="sort-button" onClick={() => toggleSort("quantity")}>
+                      Кол-во{sortIndicator("quantity")}
+                    </button>
+                  </th>
+                  <th className="num">
+                    <button type="button" className="sort-button" onClick={() => toggleSort("revenue")}>
+                      Выручка{sortIndicator("revenue")}
+                    </button>
+                  </th>
+                  <th className="num">
+                    <button type="button" className="sort-button" onClick={() => toggleSort("discountAmount")}>
+                      Скидка ₸{sortIndicator("discountAmount")}
+                    </button>
+                  </th>
+                  <th className="num">
+                    <button
+                      type="button"
+                      className="sort-button"
+                      onClick={() => toggleSort("revenuePerDiscount")}
+                    >
+                      ₸ на 1 ₸ скидки{sortIndicator("revenuePerDiscount")}
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {visiblePromos.map((promo) => {
-                  const roi =
-                    promo.discountAmount > 0
-                      ? ((promo.revenue - promo.discountAmount) / promo.discountAmount)
-                      : 0;
+                {visiblePromotions.map((promotion) => {
+                  const isExpanded = Boolean(expandedPromotions[promotion.key]);
+
                   return (
-                    <tr key={promo.key}>
-                      <td>{promo.name}</td>
-                      <td className="num">{formatNumber(promo.checkCount)}</td>
-                      <td className="num">{formatMoney(promo.revenue)}</td>
-                      <td className="num">{formatMoney(promo.discountAmount)}</td>
-                      <td className="num">{formatDecimal(promo.avgDiscountPct, 1)}%</td>
-                      <td className="num">{formatDecimal(roi, 1)}x</td>
-                    </tr>
+                    <Fragment key={promotion.key}>
+                      <tr>
+                        <td className="expand-cell">
+                          <button
+                            type="button"
+                            className="row-toggle"
+                            aria-expanded={isExpanded}
+                            aria-label={`Товары и магазины акции «${promotion.name}»`}
+                            onClick={() => togglePromotion(promotion.key)}
+                          >
+                            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                          </button>
+                        </td>
+                        <td className="promotion-name">{promotion.name}</td>
+                        <td>{promotion.number ?? "—"}</td>
+                        <td>{formatPromotionPeriod(promotion.startsOn, promotion.endsOn)}</td>
+                        <td>
+                          <span className={`status-chip ${promotion.status}`}>
+                            {promotionStatusLabels[promotion.status]}
+                          </span>
+                        </td>
+                        <td className="num">
+                          {formatDiscountPct(promotion.discountPctMin, promotion.discountPctMax)}
+                        </td>
+                        <td className="num">{formatNumber(promotion.storeCount)}</td>
+                        <td
+                          className="num"
+                          title={`продано ${formatNumber(promotion.itemCount)} из ${formatNumber(promotion.assortmentSize)} товаров акции`}
+                        >
+                          {formatNumber(promotion.itemCount)}
+                          <span className="muted"> / {formatNumber(promotion.assortmentSize)}</span>
+                        </td>
+                        <td className="num">{formatNumber(promotion.reportCount)}</td>
+                        <td className="num">{formatDecimal(promotion.quantity, 1)}</td>
+                        <td className="num">{formatMoney(promotion.revenue)}</td>
+                        <td className="num">{formatMoney(promotion.discountAmount)}</td>
+                        <td className="num">{formatDecimal(promotion.revenuePerDiscount, 2)}</td>
+                      </tr>
+
+                      {isExpanded ? (
+                        <tr className="promotion-detail-row">
+                          <td colSpan={13}>
+                            {promotion.stores.length > 0 ? (
+                              <table className="data-table sub-table">
+                                <thead>
+                                  <tr>
+                                    <th className="expand-cell" />
+                                    <th>Магазин</th>
+                                    <th className="num">Отчетов</th>
+                                    <th className="num">Товаров</th>
+                                    <th className="num">Кол-во</th>
+                                    <th className="num">Выручка</th>
+                                    <th className="num">Скидка ₸</th>
+                                    <th className="num">Скидка</th>
+                                    <th className="num">Средний отчет</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {promotion.stores.map((store) => {
+                                    const storeKey = `${promotion.key}:${store.key}`;
+                                    const isStoreExpanded = Boolean(expandedStores[storeKey]);
+
+                                    return (
+                                      <Fragment key={store.key}>
+                                        <tr>
+                                          <td className="expand-cell">
+                                            <button
+                                              type="button"
+                                              className="row-toggle"
+                                              aria-expanded={isStoreExpanded}
+                                              aria-label={`Товары магазина «${store.name}» в акции «${promotion.name}»`}
+                                              onClick={() => toggleStore(storeKey)}
+                                            >
+                                              {isStoreExpanded ? (
+                                                <ChevronDown size={14} />
+                                              ) : (
+                                                <ChevronRight size={14} />
+                                              )}
+                                            </button>
+                                          </td>
+                                          <td className="promotion-name">{store.name}</td>
+                                          <td className="num">{formatNumber(store.reportCount)}</td>
+                                          <td className="num">{formatNumber(store.itemCount)}</td>
+                                          <td className="num">{formatDecimal(store.quantity, 1)}</td>
+                                          <td className="num">{formatMoney(store.revenue)}</td>
+                                          <td className="num">{formatMoney(store.discountAmount)}</td>
+                                          <td className="num">{formatDiscountPct(store.discountPct, store.discountPct)}</td>
+                                          <td className="num">{formatMoney(store.avgCheck)}</td>
+                                        </tr>
+
+                                        {isStoreExpanded ? (
+                                          <tr>
+                                            <td colSpan={9}>
+                                              {store.items.length > 0 ? (
+                                                <table className="data-table sub-table items-table">
+                                                  <thead>
+                                                    <tr>
+                                                      <th>Номенклатура</th>
+                                                      <th className="num">Отчетов</th>
+                                                      <th className="num">Кол-во</th>
+                                                      <th className="num">Цена</th>
+                                                      <th className="num">Выручка</th>
+                                                      <th className="num">Скидка ₸</th>
+                                                      <th className="num">Скидка</th>
+                                                    </tr>
+                                                  </thead>
+                                                  <tbody>
+                                                    {store.items.map((item) => (
+                                                      <tr key={item.key}>
+                                                        <td>{item.name}</td>
+                                                        <td className="num">{formatNumber(item.reportCount)}</td>
+                                                        <td className="num">{formatDecimal(item.quantity, 1)}</td>
+                                                        <td className="num">{formatMoney(item.avgPrice)}</td>
+                                                        <td className="num">{formatMoney(item.revenue)}</td>
+                                                        <td className="num">{formatMoney(item.discountAmount)}</td>
+                                                        <td className="num">{formatDecimal(item.discountPct, 2)}%</td>
+                                                      </tr>
+                                                    ))}
+                                                  </tbody>
+                                                </table>
+                                              ) : (
+                                                <div className="empty-state inset">Нет товарной детализации</div>
+                                              )}
+                                            </td>
+                                          </tr>
+                                        ) : null}
+                                      </Fragment>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            ) : (
+                              <div className="empty-state inset">Нет продаж по акции в периоде</div>
+                            )}
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
                   );
                 })}
               </tbody>
             </table>
           </div>
         ) : (
-          <div className="empty-state inset">Нет данных по акциям</div>
+          <div className="empty-state inset">Нет акций с продажами в выбранном периоде</div>
         )}
       </section>
 
-      <PromoItemFlatTable promos={report.promoAnalytics} />
-
-      <PromoAnalyticsTree promos={report.promoAnalytics} />
-
-      {/* Скидки по магазинам */}
       <section className="panel">
         <div className="panel-title">
           <div>
-            <h3>Скидки по магазинам</h3>
-            <span>{formatNumber(report.stores.length)} магазинов</span>
+            <h3>Магазины</h3>
+            <span>
+              {formatNumber(summary.promoStoreCount)} магазинов с акциями · {formatNumber(storeRows.length)} всего
+            </span>
           </div>
-          {report.stores.length > 10 ? (
-            <button
-              onClick={() => setShowAllStores((v) => !v)}
-              type="button"
-              style={{ border: "1px solid #e4e7ec", borderRadius: "6px", padding: "4px 12px", cursor: "pointer", background: "#fff", fontSize: "13px" }}
-            >
-              {showAllStores ? "Свернуть" : `Показать все (${formatNumber(report.stores.length)})`}
-            </button>
+          {storeRows.length > 10 ? (
+            <div className="panel-actions">
+              <button type="button" className="chip" onClick={() => setShowAllStores((value) => !value)}>
+                {showAllStores ? "Свернуть" : `Все (${formatNumber(storeRows.length)})`}
+              </button>
+            </div>
           ) : null}
         </div>
-        {visibleStores.length > 0 ? (
+        <span className="panel-note">
+          Выручка по акциям — сумма продаж, отнесенных к акциям, доля считается от всей выручки
+          магазина за период. Кол-во и товары — проданные по акциям единицы и номенклатура.
+        </span>
+        {visibleStoreRows.length > 0 ? (
           <div className="heatmap-scroll">
             <table className="data-table">
               <thead>
                 <tr>
                   <th>Магазин</th>
-                  <th className="num">Отчетов всего</th>
-                  <th className="num">Со скидкой</th>
+                  <th className="num">Отчетов</th>
                   <th className="num">Выручка</th>
-                  <th className="num">Скидка</th>
-                  <th className="num">Средняя скидка</th>
+                  <th className="num">Выручка по акциям</th>
+                  <th className="num">Доля</th>
+                  <th className="num">Скидка ₸</th>
+                  <th className="num">Кол-во по акциям</th>
+                  <th className="num">Товаров по акциям</th>
+                  <th className="num">Акций</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleStores.map((store) => (
+                {visibleStoreRows.map((store) => (
                   <tr key={store.key}>
-                    <td>{store.name}</td>
-                    <td className="num">{formatNumber(store.totalChecks)}</td>
-                    <td className="num">{formatNumber(store.discountChecks)}</td>
+                    <td className="promotion-name">{store.name}</td>
+                    <td className="num">{formatNumber(store.totalReports)}</td>
                     <td className="num">{formatMoney(store.totalRevenue)}</td>
-                    <td className="num">{formatMoney(store.discountAmount)}</td>
-                    <td className="num">{formatDecimal(store.avgDiscountPct, 1)}%</td>
+                    <td className="num">{formatMoney(store.promoRevenue)}</td>
+                    <td className="num">{formatDecimal(store.promoSharePct, 2)}%</td>
+                    <td className="num">{formatMoney(store.promoDiscountAmount)}</td>
+                    <td className="num">{formatDecimal(store.promoQuantity, 1)}</td>
+                    <td className="num">{formatNumber(store.promoItemCount)}</td>
+                    <td className="num">{formatNumber(store.promotionCount)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1679,335 +1965,114 @@ function MarketingReportBody({ report }: { report: MarketingReport }) {
         )}
       </section>
 
-      {/* Акции по магазинам */}
-      {storePromoGroups.map(([storeKey, spItems]) => {
-        const storeName = spItems[0]?.storeName ?? storeKey;
-        return (
-          <section key={storeKey} className="panel">
-            <div className="panel-title">
-              <div>
-                <h3>Акции — {storeName}</h3>
-                <span>{formatNumber(spItems.length)} акций</span>
-              </div>
-            </div>
-            <div className="heatmap-scroll">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Акция</th>
-                    <th className="num">Отчетов</th>
-                    <th className="num">Выручка</th>
-                    <th className="num">Скидка</th>
-                    <th className="num">Средняя скидка</th>
-                    <th className="num">ROI</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {spItems.map((sp) => {
-                    const roi =
-                      sp.discountAmount > 0
-                        ? ((sp.revenue - sp.discountAmount) / sp.discountAmount)
-                        : 0;
-                    return (
-                      <tr key={sp.promoKey}>
-                        <td>{sp.promoName}</td>
-                        <td className="num">{formatNumber(sp.checkCount)}</td>
-                        <td className="num">{formatMoney(sp.revenue)}</td>
-                        <td className="num">{formatMoney(sp.discountAmount)}</td>
-                        <td className="num">{formatDecimal(sp.avgDiscountPct, 1)}%</td>
-                        <td className="num">{formatDecimal(roi, 1)}x</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        );
-      })}
-
-      {/* ROI summary */}
       <section className="panel">
         <div className="panel-title">
-          <h3>Эффективность и ROI акций</h3>
+          <div>
+            <h3>Товары в акциях</h3>
+            <span>{formatNumber(itemRows.length)} строк акция / магазин / товар</span>
+          </div>
+          {itemRows.length > 100 ? (
+            <div className="panel-actions">
+              <button type="button" className="chip" onClick={() => setShowAllItems((value) => !value)}>
+                {showAllItems ? "Свернуть" : `Все (${formatNumber(itemRows.length)})`}
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <span className="panel-note">
+          Построчная выручка по акциям. «Скидка» — фактический процент, примененный в строке продажи.
+        </span>
+        {visibleItemRows.length > 0 ? (
+          <div className="heatmap-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Акция</th>
+                  <th>Магазин</th>
+                  <th>Номенклатура</th>
+                  <th className="num">Отчетов</th>
+                  <th className="num">Кол-во</th>
+                  <th className="num">Цена</th>
+                  <th className="num">Выручка</th>
+                  <th className="num">Скидка ₸</th>
+                  <th className="num">Скидка</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleItemRows.map((row) => (
+                  <tr key={row.key}>
+                    <td title={row.promotionName}>{row.promotionName}</td>
+                    <td title={row.storeName}>{row.storeName}</td>
+                    <td title={row.itemName}>{row.itemName}</td>
+                    <td className="num">{formatNumber(row.reportCount)}</td>
+                    <td className="num">{formatDecimal(row.quantity, 1)}</td>
+                    <td className="num">{formatMoney(row.avgPrice)}</td>
+                    <td className="num">{formatMoney(row.revenue)}</td>
+                    <td className="num">{formatMoney(row.discountAmount)}</td>
+                    <td className="num">{formatDecimal(row.discountPct, 2)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty-state inset">Нет данных по номенклатуре в акциях</div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Сводка по акциям</h3>
         </div>
         <div className="stack-list">
           <div className="summary-row">
-            <strong>Доля отчетов со скидкой</strong>
+            <strong>Акций в периоде</strong>
             <span>
-              {report.summary.totalChecks > 0
-                ? `${formatDecimal(
-                    (report.summary.discountCheckCount / report.summary.totalChecks) * 100,
-                    1
-                  )}%`
-                : "—"}
+              {formatNumber(summary.promotionCount)} · активных {formatNumber(summary.activePromotionCount)} · с
+              продажами {formatNumber(summary.promotionWithSalesCount)}
             </span>
           </div>
           <div className="summary-row">
-            <strong>Доля выручки со скидкой</strong>
+            <strong>Выручка по акциям</strong>
             <span>
-              {report.summary.totalRevenue > 0
-                ? `${formatDecimal(
-                    (report.summary.revenueWithDiscounts / report.summary.totalRevenue) * 100,
-                    1
-                  )}%`
-                : "—"}
+              {formatMoney(summary.promoRevenue)} · доля {formatDecimal(summary.promoSharePct, 2)}%
             </span>
           </div>
           <div className="summary-row">
-            <strong>Общий ROI скидок</strong>
+            <strong>Выручка без акций</strong>
+            <span>{formatMoney(summary.totalRevenue - summary.promoRevenue)}</span>
+          </div>
+          <div className="summary-row">
+            <strong>Сумма скидок по акциям</strong>
             <span>
-              {report.summary.totalDiscountAmount > 0
-                ? `${formatDecimal(
-                    (report.summary.revenueWithDiscounts - report.summary.totalDiscountAmount) /
-                      report.summary.totalDiscountAmount,
-                    1
-                  )}x`
-                : "—"}
+              {formatMoney(summary.promoDiscountAmount)} · средняя скидка{" "}
+              {formatDecimal(summary.avgDiscountPct, 2)}%
             </span>
           </div>
           <div className="summary-row">
-            <strong>Средняя скидка по всем отчетам</strong>
-            <span>{formatDecimal(report.summary.avgDiscountPct, 1)}%</span>
+            <strong>Выручка до скидки</strong>
+            <span>{formatMoney(summary.promoListRevenue)}</span>
+          </div>
+          <div className="summary-row">
+            <strong>Выручка на 1 ₸ скидки</strong>
+            <span>{formatDecimal(summary.revenuePerDiscount, 2)}</span>
+          </div>
+          <div className="summary-row">
+            <strong>Отчетов с акциями</strong>
+            <span>
+              {formatNumber(summary.promoReportCount)} из {formatNumber(summary.totalReports)}
+              {summary.totalReports > 0
+                ? ` · ${formatDecimal((summary.promoReportCount / summary.totalReports) * 100, 2)}%`
+                : ""}
+            </span>
+          </div>
+          <div className="summary-row">
+            <strong>Средний отчет по акции</strong>
+            <span>{formatMoney(summary.avgCheck)}</span>
           </div>
         </div>
       </section>
     </>
-  );
-}
-
-function PromoItemFlatTable({
-  promos
-}: {
-  promos: MarketingReport["promoAnalytics"];
-}) {
-  const [showAllRows, setShowAllRows] = useState(false);
-  const rows = useMemo(
-    () =>
-      promos.flatMap((promo) =>
-        promo.stores.flatMap((store) =>
-          store.items.map((item) => ({
-            key: `${promo.key}:${store.key}:${item.key}`,
-            promoName: promo.name,
-            storeName: store.name,
-            itemName: item.name,
-            avgPrice: item.avgPrice,
-            discountPct: item.avgDiscountPct,
-            discountAmount: item.discountAmount,
-            quantity: item.quantity,
-            revenue: item.revenue
-          }))
-        )
-      ),
-    [promos]
-  );
-  const visibleRows = showAllRows ? rows : rows.slice(0, 100);
-
-  return (
-    <section className="panel">
-      <div className="panel-title">
-        <div>
-          <h3>Таблица по акциям, магазинам и номенклатуре</h3>
-          <span>{formatNumber(rows.length)} строк</span>
-        </div>
-        {rows.length > 100 ? (
-          <button
-            onClick={() => setShowAllRows((value) => !value)}
-            type="button"
-            style={{ border: "1px solid #e4e7ec", borderRadius: "6px", padding: "4px 12px", cursor: "pointer", background: "#fff", fontSize: "13px" }}
-          >
-            {showAllRows ? "Свернуть" : `Показать все (${formatNumber(rows.length)})`}
-          </button>
-        ) : null}
-      </div>
-
-      {visibleRows.length > 0 ? (
-        <div className="heatmap-scroll">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Акция</th>
-                <th>Магазин</th>
-                <th>Номенклатура</th>
-                <th className="num">Цена</th>
-                <th className="num">Скидка</th>
-                <th className="num">Сумма скидки</th>
-                <th className="num">Кол-во продаж</th>
-                <th className="num">Сумма</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleRows.map((row) => (
-                <tr key={row.key}>
-                  <td title={row.promoName}>{row.promoName}</td>
-                  <td title={row.storeName}>{row.storeName}</td>
-                  <td title={row.itemName}>{row.itemName}</td>
-                  <td className="num">{formatMoney(row.avgPrice)}</td>
-                  <td className="num">{formatDecimal(row.discountPct, 1)}%</td>
-                  <td className="num">{formatMoney(row.discountAmount)}</td>
-                  <td className="num">{formatDecimal(row.quantity, 1)}</td>
-                  <td className="num">{formatMoney(row.revenue)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="empty-state inset">Нет данных по номенклатуре в акциях</div>
-      )}
-    </section>
-  );
-}
-
-function PromoAnalyticsTree({
-  promos
-}: {
-  promos: MarketingReport["promoAnalytics"];
-}) {
-  const [expandedPromos, setExpandedPromos] = useState<Record<string, boolean>>({});
-  const [expandedStores, setExpandedStores] = useState<Record<string, boolean>>({});
-
-  function togglePromo(key: string) {
-    setExpandedPromos((current) => ({ ...current, [key]: !current[key] }));
-  }
-
-  function toggleStore(key: string) {
-    setExpandedStores((current) => ({ ...current, [key]: !current[key] }));
-  }
-
-  return (
-    <section className="panel promo-analytics">
-      <div className="panel-title">
-        <div>
-          <h3>Полная аналитика по акциям</h3>
-          <span>{formatNumber(promos.length)} акций · магазины · номенклатура</span>
-        </div>
-      </div>
-
-      {promos.length === 0 ? (
-        <div className="empty-state inset">Нет товарной аналитики по акциям</div>
-      ) : (
-        <div className="promo-tree">
-          {promos.map((promo) => {
-            const isExpanded = Boolean(expandedPromos[promo.key]);
-            const promoRevenue = promo.itemRevenue > 0 ? promo.itemRevenue : promo.checkRevenue;
-
-            return (
-              <article key={promo.key} className="promo-node">
-                <button
-                  type="button"
-                  className="promo-node-header"
-                  onClick={() => togglePromo(promo.key)}
-                  aria-expanded={isExpanded}
-                >
-                  <span className="promo-toggle-icon">
-                    {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                  </span>
-                  <span className="promo-node-title">
-                    <strong>{promo.name}</strong>
-                    <span>
-                      {formatNumber(promo.checkCount)} отчетов · {formatNumber(promo.storeCount)} магазинов · {formatNumber(promo.itemCount)} товаров · сумма отчетов {formatMoneyCompact(promo.checkRevenue)}
-                    </span>
-                  </span>
-                  <span className="promo-node-metrics">
-                    <PromoStat label="Кол-во" value={formatDecimal(promo.quantity, 1)} />
-                    <PromoStat label="Выручка тов." value={formatMoneyCompact(promoRevenue)} />
-                    <PromoStat label="Скидка" value={formatMoneyCompact(promo.discountAmount)} />
-                    <PromoStat label="Ср. скидка" value={`${formatDecimal(promo.avgDiscountPct, 1)}%`} />
-                    <PromoStat label="ROI" value={`${formatDecimal(promo.roi, 1)}x`} />
-                  </span>
-                </button>
-
-                {isExpanded ? (
-                  <div className="promo-store-list">
-                    {promo.stores.map((store) => {
-                      const storeExpansionKey = `${promo.key}:${store.key}`;
-                      const isStoreExpanded = Boolean(expandedStores[storeExpansionKey]);
-                      const storeRevenue = store.itemRevenue > 0 ? store.itemRevenue : store.checkRevenue;
-
-                      return (
-                        <div key={store.key} className="promo-store-node">
-                          <button
-                            type="button"
-                            className="promo-store-header"
-                            onClick={() => toggleStore(storeExpansionKey)}
-                            aria-expanded={isStoreExpanded}
-                          >
-                            <span className="promo-toggle-icon">
-                              {isStoreExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                            </span>
-                            <span className="promo-node-title">
-                              <strong>{store.name}</strong>
-                              <span>
-                                {formatNumber(store.checkCount)} отчетов · {formatNumber(store.itemCount)} товаров · сумма отчетов {formatMoneyCompact(store.checkRevenue)}
-                              </span>
-                            </span>
-                            <span className="promo-node-metrics compact">
-                              <PromoStat label="Кол-во" value={formatDecimal(store.quantity, 1)} />
-                              <PromoStat label="Выручка тов." value={formatMoneyCompact(storeRevenue)} />
-                              <PromoStat label="Скидка" value={formatMoneyCompact(store.discountAmount)} />
-                              <PromoStat label="ROI" value={`${formatDecimal(store.roi, 1)}x`} />
-                            </span>
-                          </button>
-
-                          {isStoreExpanded ? (
-                            store.items.length > 0 ? (
-                              <div className="heatmap-scroll promo-items-table">
-                                <table className="data-table">
-                                  <thead>
-                                    <tr>
-                                      <th>Номенклатура</th>
-                                      <th className="num">Отчетов</th>
-                                      <th className="num">Кол-во</th>
-                                      <th className="num">Выручка</th>
-                                      <th className="num">Скидка</th>
-                                      <th className="num">Средняя цена</th>
-                                      <th className="num">Средняя скидка</th>
-                                      <th className="num">ROI</th>
-                                      <th className="num">Последняя продажа</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {store.items.map((item) => (
-                                      <tr key={item.key}>
-                                        <td>{item.name}</td>
-                                        <td className="num">{formatNumber(item.checkCount)}</td>
-                                        <td className="num">{formatDecimal(item.quantity, 1)}</td>
-                                        <td className="num">{formatMoney(item.revenue)}</td>
-                                        <td className="num">{formatMoney(item.discountAmount)}</td>
-                                        <td className="num">{formatMoney(item.avgPrice)}</td>
-                                        <td className="num">{formatDecimal(item.avgDiscountPct, 1)}%</td>
-                                        <td className="num">{formatDecimal(item.roi, 1)}x</td>
-                                        <td className="num">{formatDate(item.lastSaleDate)}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            ) : (
-                              <div className="empty-state inset">Нет товарной детализации</div>
-                            )
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
-              </article>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function PromoStat({ label, value }: { label: string; value: string }) {
-  return (
-    <span className="promo-stat">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </span>
   );
 }
 
@@ -2919,17 +2984,20 @@ function TableDetail({ tableName }: { tableName: string }) {
 function MetricCard({
   icon,
   label,
-  value
+  value,
+  detail
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
+  detail?: string;
 }) {
   return (
     <div className="metric-card">
       <div className="metric-icon">{icon}</div>
       <span>{label}</span>
       <strong>{value}</strong>
+      {detail ? <small className="metric-detail">{detail}</small> : null}
     </div>
   );
 }

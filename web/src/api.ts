@@ -247,95 +247,94 @@ export type NomenclatureReport = {
   totalDays: number;
 };
 
+export type MarketingPromotionItem = {
+  key: string;
+  name: string;
+  reportCount: number;
+  lineCount: number;
+  quantity: number;
+  revenue: number;
+  listRevenue: number;
+  discountAmount: number;
+  discountPct: number;
+  avgPrice: number;
+};
+
+export type MarketingPromotionStore = {
+  key: string;
+  name: string;
+  reportCount: number;
+  lineCount: number;
+  quantity: number;
+  itemCount: number;
+  revenue: number;
+  listRevenue: number;
+  discountAmount: number;
+  discountPct: number;
+  avgCheck: number;
+  items: MarketingPromotionItem[];
+};
+
+export type MarketingPromotion = {
+  key: string;
+  name: string;
+  number: string | null;
+  status: "active" | "finished" | "upcoming";
+  startsOn: string | null;
+  endsOn: string | null;
+  discountPctMin: number;
+  discountPctMax: number;
+  reportCount: number;
+  lineCount: number;
+  quantity: number;
+  itemCount: number;
+  assortmentSize: number;
+  storeCount: number;
+  revenue: number;
+  listRevenue: number;
+  discountAmount: number;
+  avgCheck: number;
+  revenuePerDiscount: number;
+  stores: MarketingPromotionStore[];
+};
+
+export type MarketingStore = {
+  key: string;
+  name: string;
+  totalReports: number;
+  totalRevenue: number;
+  promoReports: number;
+  promoRevenue: number;
+  promoDiscountAmount: number;
+  promoQuantity: number;
+  promoItemCount: number;
+  promotionCount: number;
+  promoSharePct: number;
+};
+
 export type MarketingReport = {
   period: SalesPeriod;
   summary: {
     totalRevenue: number;
-    totalChecks: number;
-    revenueWithDiscounts: number;
-    revenueWithoutDiscounts: number;
-    discountCheckCount: number;
-    noDiscountCheckCount: number;
-    totalDiscountAmount: number;
+    totalReports: number;
+    promoRevenue: number;
+    promoListRevenue: number;
+    promoDiscountAmount: number;
+    promoQuantity: number;
+    promoReportCount: number;
+    promoLineCount: number;
+    promoItemCount: number;
+    promoStoreCount: number;
+    promotionCount: number;
+    promotionWithSalesCount: number;
+    activePromotionCount: number;
+    promoSharePct: number;
     avgDiscountPct: number;
-  };
-  promos: Array<{
-    key: string;
-    name: string;
-    checkCount: number;
-    revenue: number;
-    discountAmount: number;
-    avgDiscountPct: number;
-  }>;
-  salesWithoutDiscounts: {
-    checkCount: number;
-    revenue: number;
     avgCheck: number;
+    revenuePerDiscount: number;
   };
-  salesWithDiscounts: {
-    checkCount: number;
-    revenue: number;
-    discountAmount: number;
-    avgCheck: number;
-  };
-  stores: Array<{
-    key: string;
-    name: string;
-    totalChecks: number;
-    totalRevenue: number;
-    discountChecks: number;
-    discountAmount: number;
-    avgDiscountPct: number;
-  }>;
-  storePromos: Array<{
-    storeKey: string;
-    storeName: string;
-    promoKey: string;
-    promoName: string;
-    checkCount: number;
-    revenue: number;
-    discountAmount: number;
-    avgDiscountPct: number;
-  }>;
-  promoAnalytics: Array<{
-    key: string;
-    name: string;
-    checkCount: number;
-    storeCount: number;
-    itemCount: number;
-    quantity: number;
-    checkRevenue: number;
-    itemRevenue: number;
-    discountAmount: number;
-    avgCheck: number;
-    avgDiscountPct: number;
-    roi: number;
-    stores: Array<{
-      key: string;
-      name: string;
-      checkCount: number;
-      itemCount: number;
-      quantity: number;
-      checkRevenue: number;
-      itemRevenue: number;
-      discountAmount: number;
-      avgCheck: number;
-      avgDiscountPct: number;
-      roi: number;
-      items: Array<{
-        key: string;
-        name: string;
-        checkCount: number;
-        quantity: number;
-        revenue: number;
-        discountAmount: number;
-        avgPrice: number;
-        avgDiscountPct: number;
-        roi: number;
-        lastSaleDate: string | null;
-      }>;
-    }>;
-  }>;
+  promotions: MarketingPromotion[];
+  stores: MarketingStore[];
 };
 
 export type InventoryItem = {

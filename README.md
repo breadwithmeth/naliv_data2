@@ -58,6 +58,59 @@ Run the PostgreSQL exporter from `naliv_data1`. Its default and
 compatibility flag is supplied. Detailed commands are in
 `..\naliv_data1\EXPORT_1C_ODATA_INSTRUCTIONS.md`.
 
+## Promotion analytics
+
+The marketing page shows which promotions actually sold, per shop and per item.
+A promotion is only in the data if it has a percent discount rule that is
+effective for the shop, the sale date, and the item, and the discount baked into
+the line matches that rule. The page reads:
+
+- `document_marketingovaya_aktsiya` and its table parts
+  `document_marketingovaya_aktsiya_skidki_natsenki` (rule schedule and shop) and
+  `document_marketingovaya_aktsiya_magaziny` (promotion scope);
+- `catalog_skidki_natsenki` for the rule percent and the segment it applies to;
+- `catalog_segmenty_nomenklatury` for the item composition of that segment;
+- `document_otchet_o_roznichnyh_prodazhah` and
+  `document_otchet_o_roznichnyh_prodazhah_tovary` for the sales themselves.
+
+Retail-report lines do not carry a promotion or discount reference and
+`protsent_skidki_natsenki` is zero on every line, so the link is derived: a line
+belongs to a promotion when the shop and the date fall inside an effective rule
+window, the item is in the rule's segment, and the discount implied by the line
+(`1 - summa / (kolichestvo * tsena)`) is within `0.25` percentage points of the
+rule percent. The tolerance absorbs two-decimal rounding in `summa` while
+staying below the gap between the closest distinct rule percents in the data.
+Verification on 2026-09-21: the closest rule percents on one shop differ by
+0.3 pp, and widening the tolerance from 0.25 to 1.0 pp produced identical totals
+for September, so no line is attributed by rounding alone. A line that satisfies
+several rules of one promotion is counted once, at its highest rule percent.
+
+Item composition is parsed from the data-composition schema inside
+`shema_komponovki_dannyh_base64_data`: the `ФормированиеСегмента` settings
+variant holds the explicit item list, while `ВыводСегмента` only selects output
+fields. The rule set is loaded and parsed once per `REPORT_CACHE_TTL_SECONDS`,
+so a new export becomes visible no later than the report cache itself.
+
+These inputs are part of the nightly export of `naliv_data1`:
+`Document_МаркетинговаяАкция` is read in full on every run (no date window, so a
+promotion edited after its document date still refreshes) and
+`Catalog_СегментыНоменклатуры` is one of the default catalogs. The deployment
+runs the incremental `SCHEDULER_EXPORT_ARGS=--with-catalogs`, which is enough for
+this page, so the analytics follows the export without the heavyweight full set.
+
+`npm run verify:promo-attribution -- --from=2026-09-01 --to=2026-10-01`
+recomputes the whole attribution from a second implementation — PostgreSQL
+parses the segments and picks the rule with a lateral join instead of a window
+function, and the totals come from a plain `group by` — then diffs it against
+the report endpoint. It writes `verify-out/attribution-lines.csv`,
+`verify-out/attribution-summary.json`, and `verify-out/near-miss-lines.json`
+(the lines that fall just outside the tolerance), and exits non-zero on any
+mismatch. `..\naliv_data1\verify_promotions.py` is the 1C-side counterpart: it
+dumps the promotion documents, segment membership, retail-report lines, and
+cheque discounts from OData to compare against these numbers. That script has
+not been run, because the 1C server is not reachable from the development
+machine; run it where OData is available.
+
 ## Performance tuning
 
 Install the analytics indexes once for each populated database:

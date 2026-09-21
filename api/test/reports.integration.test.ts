@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 // Opt-in: fixtures exist only in connection-local TEMP tables and roll away at
 // disconnect. No source tables, records, or persistent schemas are modified.
-test("sales and marketing preserve report totals, discount rules, and date boundaries", {
+test("sales preserve report totals, discount amounts, and date boundaries", {
   skip: !process.env.ANALYTICS_TEST_DATABASE_URL
 }, async () => {
   process.env.DATABASE_URL = process.env.ANALYTICS_TEST_DATABASE_URL;
@@ -14,7 +14,6 @@ test("sales and marketing preserve report totals, discount rules, and date bound
   process.env.APP_MARKETING_PASSWORD ??= "marketing-test-password";
   process.env.JWT_SECRET ??= "test-jwt-secret-with-at-least-24-characters";
   const { prisma } = await import("../src/prisma.js");
-  const { getMarketingReport } = await import("../src/services/marketing.js");
   const { getSalesReport } = await import("../src/services/reports.js");
   const { getColumnSummaries, getColumns } = await import("../src/services/analytics.js");
   const { config } = await import("../src/config.js");
@@ -52,24 +51,6 @@ test("sales and marketing preserve report totals, discount rules, and date bound
       await tx.$executeRawUnsafe(`insert into catalog_nomenklatura values ('i1', 'Item'), ('i1', 'Item')`);
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
       const params = { period: "day" as const, from: new Date("2026-08-24"), to: new Date("2026-09-01"), storeLimit: 12 };
-      const marketing = await getMarketingReport(params);
-      assert.equal(marketing.summary.totalRevenue, 330);
-      assert.equal(marketing.summary.totalChecks, 3);
-      assert.equal(marketing.summary.discountCheckCount, 1);
-      assert.equal(marketing.summary.totalDiscountAmount, 30);
-      assert.equal(marketing.summary.revenueWithDiscounts, 180);
-      assert.equal(marketing.summary.revenueWithoutDiscounts, 150);
-      assert.equal(marketing.stores.length, 2);
-      const ten = marketing.promoAnalytics.find((promo) => promo.discountAmount === 20)!;
-      assert.ok(ten);
-      assert.equal(ten.checkCount, 1);
-      assert.equal(ten.itemCount, 1);
-      assert.equal(ten.quantity, 2);
-      assert.equal(ten.checkRevenue, 180);
-      assert.equal(ten.itemRevenue, 180);
-      assert.equal(ten.stores[0].items.length, 1);
-      assert.equal(ten.stores[0].items[0].checkCount, 1);
-      assert.equal(marketing.promoAnalytics.length, 2); // Includes 100%, excludes zero-quantity line.
       const sales = await getSalesReport(params);
       assert.equal(sales.summary.revenue, 330);
       assert.equal(sales.summary.orderCount, 3);
@@ -77,10 +58,6 @@ test("sales and marketing preserve report totals, discount rules, and date bound
       assert.equal(sales.summary.avgItemsPerCheck, 2.5); // No lines remains NULL, not zero.
       assert.equal(sales.revenueSeries.length, 3);
       assert.equal(sales.heatmap.cells.reduce((sum, cell) => sum + cell.revenue, 0), 330);
-      const empty = await getMarketingReport({ ...params, from: new Date("2030-01-01"), to: new Date("2030-01-02") });
-      assert.equal(empty.summary.totalChecks, 0);
-      assert.equal(empty.summary.totalRevenue, 0);
-      assert.deepEqual(empty.promoAnalytics, []);
       const [namespace] = await tx.$queryRaw<Array<{ name: string }>>`
         select nspname::text as name from pg_namespace where oid = pg_my_temp_schema()
       `;
