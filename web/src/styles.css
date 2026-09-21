@@ -862,6 +862,64 @@ select:focus {
   background: #fffaeb;
 }
 
+.status-chip.failed {
+  color: #b42318;
+  background: #fef3f2;
+}
+
+.sync-panel {
+  margin-bottom: 18px;
+}
+
+.sync-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
+.sync-facts > div {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #eef2f6;
+  border-radius: 7px;
+}
+
+.sync-facts dt {
+  color: #667085;
+  font-size: 12px;
+}
+
+.sync-facts dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.sync-facts dd .status-chip {
+  margin-right: 6px;
+}
+
+.sync-facts dd .muted {
+  font-weight: 400;
+}
+
+.sync-subtitle {
+  margin: 18px 0 8px;
+  font-size: 14px;
+}
+
+.muted code,
+.panel-note code {
+  padding: 1px 5px;
+  font-size: 12px;
+  background: #f2f4f7;
+  border-radius: 4px;
+}
+
 .promotion-detail-row > td {
   padding: 0 0 8px 34px;
   background: #f8fafc;

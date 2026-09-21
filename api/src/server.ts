@@ -12,6 +12,7 @@ import { marketingRouter } from "./routes/marketing.js";
 import { requireAuth, restrictMarketingApiSurface } from "./middleware/auth.js";
 import { nomenclatureRouter } from "./routes/nomenclature.js";
 import { reportsRouter } from "./routes/reports.js";
+import { syncRouter } from "./routes/sync.js";
 
 const app = express();
 
@@ -39,6 +40,7 @@ app.use("/api/reports", reportsRouter);
 app.use("/api/nomenclature", nomenclatureRouter);
 app.use("/api/marketing", marketingRouter);
 app.use("/api/inventory", inventoryRouter);
+app.use("/api/sync", syncRouter);
 
 const clientDistPath = path.resolve(process.cwd(), "web/dist");
 

@@ -46,6 +46,9 @@ import {
   type ReportDateRange,
   type SalesPeriod,
   type SalesReport,
+  type SyncHealth,
+  type SyncRun,
+  type SyncTableFreshness,
   type TableProfile,
   type TimeSeriesPoint,
   type User
@@ -55,7 +58,9 @@ import {
   formatCell,
   formatCompact,
   formatDate,
+  formatDateTime,
   formatDecimal,
+  formatDurationSeconds,
   formatMoney,
   formatMoneyCompact,
   formatNumber
@@ -351,6 +356,8 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
                     value={formatBytes(overview.totalBytes)}
                   />
                 </section>
+
+                <SyncPanel />
 
                 <DataCatalogOverview overview={overview} onSelectTable={setSelectedTable} />
 
@@ -3017,6 +3024,322 @@ function MetricCard({
       <strong>{value}</strong>
       {detail ? <small className="metric-detail">{detail}</small> : null}
     </div>
+  );
+}
+
+const syncStatusLabels: Record<string, string> = {
+  success: "успех",
+  failed: "ошибка",
+  interrupted: "прерван",
+  running: "выполняется"
+};
+
+const syncModeLabels: Record<string, string> = {
+  scheduled: "расписание",
+  explicit: "вручную"
+};
+
+function syncStatusClass(status: string | null | undefined) {
+  if (status === "success") {
+    return "active";
+  }
+
+  if (status === "failed") {
+    return "failed";
+  }
+
+  return "upcoming";
+}
+
+function syncStatusLabel(status: string | null | undefined) {
+  if (!status) {
+    return "нет данных";
+  }
+
+  return syncStatusLabels[status] ?? status;
+}
+
+function formatAgeHours(ageHours: number | null) {
+  if (ageHours === null) {
+    return "—";
+  }
+
+  if (ageHours < 1) {
+    return "меньше часа";
+  }
+
+  if (ageHours < 48) {
+    return `${Math.round(ageHours)} ч`;
+  }
+
+  return `${Math.floor(ageHours / 24)} дн ${Math.round(ageHours % 24)} ч`;
+}
+
+function syncRangeLabel(run: SyncRun) {
+  if (!run.range_start || !run.range_end_exclusive) {
+    return "—";
+  }
+
+  return `${formatDate(run.range_start)} → ${formatDate(run.range_end_exclusive)}`;
+}
+
+function SyncFreshnessTable({ rows }: { rows: SyncTableFreshness[] }) {
+  if (rows.length === 0) {
+    return <p className="muted">Таблиц этой группы в схеме нет.</p>;
+  }
+
+  return (
+    <div className="data-table-wrap">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Таблица</th>
+            <th className="num">Строк</th>
+            <th className="num">Изменений</th>
+            <th>Последнее изменение (UTC)</th>
+            <th className="num">Давность</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.table}>
+              <td title={row.table}>{row.table}</td>
+              <td className="num">{formatNumber(row.rows)}</td>
+              <td className="num">{formatNumber(row.changes)}</td>
+              <td>{row.lastChangeUtc ?? "—"}</td>
+              <td className="num">
+                {formatAgeHours(row.ageHours)}
+                {row.unchangedForOverTwoDays ? (
+                  <span className="status-chip upcoming" style={{ marginLeft: 8 }}>
+                    устарела
+                  </span>
+                ) : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SyncPanel() {
+  const [state, setState] = useState<LoadState<SyncHealth>>({ status: "loading" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({ status: "loading" });
+    api
+      .syncHealth(controller.signal)
+      .then((health) => {
+        if (!controller.signal.aborted) {
+          setState({ status: "success", data: health });
+        }
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setState({
+          status: "error",
+          error:
+            caught instanceof Error
+              ? caught.message
+              : "Не удалось загрузить состояние синхронизации"
+        });
+      });
+
+    return () => controller.abort();
+  }, []);
+
+  const health = state.data;
+  const latest = health?.latest ?? null;
+  const failedChunk = latest?.per_chunk.find((chunk) => chunk.exit_code !== 0) ?? null;
+  const hoursSinceStart = latest?.started_at
+    ? (Date.now() - new Date(latest.started_at).getTime()) / 3_600_000
+    : null;
+  const runOverdue =
+    health !== undefined && hoursSinceStart !== null && hoursSinceStart > health.staleAfterHours;
+
+  return (
+    <section className="panel sync-panel">
+      <div className="panel-title">
+        <h3>Синхронизация 1C</h3>
+        {health ? (
+          <span>
+            {latest
+              ? `Последний запуск ${formatDateTime(latest.started_at)} · прошло ${formatAgeHours(hoursSinceStart)}`
+              : "Записей о запусках нет"}
+            {runOverdue ? " · запуск давно не выполнялся" : ""}
+          </span>
+        ) : null}
+      </div>
+
+      {state.status === "loading" ? (
+        <FullScreenState title="Загружаем состояние синхронизации" compact />
+      ) : null}
+
+      {state.status === "error" ? (
+        <div className="empty-state inset">{state.error}</div>
+      ) : null}
+
+      {health && !health.available ? (
+        <p className="panel-note">
+          Таблица <code>ops.sync_runs</code> недоступна: у базы нет этой таблицы либо у роли
+          сайта нет прав на схему <code>ops</code>. Свежесть таблиц ниже считается независимо.
+          {health.unavailableReason ? ` Ответ базы: ${health.unavailableReason}` : ""}
+        </p>
+      ) : null}
+
+      {health && health.available && !latest ? (
+        <p className="panel-note">
+          Планировщик экспорта ещё не записал ни одного запуска в <code>ops.sync_runs</code>.
+        </p>
+      ) : null}
+
+      {health && latest ? (
+        <>
+          <dl className="sync-facts">
+            <div>
+              <dt>Состояние последнего запуска</dt>
+              <dd>
+                <span className={`status-chip ${syncStatusClass(latest.status)}`}>
+                  {syncStatusLabel(latest.status)}
+                </span>
+                <span className="muted"> код выхода {latest.exit_code ?? "—"}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Завершён</dt>
+              <dd>{formatDateTime(latest.finished_at)}</dd>
+            </div>
+            <div>
+              <dt>Длительность</dt>
+              <dd>{formatDurationSeconds(latest.duration_seconds)}</dd>
+            </div>
+            <div>
+              <dt>Диапазон данных</dt>
+              <dd>{syncRangeLabel(latest)}</dd>
+            </div>
+            <div>
+              <dt>Строк прочитано / записано</dt>
+              <dd>
+                {formatNumber(latest.rows_read ?? 0)} / {formatNumber(latest.rows_written ?? 0)}
+              </dd>
+            </div>
+            <div>
+              <dt>Порции</dt>
+              <dd>
+                {latest.chunks_completed ?? 0} из {latest.chunks_planned ?? 0}
+                {latest.mode ? ` · ${syncModeLabels[latest.mode] ?? latest.mode}` : ""}
+              </dd>
+            </div>
+            <div>
+              <dt>Данные покрыты до</dt>
+              <dd>
+                {formatDate(latest.checkpoint_after)}
+                <span className="muted">
+                  {latest.checkpoint_before
+                    ? ` · было ${formatDate(latest.checkpoint_before)}`
+                    : ""}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Глубокая перепроверка</dt>
+              <dd>
+                {formatDate(latest.deep_reread_month)}
+                <span className="muted">
+                  {latest.deep_reread_status ? ` · ${syncStatusLabel(latest.deep_reread_status)}` : ""}
+                </span>
+              </dd>
+            </div>
+          </dl>
+
+          {latest.error_class || failedChunk ? (
+            <p className="panel-note">
+              {failedChunk
+                ? `Порция ${failedChunk.start} → ${failedChunk.end_exclusive} завершилась с кодом ${failedChunk.exit_code}. `
+                : ""}
+              {latest.error_class ? `Причина: ${latest.error_class}. ` : ""}
+              Подробности — в логе запуска на сервере экспорта, метрики — в файле
+              {" "}
+              <code>metrics/…</code>.
+            </p>
+          ) : null}
+
+          <p className="panel-note">
+            «Изменений» — сколько раз содержимое таблицы менялось: <code>_loaded_at</code>
+            {" "}обновляется только при изменении строк, поэтому давняя дата означает отсутствие
+            новых данных в 1C, а не пропуск экспорта. Конец диапазона не включается.
+            Сборка экспортёра: {latest.sync_source_sha256
+              ? latest.sync_source_sha256.slice(0, 12)
+              : "—"}
+            {latest.skipped_entities ? ` · пропущено сущностей: ${latest.skipped_entities}` : ""}
+            .
+          </p>
+        </>
+      ) : null}
+
+      {health ? (
+        <>
+          <h4 className="sync-subtitle">Свежесть таблиц</h4>
+          {health.groups.map((group) => (
+            <div key={group.title}>
+              <p className="muted">{group.title}</p>
+              <SyncFreshnessTable rows={group.tables} />
+            </div>
+          ))}
+        </>
+      ) : null}
+
+      {health && health.runs.length > 0 ? (
+        <>
+          <h4 className="sync-subtitle">Последние запуски</h4>
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Начало</th>
+                  <th>Состояние</th>
+                  <th>Режим</th>
+                  <th>Диапазон</th>
+                  <th className="num">Порции</th>
+                  <th className="num">Строк (чтение → запись)</th>
+                  <th className="num">Длительность</th>
+                  <th>Причина</th>
+                </tr>
+              </thead>
+              <tbody>
+                {health.runs.map((run) => (
+                  <tr key={run.id}>
+                    <td>{formatDateTime(run.started_at)}</td>
+                    <td>
+                      <span className={`status-chip ${syncStatusClass(run.status)}`}>
+                        {syncStatusLabel(run.status)}
+                      </span>
+                    </td>
+                    <td>{run.mode ? (syncModeLabels[run.mode] ?? run.mode) : "—"}</td>
+                    <td>{syncRangeLabel(run)}</td>
+                    <td className="num">
+                      {run.chunks_completed ?? 0}/{run.chunks_planned ?? 0}
+                    </td>
+                    <td className="num">
+                      {formatNumber(run.rows_read ?? 0)} → {formatNumber(run.rows_written ?? 0)}
+                    </td>
+                    <td className="num">{formatDurationSeconds(run.duration_seconds)}</td>
+                    <td title={run.command ?? undefined}>
+                      {run.error_class ?? (run.exit_code ? `код ${run.exit_code}` : "—")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+    </section>
   );
 }
 

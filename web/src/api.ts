@@ -77,6 +77,67 @@ export type TableProfile = {
   }>;
 };
 
+export type SyncRunChunk = {
+  kind: string;
+  start: string;
+  end_exclusive: string;
+  documents_only: boolean;
+  exit_code: number;
+  rows_read: number | null;
+  rows_written: number | null;
+  seconds: number | null;
+};
+
+export type SyncRun = {
+  id: number;
+  started_at: string | null;
+  finished_at: string | null;
+  status: string | null;
+  exit_code: number | null;
+  mode: string | null;
+  error_class: string | null;
+  range_start: string | null;
+  range_end_exclusive: string | null;
+  chunks_planned: number | null;
+  chunks_completed: number | null;
+  lookback_days: number | null;
+  catchup_chunk_days: number | null;
+  checkpoint_before: string | null;
+  checkpoint_after: string | null;
+  coverage_started_at: string | null;
+  rows_read: number | null;
+  rows_written: number | null;
+  skipped_entities: number | null;
+  restricted_optional_entities: number | null;
+  deep_reread_status: string | null;
+  deep_reread_month: string | null;
+  duration_seconds: number | null;
+  command: string | null;
+  per_chunk: SyncRunChunk[];
+  sync_source_sha256: string | null;
+};
+
+export type SyncTableFreshness = {
+  group: string;
+  table: string;
+  rows: number;
+  changes: number;
+  lastChangeUtc: string | null;
+  ageHours: number | null;
+  unchangedForOverTwoDays: boolean;
+};
+
+export type SyncHealth = {
+  available: boolean;
+  unavailableReason: string | null;
+  generatedAtUtc: string;
+  staleAfterHours: number;
+  schema: string;
+  latest: SyncRun | null;
+  runs: SyncRun[];
+  groups: Array<{ title: string; tables: SyncTableFreshness[] }>;
+};
+
 export type TimeSeriesPoint = {
   bucket: string;
   metric: number;
@@ -446,6 +507,9 @@ export const api = {
   },
   overview() {
     return request<Overview>("/api/analytics/overview");
+  },
+  syncHealth(signal?: AbortSignal) {
+    return request<SyncHealth>("/api/sync/health", { signal });
   },
   salesReport(filters: ReportRequest, signal?: AbortSignal) {
     const params = new URLSearchParams({

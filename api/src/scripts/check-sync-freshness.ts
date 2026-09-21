@@ -6,12 +6,17 @@
 // information", never as proof of whether the scheduled export touched it: a
 // table that is exported every night with identical content keeps its old
 // timestamp. The companion exporter check is
-// `python run_scheduled_export.py --lookback-days 3 -- --with-catalogs` (writes,
+// `python run_scheduled_export.py --lookback-days 7 -- --with-catalogs` (writes,
 // 1C reachable) and `export_1c_odata_to_postgres.py --dry-run` (reads only).
 //
 // Usage: npx tsx api/src/scripts/check-sync-freshness.ts [--schema=raw_1c] [--json]
 
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../prisma.js";
+import {
+  SYNC_STALE_AFTER_HOURS as STALE_AFTER_HOURS,
+  collectTableFreshness,
+  type SyncTableFreshness as TableFreshness
+} from "../services/sync-health.js";
 
 type Args = { schema: string; json: boolean };
 
@@ -31,85 +36,8 @@ function parseArgs(argv: string[]): Args {
   return { schema: values.get("schema") ?? "raw_1c", json: values.has("json") };
 }
 
-// Grouped by how the scheduled export covers each entity set.
-const GROUPS: Array<{ title: string; tables: string[] }> = [
-  {
-    title: "Документы периода — экспортируются каждую ночь в окне 04:00–06:00 Asia/Qyzylorda",
-    tables: ["document_otchet_o_roznichnyh_prodazhah", "document_postuplenie_tovarov"]
-  },
-  {
-    title: "Справочники периода — экспортируются в финальной порции каждого запуска",
-    tables: [
-      "catalog_nomenklatura",
-      "catalog_informatsionnye_karty",
-      "catalog_skidki_natsenki",
-      "catalog_segmenty_nomenklatury",
-      "catalog_magaziny",
-      "catalog_sklady"
-    ]
-  },
-  {
-    title: "Данные акций — документ акций читается целиком, без окна дат",
-    tables: [
-      "document_marketingovaya_aktsiya",
-      "document_marketingovaya_aktsiya_skidki_natsenki",
-      "document_marketingovaya_aktsiya_magaziny"
-    ]
-  }
-];
-
-const STALE_AFTER_HOURS = 48;
-
-type TableFreshness = {
-  group: string;
-  table: string;
-  rows: number;
-  changes: number;
-  lastChangeUtc: string | null;
-  ageHours: number | null;
-  unchangedForOverTwoDays: boolean;
-};
-
 const args = parseArgs(process.argv.slice(2));
-const prisma = new PrismaClient();
-const schema = args.schema.replaceAll('"', '""');
-
-const existing = new Set(
-  (
-    await prisma.$queryRawUnsafe<Array<{ table_name: string }>>(
-      `select table_name from information_schema.tables
-       where table_schema = $1 and table_type = 'BASE TABLE'`,
-      args.schema
-    )
-  ).map((row) => row.table_name)
-);
-
-const tables: TableFreshness[] = [];
-for (const group of GROUPS) {
-  for (const table of group.tables) {
-    if (!existing.has(table)) {
-      continue;
-    }
-    const stats = await prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(
-      `select count(*) as rows,
-              count(distinct "_loaded_at") as changes,
-              max("_loaded_at") as last_change
-       from "${schema}"."${table}"`
-    );
-    const row = stats[0] ?? {};
-    const lastChange = row.last_change instanceof Date ? row.last_change : null;
-    const ageHours = lastChange ? (Date.now() - lastChange.getTime()) / 3_600_000 : null;
-    tables.push({
-      group: group.title,
-      table,
-      rows: Number(row.rows ?? 0),
-      changes: Number(row.changes ?? 0),
-      lastChangeUtc: lastChange ? lastChange.toISOString().slice(0, 19).replace("T", " ") : null,
-      ageHours: ageHours === null ? null : Math.round(ageHours * 10) / 10,
-      unchangedForOverTwoDays: ageHours !== null && ageHours > STALE_AFTER_HOURS
-    });
-  }
-}
+const tables: TableFreshness[] = await collectTableFreshness(args.schema);
 
 if (args.json) {
   console.log(

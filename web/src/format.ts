@@ -56,6 +56,43 @@ export function formatDate(value: string | null | undefined) {
   }).format(date);
 }
 
+export function formatDateTime(value: string | null | undefined) {
+  if (!value) {
+    return "нет данных";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+export function formatDurationSeconds(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+
+  if (value < 60) {
+    return `${Math.round(value)} с`;
+  }
+
+  const minutes = Math.floor(value / 60);
+  if (minutes < 60) {
+    return `${minutes} мин ${String(Math.round(value - minutes * 60)).padStart(2, "0")} с`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  return `${hours} ч ${String(minutes - hours * 60).padStart(2, "0")} мин`;
+}
+
 export function formatCell(value: unknown) {
   if (value === null || value === undefined) {
     return "NULL";

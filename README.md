@@ -67,6 +67,24 @@ Run the PostgreSQL exporter from `naliv_data1`. Its default and
 compatibility flag is supplied. Detailed commands are in
 `..\naliv_data1\EXPORT_1C_ODATA_INSTRUCTIONS.md`.
 
+## Sync panel
+
+The "База данных" page starts with a read-only "Синхронизация" panel fed by
+`GET /api/sync/health` (admin only). It shows the newest run recorded by
+`naliv_data1` in `ops.sync_runs` (status, exit code, coverage, deep re-read
+month, failing chunk), how current each exported table is, and the last ten
+runs. `api/src/services/sync-health.ts` reads the table with a raw query — it
+has no Prisma model, and `docs`/`ops` are not part of the report path.
+
+The panel is diagnostic, never a dependency: when the table does not exist yet,
+or the site's role cannot read schema `ops`, the endpoint answers
+`available: false` with a reason and the freshness part is still rendered. Table
+freshness means "content changed" — `_loaded_at` is bumped only when a row
+differs, so an old timestamp means 1C had no new data, not that the export
+skipped the table. That mode is what `api/src/scripts/check-sync-freshness.ts`
+prints, and it shares `SYNC_TABLE_GROUPS`, `SYNC_STALE_AFTER_HOURS`, and
+`collectTableFreshness` with the service.
+
 ## Promotion analytics
 
 The marketing page shows which promotions actually sold, per shop and per item.
