@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { config } from "../config.js";
 import { prisma } from "../prisma.js";
+import { canonicalItemCostsCtes } from "../lib/cost-sql.js";
 
 export type SalesPeriod = "day" | "week" | "month";
 
@@ -24,7 +25,10 @@ function retailSalesFilters(params: SalesReportParams) {
     Prisma.sql`r.date is not null`,
     Prisma.sql`r.deletion_mark is not true`,
     Prisma.sql`r.posted = true`,
-    Prisma.sql`r.summa_dokumenta > 0`
+    Prisma.sql`(
+      coalesce(r.summa_dokumenta, 0) <> 0
+      or coalesce(r.summa_vozvratov, 0) <> 0
+    )`
   ];
 
   if (params.from) {
@@ -41,31 +45,55 @@ function retailSalesFilters(params: SalesReportParams) {
 function retailReportsCte(params: SalesReportParams) {
   const reportsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah");
   const itemsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah_tovary");
+  const returnItemsTable = qualifiedTable(
+    "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary"
+  );
   const whereSql = retailSalesFilters(params);
   const unknownStore = "Без магазина";
   const emptyRef = "00000000-0000-0000-0000-000000000000";
 
   return Prisma.sql`
     with selected_reports as materialized (
-      select r.ref_key, r.date, r.summa_dokumenta, r.magazin_key
+      select
+        r.ref_key,
+        r.date,
+        coalesce(r.summa_dokumenta, 0)::float8 as gross_revenue,
+        coalesce(r.summa_vozvratov, 0)::float8 as return_amount,
+        r.magazin_key
       from ${reportsTable} r
       where ${whereSql}
     ),
-    item_totals as (
+    item_movements as (
       select
         t."_parent_ref_key" as parent_ref_key,
-        sum(coalesce(t.kolichestvo, 0))::float8 as item_quantity
+        coalesce(t.kolichestvo, 0)::float8 as item_quantity
       from ${itemsTable} t
       where exists (
         select 1 from selected_reports r where r.ref_key = t."_parent_ref_key"
       )
-      group by t."_parent_ref_key"
+      union all
+      select
+        t."_parent_ref_key" as parent_ref_key,
+        -coalesce(t.kolichestvo, 0)::float8 as item_quantity
+      from ${returnItemsTable} t
+      where exists (
+        select 1 from selected_reports r where r.ref_key = t."_parent_ref_key"
+      )
+    ),
+    item_totals as (
+      select
+        parent_ref_key,
+        sum(item_quantity)::float8 as item_quantity
+      from item_movements
+      group by parent_ref_key
     ),
     checks as (
       select
         r.ref_key,
         r.date as sale_at,
-        coalesce(r.summa_dokumenta, 0)::float8 as revenue,
+        r.gross_revenue,
+        r.return_amount,
+        (r.gross_revenue - r.return_amount)::float8 as revenue,
         i.item_quantity,
         nullif(r.ref_key, ${emptyRef}) as retail_report_key,
         coalesce(nullif(r.magazin_key, ''), ${unknownStore}) as store_key
@@ -95,6 +123,8 @@ export async function getSalesReport(params: SalesReportParams) {
   const seriesQuery = prisma.$queryRaw<
     Array<{
       bucket: Date | null;
+      gross_revenue: number | null;
+      returns: number | null;
       revenue: number | null;
       order_count: bigint | number;
       avg_check: number | null;
@@ -107,6 +137,8 @@ export async function getSalesReport(params: SalesReportParams) {
     ${retailReportsCte(params)}
     select
       date_trunc(${params.period}, sale_at) as bucket,
+      coalesce(sum(gross_revenue), 0)::float8 as gross_revenue,
+      coalesce(sum(return_amount), 0)::float8 as returns,
       coalesce(sum(revenue), 0)::float8 as revenue,
       count(*) as order_count,
       coalesce(avg(revenue), 0)::float8 as avg_check,
@@ -202,6 +234,8 @@ export async function getSalesReport(params: SalesReportParams) {
     summary: {
       dateFrom: summaryRow?.date_from?.toISOString() ?? null,
       dateTo: summaryRow?.date_to?.toISOString() ?? null,
+      grossRevenue: Number(summaryRow?.gross_revenue ?? 0),
+      returns: Number(summaryRow?.returns ?? 0),
       revenue: Number(summaryRow?.revenue ?? 0),
       orderCount: Number(summaryRow?.order_count ?? 0),
       avgCheck: Number(summaryRow?.avg_check ?? 0),
@@ -210,6 +244,8 @@ export async function getSalesReport(params: SalesReportParams) {
     },
     revenueSeries: periodRows.map((row) => ({
       bucket: row.bucket!.toISOString(),
+      grossRevenue: Number(row.gross_revenue ?? 0),
+      returns: Number(row.returns ?? 0),
       revenue: Number(row.revenue ?? 0),
       orderCount: Number(row.order_count ?? 0),
       avgCheck: Number(row.avg_check ?? 0),
@@ -237,21 +273,10 @@ export async function getSalesReport(params: SalesReportParams) {
 function retailReportCte(params: SalesReportParams) {
   const reportsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah");
   const reportItemsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah_tovary");
-
-  const filters: Prisma.Sql[] = [
-    Prisma.sql`r.date is not null`,
-    Prisma.sql`r.deletion_mark is not true`,
-    Prisma.sql`r.posted = true`,
-    Prisma.sql`r.summa_dokumenta > 0`
-  ];
-
-  if (params.from) {
-    filters.push(Prisma.sql`r.date >= ${params.from}`);
-  }
-
-  if (params.to) {
-    filters.push(Prisma.sql`r.date < ${params.to}`);
-  }
+  const returnItemsTable = qualifiedTable(
+    "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary"
+  );
+  const whereSql = retailSalesFilters(params);
 
   return Prisma.sql`
     retail_items as (
@@ -263,30 +288,19 @@ function retailReportCte(params: SalesReportParams) {
         coalesce(ri.summa, 0)::float8 as line_revenue
       from ${reportItemsTable} ri
       join ${reportsTable} r on r.ref_key = ri."_parent_ref_key"
-      where ${Prisma.join(filters, " and ")}
+      where ${whereSql}
         and ri.nomenklatura_key is not null
-        and ri.kolichestvo > 0
-    )
-  `;
-}
-
-function itemCostsCte() {
-  const postuplenieTable = qualifiedTable("document_postuplenie_tovarov");
-  const postuplenieTovaryTable = qualifiedTable("document_postuplenie_tovarov_tovary");
-
-  return Prisma.sql`
-    item_costs as (
+      union all
       select
-        pt.nomenklatura_key,
-        avg(pt.tsena)::float8 as avg_purchase_price
-      from ${postuplenieTovaryTable} pt
-      join ${postuplenieTable} p on p.ref_key = pt."_parent_ref_key"
-      where p.deletion_mark is not true
-        and p.posted = true
-        and pt.nomenklatura_key is not null
-        and pt.tsena is not null
-        and pt.tsena > 0
-      group by pt.nomenklatura_key
+        r.date as sale_at,
+        ri.nomenklatura_key,
+        nullif(r.magazin_key, '') as magazin_key,
+        -coalesce(ri.kolichestvo, 0)::float8 as sold_qty,
+        -coalesce(ri.summa, 0)::float8 as line_revenue
+      from ${returnItemsTable} ri
+      join ${reportsTable} r on r.ref_key = ri."_parent_ref_key"
+      where ${whereSql}
+        and ri.nomenklatura_key is not null
     )
   `;
 }
@@ -308,22 +322,33 @@ export async function getIncomeReport(params: IncomeReportParams) {
       cost: number | null;
       gross_profit: number | null;
       margin_pct: number | null;
+      cost_coverage_pct: number | null;
+      unvalued_revenue: number | null;
       date_from: Date | null;
       date_to: Date | null;
     }>
   >`
     with
     ${retailReportCte(params)},
-    ${itemCostsCte()},
+    ${canonicalItemCostsCtes(params.to)},
     item_profit as (
       select
         date_trunc(${params.period}, ri.sale_at) as bucket,
         coalesce(sum(ri.line_revenue), 0)::float8 as revenue,
-        coalesce(sum(ri.sold_qty * coalesce(ic.avg_purchase_price, 0)), 0)::float8 as cost,
+        coalesce(sum(
+          ri.sold_qty * coalesce(sc.unit_cost, gc.unit_cost, pc.unit_cost, 0)
+        ), 0)::float8 as cost,
+        coalesce(sum(abs(ri.line_revenue)), 0)::float8 as absolute_revenue,
+        coalesce(sum(abs(ri.line_revenue)) filter (
+          where coalesce(sc.unit_cost, gc.unit_cost, pc.unit_cost) is null
+        ), 0)::float8 as unvalued_revenue,
         min(ri.sale_at) as date_from,
         max(ri.sale_at) as date_to
       from retail_items ri
-      left join item_costs ic on ic.nomenklatura_key = ri.nomenklatura_key
+      left join latest_store_costs sc
+        on sc.magazin_key = ri.magazin_key and sc.nomenklatura_key = ri.nomenklatura_key
+      left join latest_global_costs gc on gc.nomenklatura_key = ri.nomenklatura_key
+      left join purchase_costs_90d pc on pc.nomenklatura_key = ri.nomenklatura_key
       group by grouping sets ((1), ())
     )
     select
@@ -335,6 +360,11 @@ export async function getIncomeReport(params: IncomeReportParams) {
         then ((pp.revenue - pp.cost) / pp.revenue * 100)::float8
         else 0
       end as margin_pct,
+      case when pp.absolute_revenue > 0
+        then ((pp.absolute_revenue - pp.unvalued_revenue) / pp.absolute_revenue * 100)::float8
+        else 100
+      end as cost_coverage_pct,
+      pp.unvalued_revenue,
       pp.date_from,
       pp.date_to
     from item_profit pp
@@ -354,16 +384,21 @@ export async function getIncomeReport(params: IncomeReportParams) {
   >`
     with
     ${retailReportCte(params)},
-    ${itemCostsCte()},
+    ${canonicalItemCostsCtes(params.to)},
     store_item_profit as (
       select
         coalesce(ri.magazin_key, 'Без магазина') as magazin_key,
         ri.nomenklatura_key,
         coalesce(sum(ri.sold_qty), 0)::float8 as sold_qty,
         coalesce(sum(ri.line_revenue), 0)::float8 as revenue,
-        coalesce(sum(ri.sold_qty * coalesce(ic.avg_purchase_price, 0)), 0)::float8 as cost
+        coalesce(sum(
+          ri.sold_qty * coalesce(sc.unit_cost, gc.unit_cost, pc.unit_cost, 0)
+        ), 0)::float8 as cost
       from retail_items ri
-      left join item_costs ic on ic.nomenklatura_key = ri.nomenklatura_key
+      left join latest_store_costs sc
+        on sc.magazin_key = ri.magazin_key and sc.nomenklatura_key = ri.nomenklatura_key
+      left join latest_global_costs gc on gc.nomenklatura_key = ri.nomenklatura_key
+      left join purchase_costs_90d pc on pc.nomenklatura_key = ri.nomenklatura_key
       group by coalesce(ri.magazin_key, 'Без магазина'), ri.nomenklatura_key
     )
     select
@@ -460,14 +495,17 @@ export async function getIncomeReport(params: IncomeReportParams) {
       revenue: Number(summaryRow?.revenue ?? 0),
       cost: Number(summaryRow?.cost ?? 0),
       grossProfit: Number(summaryRow?.gross_profit ?? 0),
-      marginPct: Number(summaryRow?.margin_pct ?? 0)
+      marginPct: Number(summaryRow?.margin_pct ?? 0),
+      costCoveragePct: Number(summaryRow?.cost_coverage_pct ?? 100),
+      unvaluedRevenue: Number(summaryRow?.unvalued_revenue ?? 0)
     },
     incomeSeries: periodRows.map((row) => ({
       bucket: row.bucket!.toISOString(),
       revenue: Number(row.revenue ?? 0),
       cost: Number(row.cost ?? 0),
       grossProfit: Number(row.gross_profit ?? 0),
-      marginPct: Number(row.margin_pct ?? 0)
+      marginPct: Number(row.margin_pct ?? 0),
+      costCoveragePct: Number(row.cost_coverage_pct ?? 100)
     })),
     stores,
     items,

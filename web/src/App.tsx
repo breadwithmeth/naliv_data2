@@ -33,12 +33,15 @@ import {
 } from "recharts";
 import {
   api,
+  type AcquiringMetrics,
+  type CashArticleMetrics,
   type DataGroup,
   type ExitProduct,
   type ExitProductReason,
   type IncomeReport,
   type InventoryReport,
   type ItemAnalysis,
+  type LossMetrics,
   type MarketingPromotion,
   type MarketingReport,
   type NomenclatureReport,
@@ -46,6 +49,9 @@ import {
   type ReportDateRange,
   type SalesPeriod,
   type SalesReport,
+  type SourceHealth,
+  type StoreStockMetrics,
+  type SupplierTermsMetrics,
   type SyncHealth,
   type SyncRun,
   type SyncSchedulerStatus,
@@ -73,7 +79,13 @@ type LoadState<T> =
   | { status: "success"; data: T; error?: undefined }
   | { status: "error"; data?: T; error: string };
 
-type AppPage = "overview" | "reports" | "nomenclature" | "marketing" | "inventory";
+type AppPage =
+  | "overview"
+  | "reports"
+  | "management"
+  | "nomenclature"
+  | "marketing"
+  | "inventory";
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -230,6 +242,14 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
                 <span>Отчеты</span>
               </button>
               <button
+                className={currentPage === "management" ? "active" : ""}
+                onClick={() => setCurrentPage("management")}
+                type="button"
+              >
+                <TrendingUp size={16} />
+                <span>Контроль</span>
+              </button>
+              <button
                 className={currentPage === "nomenclature" ? "active" : ""}
                 onClick={() => setCurrentPage("nomenclature")}
                 type="button"
@@ -302,10 +322,44 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
         <header className="topbar">
           <div>
             <span className="eyebrow">
-              {currentPage === "reports" ? <Receipt size={16} /> : currentPage === "nomenclature" ? <Package size={16} /> : currentPage === "marketing" ? <Megaphone size={16} /> : currentPage === "inventory" ? <Boxes size={16} /> : <LayoutDashboard size={16} />}
-              {currentPage === "reports" ? "Отчеты" : currentPage === "nomenclature" ? "Номенклатура" : currentPage === "marketing" ? "Маркетинг" : currentPage === "inventory" ? "Запасы" : "Панель данных"}
+              {currentPage === "reports" ? (
+                <Receipt size={16} />
+              ) : currentPage === "management" ? (
+                <TrendingUp size={16} />
+              ) : currentPage === "nomenclature" ? (
+                <Package size={16} />
+              ) : currentPage === "marketing" ? (
+                <Megaphone size={16} />
+              ) : currentPage === "inventory" ? (
+                <Boxes size={16} />
+              ) : (
+                <LayoutDashboard size={16} />
+              )}
+              {currentPage === "reports"
+                ? "Отчеты"
+                : currentPage === "management"
+                  ? "Контроль"
+                  : currentPage === "nomenclature"
+                    ? "Номенклатура"
+                    : currentPage === "marketing"
+                      ? "Маркетинг"
+                      : currentPage === "inventory"
+                        ? "Запасы"
+                        : "Панель данных"}
             </span>
-            <h1>{currentPage === "reports" ? "Отчеты по продажам" : currentPage === "nomenclature" ? "Анализ номенклатуры" : currentPage === "marketing" ? "Маркетинговые акции" : currentPage === "inventory" ? "Управление запасами" : "Аналитика PostgreSQL"}</h1>
+            <h1>
+              {currentPage === "reports"
+                ? "Отчеты по продажам"
+                : currentPage === "management"
+                  ? "Операционные метрики"
+                  : currentPage === "nomenclature"
+                    ? "Анализ номенклатуры"
+                    : currentPage === "marketing"
+                      ? "Маркетинговые акции"
+                      : currentPage === "inventory"
+                        ? "Управление запасами"
+                        : "Аналитика PostgreSQL"}
+            </h1>
           </div>
           <div className="user-actions">
             <span>{user.email}</span>
@@ -317,6 +371,8 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
 
         {currentPage === "reports" ? (
           <ReportsPage />
+        ) : currentPage === "management" ? (
+          <ManagementDashboard />
         ) : currentPage === "nomenclature" ? (
           <NomenclatureReports />
         ) : currentPage === "marketing" ? (
@@ -572,6 +628,395 @@ function ReportsPage() {
   );
 }
 
+function ManagementDashboard() {
+  const [dateRange, setDateRange] = useState<DateRangeValue>(currentMonthRange);
+  const [losses, setLosses] = useState<LoadState<LossMetrics>>({ status: "loading" });
+  const [acquiring, setAcquiring] = useState<LoadState<AcquiringMetrics>>({
+    status: "loading"
+  });
+  const [cash, setCash] = useState<LoadState<CashArticleMetrics>>({ status: "loading" });
+  const [supplierTerms, setSupplierTerms] = useState<LoadState<SupplierTermsMetrics>>({
+    status: "loading"
+  });
+  const [storeStock, setStoreStock] = useState<LoadState<StoreStockMetrics>>({
+    status: "loading"
+  });
+  const [sourceHealth, setSourceHealth] = useState<LoadState<SourceHealth>>({
+    status: "loading"
+  });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const filters = { ...dateRange, limit: 20 };
+    setLosses({ status: "loading" });
+    setAcquiring({ status: "loading" });
+    setCash({ status: "loading" });
+    setSupplierTerms({ status: "loading" });
+    setStoreStock({ status: "loading" });
+    setSourceHealth({ status: "loading" });
+
+    api.lossMetrics(filters, controller.signal)
+      .then((data) => setLosses({ status: "success", data }))
+      .catch((caught) => {
+        if (!controller.signal.aborted) {
+          setLosses({
+            status: "error",
+            error: caught instanceof Error ? caught.message : "Не удалось загрузить потери"
+          });
+        }
+      });
+    api.acquiringMetrics(filters, controller.signal)
+      .then((data) => setAcquiring({ status: "success", data }))
+      .catch((caught) => {
+        if (!controller.signal.aborted) {
+          setAcquiring({
+            status: "error",
+            error: caught instanceof Error ? caught.message : "Не удалось загрузить эквайринг"
+          });
+        }
+      });
+    api.cashArticleMetrics(filters, controller.signal)
+      .then((data) => setCash({ status: "success", data }))
+      .catch((caught) => {
+        if (!controller.signal.aborted) {
+          setCash({
+            status: "error",
+            error: caught instanceof Error ? caught.message : "Не удалось загрузить кассовые движения"
+          });
+        }
+      });
+    api.supplierTermsMetrics(filters, controller.signal)
+      .then((data) => setSupplierTerms({ status: "success", data }))
+      .catch((caught) => {
+        if (!controller.signal.aborted) {
+          setSupplierTerms({
+            status: "error",
+            error: caught instanceof Error ? caught.message : "Не удалось загрузить условия поставщиков"
+          });
+        }
+      });
+    api.storeStockMetrics(filters, controller.signal)
+      .then((data) => setStoreStock({ status: "success", data }))
+      .catch((caught) => {
+        if (!controller.signal.aborted) {
+          setStoreStock({
+            status: "error",
+            error: caught instanceof Error ? caught.message : "Не удалось загрузить остатки по точкам"
+          });
+        }
+      });
+    api.sourceHealth(filters, controller.signal)
+      .then((data) => setSourceHealth({ status: "success", data }))
+      .catch((caught) => {
+        if (!controller.signal.aborted) {
+          setSourceHealth({
+            status: "error",
+            error: caught instanceof Error ? caught.message : "Не удалось проверить источники"
+          });
+        }
+      });
+
+    return () => controller.abort();
+  }, [dateRange.from, dateRange.to]);
+
+  return (
+    <>
+      <section className="reports-section management-intro">
+        <div className="section-heading row">
+          <div>
+            <h2>Физически доступные управленческие данные</h2>
+            <span>
+              независимые блоки загружаются параллельно; каждый показатель явно показывает
+              ограничения источника
+            </span>
+          </div>
+          <ReportFilterBar dateRange={dateRange} onDateRangeChange={setDateRange} />
+        </div>
+      </section>
+
+      <SourceHealthPanel state={sourceHealth} />
+      <LossMetricsPanel state={losses} />
+      <AcquiringMetricsPanel state={acquiring} />
+      <CashArticleMetricsPanel state={cash} />
+      <SupplierTermsPanel state={supplierTerms} />
+      <StoreStockPanel state={storeStock} />
+    </>
+  );
+}
+
+function SourceHealthPanel({ state }: { state: LoadState<SourceHealth> }) {
+  return (
+    <section className="reports-section">
+      <div className="section-heading">
+        <h2>Качество и полнота источников</h2>
+        <span>нули не считаются достоверными, когда источник отсутствует</span>
+      </div>
+      {state.status === "loading" ? <FullScreenState title="Проверяем источники" compact /> : null}
+      {state.status === "error" ? <div className="empty-state">{state.error}</div> : null}
+      {state.data ? (
+        <>
+          <div className="source-health-grid">
+            {state.data.issues.map((issue) => (
+              <article className={`source-health-card ${issue.severity}`} key={issue.key}>
+                <strong>{issue.title}</strong>
+                <span>{issue.detail}</span>
+              </article>
+            ))}
+          </div>
+          <div className="metric-note">
+            Сверка продаж: заголовки {formatMoney(state.data.reconciliation.grossHeaderRevenue)},
+            строки {formatMoney(state.data.reconciliation.grossLineRevenue)}; возвраты в
+            заголовках {formatMoney(state.data.reconciliation.headerReturns)}, в строках{" "}
+            {formatMoney(state.data.reconciliation.lineReturns)}.
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function LossMetricsPanel({ state }: { state: LoadState<LossMetrics> }) {
+  return (
+    <section className="reports-section">
+      <div className="section-heading">
+        <h2>Потери по точкам</h2>
+        <span>списания минус оприходованные излишки</span>
+      </div>
+      {state.status === "loading" ? <FullScreenState title="Считаем потери" compact /> : null}
+      {state.status === "error" ? <div className="empty-state">{state.error}</div> : null}
+      {state.data ? (
+        <>
+          <section className="metric-grid report-metric-grid" aria-label="Метрики потерь">
+            <MetricCard icon={<Receipt size={18} />} label="Списания" value={formatMoney(state.data.summary.writeoffs)} />
+            <MetricCard icon={<Package size={18} />} label="Излишки" value={formatMoney(state.data.summary.surpluses)} />
+            <MetricCard icon={<TrendingUp size={18} />} label="Чистые потери" value={formatMoney(state.data.summary.netLosses)} />
+            <MetricCard icon={<BarChart3 size={18} />} label="Потери / выручка" value={`${formatDecimal(state.data.summary.lossPct, 2)}%`} />
+          </section>
+          <div className="metric-note">{state.data.definition}</div>
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Точка</th>
+                  <th>Списания</th>
+                  <th>Излишки</th>
+                  <th>Чистые потери</th>
+                  <th>% выручки</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.data.stores.map((row) => (
+                  <tr key={row.storeKey}>
+                    <td>{row.storeName}</td>
+                    <td>{formatMoney(row.writeoffs)}</td>
+                    <td>{formatMoney(row.surpluses)}</td>
+                    <td>{formatMoney(row.netLosses)}</td>
+                    <td>{row.lossPct === null ? "—" : `${formatDecimal(row.lossPct, 2)}%`}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function AcquiringMetricsPanel({ state }: { state: LoadState<AcquiringMetrics> }) {
+  return (
+    <section className="reports-section">
+      <div className="section-heading">
+        <h2>Эквайринг</h2>
+        <span>оборот по картам и комиссия из отчетов розницы</span>
+      </div>
+      {state.status === "loading" ? <FullScreenState title="Считаем эквайринг" compact /> : null}
+      {state.status === "error" ? <div className="empty-state">{state.error}</div> : null}
+      {state.data ? (
+        <>
+          <section className="metric-grid report-metric-grid" aria-label="Метрики эквайринга">
+            <MetricCard icon={<Receipt size={18} />} label="Карточный оборот" value={formatMoney(state.data.summary.turnover)} />
+            <MetricCard icon={<ShoppingCart size={18} />} label="Комиссия" value={formatMoney(state.data.summary.commission)} />
+            <MetricCard icon={<BarChart3 size={18} />} label="Средняя ставка" value={`${formatDecimal(state.data.summary.commissionPct, 2)}%`} />
+            <MetricCard icon={<Table2 size={18} />} label="Строк оплат" value={formatNumber(state.data.summary.paymentLines)} />
+          </section>
+          <div className="metric-note warning">{state.data.limitation}</div>
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Точка</th>
+                  <th>Оборот</th>
+                  <th>Комиссия</th>
+                  <th>Ставка</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.data.stores.map((row) => (
+                  <tr key={row.storeKey}>
+                    <td>{row.storeName}</td>
+                    <td>{formatMoney(row.turnover)}</td>
+                    <td>{formatMoney(row.commission)}</td>
+                    <td>{formatDecimal(row.commissionPct, 2)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function CashArticleMetricsPanel({ state }: { state: LoadState<CashArticleMetrics> }) {
+  return (
+    <section className="reports-section">
+      <div className="section-heading">
+        <h2>Кассовые движения по статьям ДДС</h2>
+        <span>фактические ПКО и РКО за выбранный период</span>
+      </div>
+      {state.status === "loading" ? <FullScreenState title="Собираем кассовые движения" compact /> : null}
+      {state.status === "error" ? <div className="empty-state">{state.error}</div> : null}
+      {state.data ? (
+        <>
+          <section className="metric-grid report-metric-grid" aria-label="Кассовые движения">
+            <MetricCard icon={<TrendingUp size={18} />} label="Приход" value={formatMoney(state.data.summary.inflow)} />
+            <MetricCard icon={<Receipt size={18} />} label="Расход" value={formatMoney(state.data.summary.outflow)} />
+            <MetricCard icon={<BarChart3 size={18} />} label="Чистое движение" value={formatMoney(state.data.summary.net)} />
+            <MetricCard icon={<Table2 size={18} />} label="Размечено статьей" value={`${formatDecimal(state.data.summary.categorizedPct, 1)}%`} />
+          </section>
+          <div className="metric-note warning">{state.data.limitation}</div>
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Статья ДДС</th>
+                  <th>Приход</th>
+                  <th>Расход</th>
+                  <th>Чистое движение</th>
+                  <th>Операций</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.data.articles.map((row) => (
+                  <tr key={row.articleKey}>
+                    <td>{row.articleName}</td>
+                    <td>{formatMoney(row.inflow)}</td>
+                    <td>{formatMoney(row.outflow)}</td>
+                    <td>{formatMoney(row.net)}</td>
+                    <td>{formatNumber(row.lineCount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function SupplierTermsPanel({ state }: { state: LoadState<SupplierTermsMetrics> }) {
+  return (
+    <section className="reports-section">
+      <div className="section-heading">
+        <h2>Условия оплаты поставщиков</h2>
+        <span>плановые этапы оплаты, физически заполненные в поступлениях</span>
+      </div>
+      {state.status === "loading" ? <FullScreenState title="Считаем отсрочку" compact /> : null}
+      {state.status === "error" ? <div className="empty-state">{state.error}</div> : null}
+      {state.data ? (
+        <>
+          <section className="metric-grid report-metric-grid" aria-label="Условия поставщиков">
+            <MetricCard icon={<Clock size={18} />} label="Средняя отсрочка" value={`${formatDecimal(state.data.summary.weightedDeferralDays, 1)} дн.`} />
+            <MetricCard icon={<Receipt size={18} />} label="Поступлений" value={formatNumber(state.data.summary.receiptCount)} />
+            <MetricCard icon={<CalendarDays size={18} />} label="С этапами оплаты" value={formatNumber(state.data.summary.stagedReceiptCount)} />
+            <MetricCard icon={<BarChart3 size={18} />} label="Покрытие этапами" value={`${formatDecimal(state.data.summary.stageCoveragePct, 1)}%`} />
+          </section>
+          <div className="metric-note warning">{state.data.limitation}</div>
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Плановая дата</th>
+                  <th>Контрагент</th>
+                  <th>Сумма этапов</th>
+                  <th>Документов</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.data.schedule.map((row) => (
+                  <tr key={`${row.dueDay}-${row.counterpartyName}`}>
+                    <td>{formatDate(row.dueDay)}</td>
+                    <td>{row.counterpartyName}</td>
+                    <td>{formatMoney(row.amount)}</td>
+                    <td>{formatNumber(row.documentCount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function StoreStockPanel({ state }: { state: LoadState<StoreStockMetrics> }) {
+  return (
+    <section className="reports-section">
+      <div className="section-heading">
+        <h2>Остатки в деньгах по точкам</h2>
+        <span>последний снимок каждого товарного остатка с контролем покрытия себестоимости</span>
+      </div>
+      {state.status === "loading" ? <FullScreenState title="Оцениваем остатки" compact /> : null}
+      {state.status === "error" ? <div className="empty-state">{state.error}</div> : null}
+      {state.data ? (
+        <>
+          <section className="metric-grid report-metric-grid" aria-label="Остатки по точкам">
+            <MetricCard icon={<ShoppingCart size={18} />} label="Остаток по себестоимости" value={formatMoney(state.data.summary.stockCost)} />
+            <MetricCard icon={<Boxes size={18} />} label="Количество" value={formatDecimal(state.data.summary.stockQty)} />
+            <MetricCard icon={<Package size={18} />} label="Доступно" value={formatDecimal(state.data.summary.availableQty)} />
+            <MetricCard icon={<Receipt size={18} />} label="В резерве" value={formatDecimal(state.data.summary.reservedQty)} />
+            <MetricCard icon={<RotateCcw size={18} />} label="Отрицательный остаток" value={formatDecimal(state.data.summary.negativeStockQty)} />
+          </section>
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Точка</th>
+                  <th>Снимок</th>
+                  <th>Товаров</th>
+                  <th>Количество</th>
+                  <th>Резерв</th>
+                  <th>Отриц. остаток</th>
+                  <th>Себестоимость</th>
+                  <th>Покрытие цены</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.data.stores.map((row) => (
+                  <tr key={row.storeKey}>
+                    <td>{row.storeName}</td>
+                    <td>{formatDate(row.snapshotAt)}</td>
+                    <td>{formatNumber(row.itemCount)}</td>
+                    <td>{formatDecimal(row.stockQty)}</td>
+                    <td>{formatDecimal(row.reservedQty)}</td>
+                    <td>{formatDecimal(row.negativeStockQty)}</td>
+                    <td>{formatMoney(row.stockCost)}</td>
+                    <td>{formatDecimal(row.costCoveragePct, 1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function ReportFilterBar({
   period,
   onPeriodChange,
@@ -579,8 +1024,8 @@ function ReportFilterBar({
   onDateRangeChange,
   periodLabel = "Группировка"
 }: {
-  period: SalesPeriod;
-  onPeriodChange: (period: SalesPeriod) => void;
+  period?: SalesPeriod;
+  onPeriodChange?: (period: SalesPeriod) => void;
   dateRange: DateRangeValue;
   onDateRangeChange: (dateRange: DateRangeValue) => void;
   periodLabel?: string;
@@ -602,18 +1047,20 @@ function ReportFilterBar({
 
   return (
     <div className="report-controls">
-      <div className="segmented-control" aria-label={periodLabel}>
-        {periodOptions.map((option) => (
-          <button
-            key={option.value}
-            className={option.value === period ? "active" : ""}
-            onClick={() => onPeriodChange(option.value)}
-            type="button"
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      {period && onPeriodChange ? (
+        <div className="segmented-control" aria-label={periodLabel}>
+          {periodOptions.map((option) => (
+            <button
+              key={option.value}
+              className={option.value === period ? "active" : ""}
+              onClick={() => onPeriodChange(option.value)}
+              type="button"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <div className="date-range-control" aria-label="Диапазон дат отчета">
         <label>
@@ -761,7 +1208,17 @@ function SalesReportBody({
       <section className="metric-grid report-metric-grid" aria-label="Метрики продаж">
         <MetricCard
           icon={<Receipt size={18} />}
-          label="Выручка за выбранный период"
+          label="Продажи до возвратов"
+          value={formatMoney(report.summary.grossRevenue)}
+        />
+        <MetricCard
+          icon={<RotateCcw size={18} />}
+          label="Возвраты"
+          value={formatMoney(report.summary.returns)}
+        />
+        <MetricCard
+          icon={<TrendingUp size={18} />}
+          label="Чистая выручка"
           value={formatMoney(report.summary.revenue)}
         />
         <MetricCard
@@ -771,12 +1228,12 @@ function SalesReportBody({
         />
         <MetricCard
           icon={<CalendarDays size={18} />}
-          label="Средняя сумма"
+          label="Средняя чистая сумма отчета"
           value={formatMoney(report.summary.avgCheck)}
         />
         <MetricCard
           icon={<Store size={18} />}
-          label="Товаров в отчете"
+          label="Чистое количество товаров"
           value={formatDecimal(report.summary.avgItemsPerCheck, 2)}
         />
       </section>
@@ -784,7 +1241,7 @@ function SalesReportBody({
       <div className="reports-grid">
         <section className="panel report-chart-panel">
           <div className="panel-title">
-            <h3>Выручка по периодам</h3>
+            <h3>Чистая выручка по периодам</h3>
             <span>
               {formatDate(report.summary.dateFrom)} — {formatDate(report.summary.dateTo)}
             </span>
@@ -1216,7 +1673,7 @@ function IncomeReportBody({
       <section className="metric-grid report-metric-grid" aria-label="Метрики дохода">
         <MetricCard
           icon={<Receipt size={18} />}
-          label="Выручка за выбранный период"
+          label="Чистая выручка"
           value={formatMoney(report.summary.revenue)}
         />
         <MetricCard
@@ -1226,15 +1683,29 @@ function IncomeReportBody({
         />
         <MetricCard
           icon={<TrendingUp size={18} />}
-          label="Валовая прибыль"
+          label="Валовая прибыль до потерь"
           value={formatMoney(report.summary.grossProfit)}
         />
         <MetricCard
           icon={<BarChart3 size={18} />}
-          label="Маржинальность"
+          label="Маржинальность до потерь"
           value={`${formatDecimal(report.summary.marginPct, 1)}%`}
         />
+        <MetricCard
+          icon={<ShieldCheck size={18} />}
+          label="Покрытие себестоимости"
+          value={`${formatDecimal(report.summary.costCoveragePct, 1)}%`}
+        />
+        <MetricCard
+          icon={<Package size={18} />}
+          label="Выручка без оценки цены"
+          value={formatMoney(report.summary.unvaluedRevenue)}
+        />
       </section>
+      <div className="metric-note warning">
+        Себестоимость: последняя установка по точке → последняя по сети → закупка за
+        90 дней. Потери, НДС и внутренняя наценка здесь еще не вычтены.
+      </div>
 
       <div className="reports-grid">
         <section className="panel report-chart-panel">

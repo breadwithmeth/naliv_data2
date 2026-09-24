@@ -6,10 +6,20 @@ the final 1C retail-report tables:
 
 - `document_otchet_o_roznichnyh_prodazhah`
 - `document_otchet_o_roznichnyh_prodazhah_tovary`
+- `document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary`
 
-The runtime API does not query individual `document_chek_kkm` receipt tables.
-Legacy receipt models remain in the Prisma schema only for compatibility with
-existing databases.
+Sales revenue is net of the explicit return table. Income reverses both revenue
+and cost for returned items. Cost follows the auditable hierarchy: latest
+store-specific `document_ustanovka_sebestoimosti`, latest network value for the
+item, then weighted purchase cost excluding recorded VAT over the preceding 90
+days. Missing valuation stays visible as cost-coverage and unvalued-revenue
+metrics instead of silently pretending that zero is a known cost.
+
+The sales report still uses retail reports as its counting unit and hourly
+proxy. It does not claim to show individual checks. The source-health panel
+queries `document_chek_kkm` only to expose its loaded row/date coverage; detailed
+check history is excluded from the normal exporter unless its compatibility
+flag is supplied.
 
 ## Development: API and web UI together
 
@@ -34,13 +44,39 @@ Open <http://localhost:5173> and sign in with `APP_ADMIN_EMAIL` and
 configured by `PORT` in the same `.env` file.
 
 Report endpoints (`/api/reports/sales`, `/api/reports/income`,
-`/api/nomenclature`, `/api/marketing`, `/api/inventory`) build a half-open
-window — `date >= from and date < to` — and default to the current calendar
-month (UTC boundaries) when a request carries no `from`/`to`. An empty range
-means "this month", never "every year"; pass an explicit range such as
-`?from=2026-01-01&to=2027-01-01` to widen it. The web UI prefills the same month
-and shows the end date inclusively, converting it to the exclusive bound before
-sending. `period` (`day`, `week`, `month`) only selects the chart bucket.
+`/api/nomenclature`, `/api/marketing`, `/api/inventory`, and
+`/api/management/*`) build a half-open window — `date >= from and date < to` —
+and default to the current calendar month (UTC boundaries) when a request
+carries no `from`/`to`. An empty range means "this month", never "every year";
+pass an explicit range such as `?from=2026-01-01&to=2027-01-01` to widen it. The
+web UI prefills the same month and shows the end date inclusively, converting it
+to the exclusive bound before sending. `period` (`day`, `week`, `month`) only
+selects the chart bucket.
+
+## Source-ready management metrics
+
+The admin-only "Контроль" page loads its sections independently so a slow stock
+query does not hold back losses, acquiring, cash articles, or source health:
+
+- `GET /api/management/losses` — write-offs less capitalized surpluses, with
+  store revenue and loss rate;
+- `GET /api/management/acquiring` — card turnover and recorded acquiring
+  commission by store;
+- `GET /api/management/cash-articles` — actual PKO/RKO grouped by DDS article;
+- `GET /api/management/supplier-terms` — weighted planned deferral and payment
+  stages for the subset of receipts where stages are physically filled;
+- `GET /api/management/store-stock` — current positive stock valuation by store
+  using the same canonical cost hierarchy as income; negative balances are
+  exposed separately and never reduce the valued stock total;
+- `GET /api/management/source-health` — receipt coverage, store areas, payroll,
+  bank-table availability, VAT availability, and sales/return reconciliation.
+
+The page deliberately does **not** call cash orders a complete cash flow,
+supplier stages a confirmed payable balance, or card turnover "acquiring in
+transit." Bank statements are not loaded, supplier stages cover only a small
+subset of receipts, acquiring commission fields can be zero, store areas are
+empty, and payroll/timesheet headers are absent. Those limitations are rendered
+next to the numbers so unavailable data cannot appear as a trustworthy zero.
 
 The account configured by `APP_MARKETING_EMAIL` and `APP_MARKETING_PASSWORD`
 can open only the marketing section. This restriction is enforced by the API:

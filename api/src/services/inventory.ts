@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { config } from "../config.js";
+import { canonicalItemCostsCtes } from "../lib/cost-sql.js";
 import { prisma } from "../prisma.js";
 import type { SalesPeriod } from "./reports.js";
 
@@ -22,22 +23,20 @@ export async function getInventoryReport(params: InventoryParams) {
   const postuplenieItemsTable = qualifiedTable("document_postuplenie_tovarov_tovary");
   const reportsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah");
   const reportItemsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah_tovary");
+  const returnItemsTable = qualifiedTable(
+    "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary"
+  );
   const nomenklaturaTable = qualifiedTable("catalog_nomenklatura");
   const balanceTable = qualifiedTable("accumulation_register_tovary_na_skladah_balance");
 
-  // Recent sales filter
-  const recentFilters: Prisma.Sql[] = [
-    Prisma.sql`r.date is not null`,
-    Prisma.sql`r.deletion_mark is not true`,
-    Prisma.sql`r.posted = true`
-  ];
+  const recentFilters: Prisma.Sql[] = [Prisma.sql`sm.sale_at is not null`];
 
   if (params.from) {
-    recentFilters.push(Prisma.sql`r.date >= ${params.from}`);
+    recentFilters.push(Prisma.sql`sm.sale_at >= ${params.from}`);
   }
 
   if (params.to) {
-    recentFilters.push(Prisma.sql`r.date < ${params.to}`);
+    recentFilters.push(Prisma.sql`sm.sale_at < ${params.to}`);
   }
 
   const recentWhere = Prisma.join(recentFilters, " and ");
@@ -76,6 +75,7 @@ export async function getInventoryReport(params: InventoryParams) {
     }>
   >`
     with
+    ${canonicalItemCostsCtes(params.to)},
     latest_balance_period as (
       select max(b.balance_period) as balance_period
       from ${balanceTable} b
@@ -101,8 +101,6 @@ export async function getInventoryReport(params: InventoryParams) {
         pt.nomenklatura_key,
         coalesce(sum(pt.kolichestvo), 0)::float8 as total_purchased,
         max(p.date) filter (where pt.kolichestvo is not null) as last_purchase_date,
-        coalesce(avg(pt.tsena) filter (where pt.tsena > 0), 0)::float8 as avg_purchase_price,
-        coalesce(max(pt.summa / nullif(pt.kolichestvo, 0)) filter (where pt.tsena > 0), 0)::float8 as last_purchase_price,
         -- A key whose purchase lines all lack a quantity produced no row in the
         -- former all_purchases scan; keep that so the outer joins below cannot
         -- surface extra zeroed items.
@@ -114,20 +112,40 @@ export async function getInventoryReport(params: InventoryParams) {
         and pt.nomenklatura_key is not null
       group by pt.nomenklatura_key
     ),
-    sales_stats as (
+    sales_movements as (
       select
         ri.nomenklatura_key,
-        coalesce(sum(ri.kolichestvo), 0)::float8 as total_sold,
-        coalesce(sum(ri.kolichestvo) filter (where ${recentWhere} and ri.kolichestvo is not null), 0)::float8 as recent_sold_qty,
-        count(distinct date_trunc('day', r.date)) filter (where ${recentWhere} and ri.kolichestvo is not null)::int as recent_days_active,
-        max(r.date) filter (where ${recentWhere} and ri.kolichestvo is not null) as last_sale_date,
-        bool_or(ri.kolichestvo is not null) as has_quantity_line
+        r.date as sale_at,
+        coalesce(ri.kolichestvo, 0)::float8 as sold_qty,
+        nullif(ri.tsena, 0)::float8 as sale_price,
+        false as is_return
       from ${reportItemsTable} ri
       join ${reportsTable} r on r.ref_key = ri."_parent_ref_key"
-      where r.deletion_mark is not true
-        and r.posted = true
-        and ri.nomenklatura_key is not null
-      group by ri.nomenklatura_key
+      where r.deletion_mark is not true and r.posted = true and ri.nomenklatura_key is not null
+      union all
+      select
+        ri.nomenklatura_key,
+        r.date as sale_at,
+        -coalesce(ri.kolichestvo, 0)::float8 as sold_qty,
+        null::float8 as sale_price,
+        true as is_return
+      from ${returnItemsTable} ri
+      join ${reportsTable} r on r.ref_key = ri."_parent_ref_key"
+      where r.deletion_mark is not true and r.posted = true and ri.nomenklatura_key is not null
+    ),
+    sales_stats as (
+      select
+        sm.nomenklatura_key,
+        coalesce(sum(sm.sold_qty), 0)::float8 as total_sold,
+        coalesce(sum(sm.sold_qty) filter (where ${recentWhere}), 0)::float8 as recent_sold_qty,
+        count(distinct date_trunc('day', sm.sale_at)) filter (where ${recentWhere} and sm.sold_qty <> 0)::int as recent_days_active,
+        max(sm.sale_at) filter (where ${recentWhere} and not sm.is_return) as last_sale_date,
+        (array_agg(sm.sale_price order by sm.sale_at desc) filter (
+          where not sm.is_return and sm.sale_price is not null
+        ))[1]::float8 as last_sale_price,
+        bool_or(sm.sold_qty <> 0) as has_quantity_line
+      from sales_movements sm
+      group by sm.nomenklatura_key
     ),
     stock_calc as (
       select
@@ -139,7 +157,7 @@ export async function getInventoryReport(params: InventoryParams) {
         coalesce(bs.warehouse_count, 0) as warehouse_count,
         coalesce(ss.recent_sold_qty, 0) as recent_sold_qty,
         coalesce(ss.recent_days_active, 0) as recent_days_active,
-        coalesce(ps.avg_purchase_price, 0) as avg_purchase_price,
+        ss.last_sale_price,
         ss.last_sale_date,
         ps.last_purchase_date,
         bs.stock_period
@@ -173,8 +191,10 @@ export async function getInventoryReport(params: InventoryParams) {
         then (sc.stock_qty / (sc.recent_sold_qty / sc.recent_days_active))::float8
         else null
       end as days_of_stock,
-      (greatest(sc.stock_qty, 0) * sc.avg_purchase_price)::float8 as stock_cost,
-      (greatest(sc.stock_qty, 0) * sc.avg_purchase_price * 1.5)::float8 as stock_retail_value,
+      (
+        greatest(sc.stock_qty, 0) * coalesce(gc.unit_cost, pc.unit_cost, 0)
+      )::float8 as stock_cost,
+      (greatest(sc.stock_qty, 0) * coalesce(sc.last_sale_price, 0))::float8 as stock_retail_value,
       sc.last_sale_date,
       sc.last_purchase_date,
       case when sc.last_sale_date is not null
@@ -184,10 +204,13 @@ export async function getInventoryReport(params: InventoryParams) {
       sc.stock_period
     from stock_calc sc
     left join ${nomenklaturaTable} n on n.ref_key = sc.nomenklatura_key
+    left join latest_global_costs gc on gc.nomenklatura_key = sc.nomenklatura_key
+    left join purchase_costs_90d pc on pc.nomenklatura_key = sc.nomenklatura_key
     group by
       sc.nomenklatura_key, sc.total_purchased, sc.total_sold, sc.stock_qty,
       sc.reserved_qty, sc.warehouse_count, sc.recent_sold_qty, sc.recent_days_active,
-      sc.avg_purchase_price, sc.last_sale_date, sc.last_purchase_date, sc.stock_period
+      sc.last_sale_price, gc.unit_cost, pc.unit_cost, sc.last_sale_date,
+      sc.last_purchase_date, sc.stock_period
     order by stock_cost desc
   `;
 

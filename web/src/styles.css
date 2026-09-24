@@ -1330,3 +1330,72 @@ select:focus {
     padding-left: 12px;
   }
 }
+
+.management-intro {
+  margin-bottom: 18px;
+}
+
+.source-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.source-health-card {
+  display: grid;
+  gap: 7px;
+  padding: 15px 16px;
+  border: 1px solid #d8e0ec;
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.source-health-card strong {
+  color: #172033;
+}
+
+.source-health-card span {
+  color: #5d687a;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.source-health-card.ready {
+  border-left-color: #198754;
+  background: #f3fbf6;
+}
+
+.source-health-card.partial {
+  border-left-color: #d99a00;
+  background: #fffaf0;
+}
+
+.source-health-card.blocked {
+  border-left-color: #c83d4c;
+  background: #fff5f6;
+}
+
+.metric-note {
+  margin-top: 14px;
+  padding: 11px 13px;
+  border: 1px solid #d8e0ec;
+  border-radius: 9px;
+  color: #526076;
+  background: #f8fafc;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.metric-note.warning {
+  border-color: #ead4a4;
+  background: #fffaf0;
+  color: #765818;
+}
+
+@media (max-width: 760px) {
+  .source-health-grid {
+    grid-template-columns: 1fr;
+  }
+}

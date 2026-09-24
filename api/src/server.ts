@@ -9,6 +9,7 @@ import { analyticsRouter } from "./routes/analytics.js";
 import { authRouter } from "./routes/auth.js";
 import { inventoryRouter } from "./routes/inventory.js";
 import { marketingRouter } from "./routes/marketing.js";
+import { managementRouter } from "./routes/management.js";
 import { requireAuth, restrictMarketingApiSurface } from "./middleware/auth.js";
 import { nomenclatureRouter } from "./routes/nomenclature.js";
 import { reportsRouter } from "./routes/reports.js";
@@ -40,6 +41,7 @@ app.use("/api/reports", reportsRouter);
 app.use("/api/nomenclature", nomenclatureRouter);
 app.use("/api/marketing", marketingRouter);
 app.use("/api/inventory", inventoryRouter);
+app.use("/api/management", managementRouter);
 app.use("/api/sync", syncRouter);
 
 const clientDistPath = path.resolve(process.cwd(), "web/dist");

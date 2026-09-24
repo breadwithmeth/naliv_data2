@@ -186,6 +186,8 @@ export type SalesReport = {
   summary: {
     dateFrom: string | null;
     dateTo: string | null;
+    grossRevenue: number;
+    returns: number;
     revenue: number;
     orderCount: number;
     avgCheck: number;
@@ -194,6 +196,8 @@ export type SalesReport = {
   };
   revenueSeries: Array<{
     bucket: string;
+    grossRevenue: number;
+    returns: number;
     revenue: number;
     orderCount: number;
     avgCheck: number;
@@ -228,6 +232,8 @@ export type IncomeReport = {
     cost: number;
     grossProfit: number;
     marginPct: number;
+    costCoveragePct: number;
+    unvaluedRevenue: number;
   };
   incomeSeries: Array<{
     bucket: string;
@@ -235,6 +241,7 @@ export type IncomeReport = {
     cost: number;
     grossProfit: number;
     marginPct: number;
+    costCoveragePct: number;
   }>;
   stores: Array<{
     key: string;
@@ -468,6 +475,133 @@ export type InventoryReport = {
   dead: InventoryItem[];
 };
 
+export type ManagementRequest = ReportDateRange & { limit?: number };
+
+export type LossMetrics = {
+  summary: {
+    writeoffs: number;
+    surpluses: number;
+    netLosses: number;
+    netRevenue: number;
+    lossPct: number;
+  };
+  stores: Array<{
+    storeKey: string;
+    storeName: string;
+    writeoffs: number;
+    surpluses: number;
+    netLosses: number;
+    netRevenue: number;
+    lossPct: number | null;
+  }>;
+  definition: string;
+};
+
+export type AcquiringMetrics = {
+  summary: {
+    turnover: number;
+    commission: number;
+    commissionPct: number;
+    paymentLines: number;
+    commissionAvailable: boolean;
+  };
+  stores: Array<{
+    storeKey: string;
+    storeName: string;
+    turnover: number;
+    commission: number;
+    commissionPct: number;
+    paymentLines: number;
+  }>;
+  limitation: string;
+};
+
+export type CashArticleMetrics = {
+  summary: {
+    inflow: number;
+    outflow: number;
+    net: number;
+    lineCount: number;
+    storeTagged: number;
+    categorizedLines: number;
+    categorizedPct: number;
+    storeTaggedPct: number;
+  };
+  articles: Array<{
+    articleKey: string;
+    articleName: string;
+    inflow: number;
+    outflow: number;
+    net: number;
+    lineCount: number;
+    storeTagged: number;
+  }>;
+  limitation: string;
+};
+
+export type SupplierTermsMetrics = {
+  summary: {
+    receiptCount: number;
+    stagedReceiptCount: number;
+    stageCoveragePct: number;
+    weightedDeferralDays: number;
+    stagedAmount: number;
+    paidFlagCount: number;
+  };
+  schedule: Array<{
+    dueDay: string;
+    counterpartyName: string;
+    amount: number;
+    documentCount: number;
+  }>;
+  limitation: string;
+};
+
+export type StoreStockMetrics = {
+  summary: {
+    stockQty: number;
+    reservedQty: number;
+    availableQty: number;
+    stockCost: number;
+    unvaluedQty: number;
+    negativeStockQty: number;
+  };
+  stores: Array<{
+    storeKey: string;
+    storeName: string;
+    snapshotAt: string | null;
+    warehouseCount: number;
+    itemCount: number;
+    stockQty: number;
+    reservedQty: number;
+    availableQty: number;
+    stockCost: number;
+    unvaluedQty: number;
+    negativeStockQty: number;
+    costCoveragePct: number;
+  }>;
+};
+
+export type SourceHealth = {
+  checks: { count: number; dateFrom: string | null; dateTo: string | null };
+  storeAreas: { total: number; filled: number };
+  payroll: { timesheets: number; payrollDocuments: number };
+  bankStatements: { tableCount: number };
+  vat: { bazzaRevenue: number; recordedVat: number };
+  reconciliation: {
+    grossHeaderRevenue: number;
+    grossLineRevenue: number;
+    headerReturns: number;
+    lineReturns: number;
+  };
+  issues: Array<{
+    key: string;
+    severity: "ready" | "partial" | "blocked";
+    title: string;
+    detail: string;
+  }>;
+};
+
 function appendReportParams(params: URLSearchParams, filters: ReportDateRange) {
   if (filters.from) {
     params.set("from", filters.from);
@@ -516,6 +650,16 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+function managementRequest<T>(
+  endpoint: string,
+  filters: ManagementRequest,
+  signal?: AbortSignal
+) {
+  const params = new URLSearchParams({ limit: String(filters.limit ?? 20) });
+  appendReportParams(params, filters);
+  return request<T>(`/api/management/${endpoint}?${params}`, { signal });
 }
 
 export const api = {
@@ -567,6 +711,24 @@ export const api = {
     const params = new URLSearchParams({ period: filters.period });
     appendReportParams(params, filters);
     return request<InventoryReport>(`/api/inventory?${params}`, { signal });
+  },
+  lossMetrics(filters: ManagementRequest, signal?: AbortSignal) {
+    return managementRequest<LossMetrics>("losses", filters, signal);
+  },
+  acquiringMetrics(filters: ManagementRequest, signal?: AbortSignal) {
+    return managementRequest<AcquiringMetrics>("acquiring", filters, signal);
+  },
+  cashArticleMetrics(filters: ManagementRequest, signal?: AbortSignal) {
+    return managementRequest<CashArticleMetrics>("cash-articles", filters, signal);
+  },
+  supplierTermsMetrics(filters: ManagementRequest, signal?: AbortSignal) {
+    return managementRequest<SupplierTermsMetrics>("supplier-terms", filters, signal);
+  },
+  storeStockMetrics(filters: ManagementRequest, signal?: AbortSignal) {
+    return managementRequest<StoreStockMetrics>("store-stock", filters, signal);
+  },
+  sourceHealth(filters: ManagementRequest, signal?: AbortSignal) {
+    return managementRequest<SourceHealth>("source-health", filters, signal);
   },
   table(tableName: string) {
     return request<TableProfile>(

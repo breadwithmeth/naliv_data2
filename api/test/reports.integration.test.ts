@@ -23,41 +23,49 @@ test("sales preserve report totals, discount amounts, and date boundaries", {
     await prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(`create temp table document_otchet_o_roznichnyh_prodazhah (
         _id integer primary key, ref_key text, date timestamp, deletion_mark boolean,
-        posted boolean, summa_dokumenta numeric, magazin_key text) on commit drop`);
+        posted boolean, summa_dokumenta numeric, summa_vozvratov numeric,
+        magazin_key text) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table document_otchet_o_roznichnyh_prodazhah_tovary (
         _parent_ref_key text, nomenklatura_key text, kolichestvo numeric,
         summa numeric, protsent_skidki_natsenki numeric) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary (
+        _parent_ref_key text, nomenklatura_key text, kolichestvo numeric,
+        summa numeric) on commit drop`);
       for (const table of ["catalog_magaziny", "catalog_nomenklatura"]) {
         await tx.$executeRawUnsafe(`create temp table ${table} (ref_key text, description text) on commit drop`);
       }
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah values
-        (1, 'a', '2026-08-24', null, true, 180, 's1'),
-        (2, 'b', '2026-08-25', false, true, 100, 's1'),
-        (3, 'c', '2026-08-26', false, true, 50, null),
-        (4, 'deleted', '2026-08-26', true, true, 10000, 's1'),
-        (5, 'unposted', '2026-08-26', false, false, 10000, 's1'),
-        (6, 'nullposted', '2026-08-26', false, null, 10000, 's1'),
-        (7, 'before', '2026-08-23', false, true, 10000, 's1'),
-        (8, 'end', '2026-09-01', false, true, 10000, 's1'),
-        (9, 'zero', '2026-08-26', false, true, 0, 's1'),
-        (10, 'nullamount', '2026-08-26', false, true, null, 's1')`);
+        (1, 'a', '2026-08-24', null, true, 180, 20, 's1'),
+        (2, 'b', '2026-08-25', false, true, 100, 0, 's1'),
+        (3, 'c', '2026-08-26', false, true, 50, 0, null),
+        (4, 'deleted', '2026-08-26', true, true, 10000, 0, 's1'),
+        (5, 'unposted', '2026-08-26', false, false, 10000, 0, 's1'),
+        (6, 'nullposted', '2026-08-26', false, null, 10000, 0, 's1'),
+        (7, 'before', '2026-08-23', false, true, 10000, 0, 's1'),
+        (8, 'end', '2026-09-01', false, true, 10000, 0, 's1'),
+        (9, 'zero', '2026-08-26', false, true, 0, 0, 's1'),
+        (10, 'nullamount', '2026-08-26', false, true, null, 0, 's1')`);
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
         ('a', 'i1', 1, 90, 10), ('a', 'i1', 1, 90, 10),
         ('a', 'i2', 1, 0, 100), ('a', 'i3', 0, 10, 50),
         ('b', 'i1', 2, 100, null), ('before', 'i1', 1000, 10000, 10),
         ('end', 'i1', 1000, 10000, 10), ('deleted', 'i1', 1000, 10000, 10)`);
+      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values
+        ('a', 'i1', 1, 20)`);
       // Duplicate catalog references must not multiply aggregate metrics.
       await tx.$executeRawUnsafe(`insert into catalog_magaziny values ('s1', 'Store'), ('s1', 'Store')`);
       await tx.$executeRawUnsafe(`insert into catalog_nomenklatura values ('i1', 'Item'), ('i1', 'Item')`);
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
       const params = { period: "day" as const, from: new Date("2026-08-24"), to: new Date("2026-09-01"), storeLimit: 12 };
       const sales = await getSalesReport(params);
-      assert.equal(sales.summary.revenue, 330);
+      assert.equal(sales.summary.grossRevenue, 330);
+      assert.equal(sales.summary.returns, 20);
+      assert.equal(sales.summary.revenue, 310);
       assert.equal(sales.summary.orderCount, 3);
       assert.equal(sales.summary.reportCount, 3);
-      assert.equal(sales.summary.avgItemsPerCheck, 2.5); // No lines remains NULL, not zero.
+      assert.equal(sales.summary.avgItemsPerCheck, 2); // No lines remains NULL, not zero.
       assert.equal(sales.revenueSeries.length, 3);
-      assert.equal(sales.heatmap.cells.reduce((sum, cell) => sum + cell.revenue, 0), 330);
+      assert.equal(sales.heatmap.cells.reduce((sum, cell) => sum + cell.revenue, 0), 310);
       const [namespace] = await tx.$queryRaw<Array<{ name: string }>>`
         select nspname::text as name from pg_namespace where oid = pg_my_temp_schema()
       `;
@@ -103,26 +111,43 @@ test("income report derives store and item totals with catalog name fallbacks", 
     await prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(`create temp table document_otchet_o_roznichnyh_prodazhah (
         ref_key text, date timestamp, deletion_mark boolean,
-        posted boolean, summa_dokumenta numeric, magazin_key text) on commit drop`);
+        posted boolean, summa_dokumenta numeric, summa_vozvratov numeric,
+        magazin_key text) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table document_otchet_o_roznichnyh_prodazhah_tovary (
+        _parent_ref_key text, nomenklatura_key text, kolichestvo numeric, summa numeric) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary (
         _parent_ref_key text, nomenklatura_key text, kolichestvo numeric, summa numeric) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table document_postuplenie_tovarov (
         ref_key text, date timestamp, deletion_mark boolean, posted boolean) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table document_postuplenie_tovarov_tovary (
-        _parent_ref_key text, nomenklatura_key text, tsena numeric) on commit drop`);
+        _parent_ref_key text, nomenklatura_key text, kolichestvo numeric,
+        tsena numeric, summa numeric, summa_nds numeric) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_ustanovka_sebestoimosti (
+        ref_key text, magazin_key text, date timestamp, deletion_mark boolean,
+        posted boolean) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_ustanovka_sebestoimosti_tovary (
+        _parent_ref_key text, _parent_line_index integer, nomenklatura_key text,
+        tsena numeric) on commit drop`);
       for (const table of ["catalog_magaziny", "catalog_nomenklatura"]) {
         await tx.$executeRawUnsafe(`create temp table ${table} (ref_key text, description text) on commit drop`);
       }
       await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov values
         ('p1', '2026-08-20', false, true)`);
       await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov_tovary values
-        ('p1', 'i1', 100), ('p1', 'i2', 50)`);
+        ('p1', 'i1', 10, 100, 1000, 0), ('p1', 'i2', 10, 50, 500, 0)`);
+      await tx.$executeRawUnsafe(`insert into document_ustanovka_sebestoimosti values
+        ('c1', 's1', '2026-08-23', false, true)`);
+      await tx.$executeRawUnsafe(`insert into document_ustanovka_sebestoimosti_tovary values
+        ('c1', 0, 'i1', 100)`);
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah values
-        ('r1', '2026-08-25', false, true, 1000, 's1'),
-        ('r2', '2026-08-30', false, true, 500, 's1'),
-        ('r3', '2026-08-26', false, true, 300, 's2')`);
+        ('r1', '2026-08-25', false, true, 200, 100, 's1'),
+        ('r2', '2026-08-30', false, true, 250, 0, 's1'),
+        ('r3', '2026-08-26', false, true, 300, 0, 's2')`);
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
-        ('r1', 'i1', 2, 200), ('r2', 'i1', 1, 100), ('r2', 'i2', 3, 150), ('r3', 'i1', 4, 300)`);
+        ('r1', 'i1', 2, 200), ('r2', 'i1', 1, 100),
+        ('r2', 'i2', 3, 150), ('r3', 'i1', 4, 300)`);
+      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values
+        ('r1', 'i1', 1, 100)`);
       // s2 and i2 stay out of the catalogs to exercise the name fallbacks.
       await tx.$executeRawUnsafe(`insert into catalog_magaziny values ('s1', 'Store One')`);
       await tx.$executeRawUnsafe(`insert into catalog_nomenklatura values ('i1', 'Item One')`);
@@ -135,10 +160,13 @@ test("income report derives store and item totals with catalog name fallbacks", 
         storeLimit: 12
       });
 
-      // Totals come from the rollup row; the series rows must add up to it.
-      assert.equal(report.summary.revenue, 750);
-      assert.equal(report.summary.cost, 850);
+      // Explicit return rows reduce both revenue and cost. The configured cost
+      // wins for i1; i2 falls back to the 90-day weighted purchase cost.
+      assert.equal(report.summary.revenue, 650);
+      assert.equal(report.summary.cost, 750);
       assert.equal(report.summary.grossProfit, -100);
+      assert.equal(report.summary.costCoveragePct, 100);
+      assert.equal(report.summary.unvaluedRevenue, 0);
       assert.equal(report.incomeSeries.length, 3);
       assert.equal(
         report.incomeSeries.reduce((sum, point) => sum + point.revenue, 0),
@@ -157,21 +185,21 @@ test("income report derives store and item totals with catalog name fallbacks", 
       assert.deepEqual(
         report.stores.map((store) => [store.key, store.name, store.revenue, store.cost, store.grossProfit]),
         [
-          ["s1", "Store One", 450, 450, 0],
+          ["s1", "Store One", 350, 350, 0],
           ["s2", "Магазин s2", 300, 400, -100]
         ]
       );
       assert.deepEqual(
         report.items.map((item) => [item.key, item.name, item.soldQty, item.revenue, item.cost]),
         [
-          ["i1", "Item One", 7, 600, 700],
+          ["i1", "Item One", 6, 500, 600],
           ["i2", "i2", 3, 150, 150]
         ]
       );
       assert.deepEqual(
         report.storeItems.map((row) => [row.storeKey, row.storeName, row.itemKey, row.itemName, row.revenue, row.cost]),
         [
-          ["s1", "Store One", "i1", "Item One", 300, 300],
+          ["s1", "Store One", "i1", "Item One", 200, 200],
           ["s1", "Store One", "i2", "i2", 150, 150],
           ["s2", "Магазин s2", "i1", "Item One", 300, 400]
         ]
@@ -183,11 +211,10 @@ test("income report derives store and item totals with catalog name fallbacks", 
   }
 });
 
-// Inventory merges two sweeps per source table into one, so the resulting key set
-// must still follow the old rule: a key appears only via a balance snapshot, a
-// purchase line with a quantity, or a sales line with a quantity. Purchase lines
-// without a quantity may still supply a price for keys another source added.
-test("inventory keeps its key set and price enrichment after merging scans", {
+// Inventory keeps its historic key-set rule while valuing stock only from
+// configured cost or quantity-bearing purchases. Quantity-less purchase rows
+// cannot define a weighted unit cost.
+test("inventory preserves its key set and uses auditable cost sources", {
   skip: !process.env.ANALYTICS_TEST_DATABASE_URL
 }, async () => {
   process.env.DATABASE_URL = process.env.ANALYTICS_TEST_DATABASE_URL;
@@ -210,29 +237,41 @@ test("inventory keeps its key set and price enrichment after merging scans", {
         ref_key text, date timestamp, deletion_mark boolean,
         posted boolean, summa_dokumenta numeric, magazin_key text) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table document_otchet_o_roznichnyh_prodazhah_tovary (
-        _parent_ref_key text, nomenklatura_key text, kolichestvo numeric, summa numeric) on commit drop`);
+        _parent_ref_key text, nomenklatura_key text, kolichestvo numeric,
+        summa numeric, tsena numeric) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary (
+        _parent_ref_key text, nomenklatura_key text, kolichestvo numeric,
+        summa numeric) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table document_postuplenie_tovarov (
         ref_key text, date timestamp, deletion_mark boolean, posted boolean) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table document_postuplenie_tovarov_tovary (
-        _parent_ref_key text, nomenklatura_key text, kolichestvo numeric, tsena numeric, summa numeric) on commit drop`);
+        _parent_ref_key text, nomenklatura_key text, kolichestvo numeric,
+        tsena numeric, summa numeric, summa_nds numeric) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_ustanovka_sebestoimosti (
+        ref_key text, magazin_key text, date timestamp, deletion_mark boolean,
+        posted boolean) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_ustanovka_sebestoimosti_tovary (
+        _parent_ref_key text, _parent_line_index integer, nomenklatura_key text,
+        tsena numeric) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table accumulation_register_tovary_na_skladah_balance (
         nomenklatura_key text, sklad_key text, kolichestvo_balance numeric,
         rezerv_balance numeric, balance_period timestamp) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table catalog_nomenklatura (ref_key text, description text) on commit drop`);
-
       await tx.$executeRawUnsafe(`insert into catalog_nomenklatura values ('k1', 'Item One')`);
       // One valid retail report; the sales lines below all hang off it.
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah values
         ('r1', '2026-08-25', false, true, 500, 's1')`);
       // k1 sells with a quantity; n1 only ever has quantity-less lines.
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
-        ('r1', 'k1', 4, 200), ('r1', 'n1', null, 50)`);
+        ('r1', 'k1', 4, 200, 50), ('r1', 'n1', null, 50, 50)`);
 
       await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov values
         ('p1', '2026-08-20', false, true)`);
-      // k1 and p1 are priced through quantity-less lines for p1 only.
+      // n1 and p1 have no quantity, so they cannot establish a weighted cost.
       await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov_tovary values
-        ('p1', 'k1', 10, 50, 500), ('p1', 'n1', null, 100, 100), ('p1', 'p1', null, 100, 100)`);
+        ('p1', 'k1', 10, 50, 500, 0),
+        ('p1', 'n1', null, 100, 100, 0),
+        ('p1', 'p1', null, 100, 100, 0)`);
 
       await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance values
         ('b1', 's1', 5, 1, '2026-08-31'), ('p1', 's1', 2, 0, '2026-08-31')`);
@@ -254,10 +293,10 @@ test("inventory keeps its key set and price enrichment after merging scans", {
         [5, 0, "b1"]
       );
 
-      // Quantity-less purchase line still supplies the price for a balance key.
+      // Quantity-less purchase lines no longer invent an unauditable unit cost.
       assert.deepEqual(
         [byKey.get("p1")!.stockQty, byKey.get("p1")!.stockCost],
-        [2, 200]
+        [2, 0]
       );
 
       // Lifetime and period figures survive the merge.
