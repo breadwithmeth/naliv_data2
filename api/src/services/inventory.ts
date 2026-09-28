@@ -40,18 +40,13 @@ export async function getInventoryReport(params: InventoryParams) {
   }
 
   const recentWhere = Prisma.join(recentFilters, " and ");
-  const balanceFilters: Prisma.Sql[] = [Prisma.sql`b.balance_period is not null`];
-
-  if (params.from) {
-    balanceFilters.push(Prisma.sql`b.balance_period >= ${params.from}`);
-  }
-
-  if (params.to) {
-    balanceFilters.push(Prisma.sql`b.balance_period < ${params.to}`);
-  }
-
-  const balanceWhere = Prisma.join(balanceFilters, " and ");
   const referenceDate = params.to ?? new Date();
+  const analysisDays = Math.max(
+    1,
+    params.from && params.to
+      ? (params.to.getTime() - params.from.getTime()) / 86_400_000
+      : 28
+  );
 
   const rows = await prisma.$queryRaw<
     Array<{
@@ -61,12 +56,14 @@ export async function getInventoryReport(params: InventoryParams) {
       total_sold: number;
       stock_qty: number;
       reserved_qty: number;
+      negative_stock_qty: number;
       warehouse_count: number;
       recent_sold_qty: number;
       recent_days_active: number;
       daily_sales_rate: number;
       days_of_stock: number | null;
       stock_cost: number;
+      cost_available: boolean;
       stock_retail_value: number;
       last_sale_date: Date | null;
       last_purchase_date: Date | null;
@@ -76,20 +73,30 @@ export async function getInventoryReport(params: InventoryParams) {
   >`
     with
     ${canonicalItemCostsCtes(params.to)},
-    latest_balance_period as (
-      select max(b.balance_period) as balance_period
+    balance_snapshot as (
+      select max(balance_period) as snapshot_at
+      from ${balanceTable}
+      where balance_period is not null
+        ${params.to ? Prisma.sql`and balance_period < ${params.to}` : Prisma.empty}
+    ),
+    latest_balance_rows as (
+      select
+        b.nomenklatura_key,
+        b.sklad_key,
+        b.balance_period,
+        coalesce(b.kolichestvo_balance, 0)::float8 as stock_qty,
+        coalesce(b.rezerv_balance, 0)::float8 as reserved_qty
       from ${balanceTable} b
-      where ${balanceWhere}
+      join balance_snapshot s on s.snapshot_at = b.balance_period
     ),
     balance_stock as (
       select
         b.nomenklatura_key,
-        coalesce(sum(b.kolichestvo_balance), 0)::float8 as stock_qty,
-        coalesce(sum(b.rezerv_balance), 0)::float8 as reserved_qty,
+        coalesce(sum(b.stock_qty), 0)::float8 as stock_qty,
+        coalesce(sum(b.reserved_qty), 0)::float8 as reserved_qty,
         count(distinct b.sklad_key)::int as warehouse_count,
         max(b.balance_period) as stock_period
-      from ${balanceTable} b
-      join latest_balance_period lbp on lbp.balance_period = b.balance_period
+      from latest_balance_rows b
       where b.nomenklatura_key is not null
       group by b.nomenklatura_key
     ),
@@ -179,21 +186,23 @@ export async function getInventoryReport(params: InventoryParams) {
       sc.total_purchased,
       sc.total_sold,
       greatest(sc.stock_qty, 0)::float8 as stock_qty,
+      (-least(sc.stock_qty, 0))::float8 as negative_stock_qty,
       greatest(sc.reserved_qty, 0)::float8 as reserved_qty,
       sc.warehouse_count,
       sc.recent_sold_qty,
       sc.recent_days_active,
-      case when sc.recent_days_active > 0
-        then (sc.recent_sold_qty / sc.recent_days_active)::float8
+      case when ${analysisDays} > 0
+        then (sc.recent_sold_qty / ${analysisDays})::float8
         else 0
       end as daily_sales_rate,
-      case when sc.recent_days_active > 0 and sc.recent_sold_qty > 0 and sc.stock_qty > 0
-        then (sc.stock_qty / (sc.recent_sold_qty / sc.recent_days_active))::float8
+      case when sc.recent_sold_qty > 0 and sc.stock_qty > 0
+        then (sc.stock_qty / (sc.recent_sold_qty / ${analysisDays}))::float8
         else null
       end as days_of_stock,
       (
         greatest(sc.stock_qty, 0) * coalesce(gc.unit_cost, pc.unit_cost, 0)
       )::float8 as stock_cost,
+      (coalesce(gc.unit_cost, pc.unit_cost) is not null) as cost_available,
       (greatest(sc.stock_qty, 0) * coalesce(sc.last_sale_price, 0))::float8 as stock_retail_value,
       sc.last_sale_date,
       sc.last_purchase_date,
@@ -216,6 +225,8 @@ export async function getInventoryReport(params: InventoryParams) {
 
   const items = rows.map((row) => {
     const stockQty = Number(row.stock_qty);
+    const negativeStockQty = Number(row.negative_stock_qty);
+    const costAvailable = row.cost_available;
     const reservedQty = Number(row.reserved_qty);
     const dailyRate = Number(row.daily_sales_rate);
     const daysOfStock = row.days_of_stock !== null ? Number(row.days_of_stock) : null;
@@ -226,16 +237,18 @@ export async function getInventoryReport(params: InventoryParams) {
     // Classification
     let category: "out_of_stock" | "overstock" | "slow_moving" | "dead" | "normal" = "normal";
 
-    if (stockQty <= 0 && recentSold <= 0) {
+    if (stockQty <= 0 && recentSold > 0) {
       category = "out_of_stock";
-    } else if (stockQty <= 0) {
-      category = "out_of_stock";
-    } else if (stockQty > 0 && recentSold === 0 && daysSinceLastSale !== null && daysSinceLastSale > 60) {
+    } else if (
+      stockQty > 0 &&
+      recentSold <= 0 &&
+      (daysSinceLastSale === null || daysSinceLastSale > 30)
+    ) {
       category = "dead";
-    } else if (dailyRate > 0 && dailyRate < 0.1 && stockQty > 0) {
-      category = "slow_moving";
-    } else if (daysOfStock !== null && daysOfStock > 90 && stockQty > 10) {
+    } else if (daysOfStock !== null && daysOfStock > 45) {
       category = "overstock";
+    } else if (daysOfStock !== null && daysOfStock > 30) {
+      category = "slow_moving";
     }
 
     // Forecast: days until stock depletes
@@ -249,6 +262,7 @@ export async function getInventoryReport(params: InventoryParams) {
       totalPurchased: Number(row.total_purchased),
       totalSold: Number(row.total_sold),
       stockQty,
+      negativeStockQty,
       reservedQty,
       availableQty: Math.max(stockQty - reservedQty, 0),
       warehouseCount: Number(row.warehouse_count),
@@ -258,6 +272,7 @@ export async function getInventoryReport(params: InventoryParams) {
       daysOfStock,
       depletionDays,
       stockCost,
+      costAvailable,
       stockRetailValue: Number(row.stock_retail_value),
       lastSaleDate: row.last_sale_date?.toISOString() ?? null,
       lastPurchaseDate: row.last_purchase_date?.toISOString() ?? null,
@@ -273,19 +288,32 @@ export async function getInventoryReport(params: InventoryParams) {
   const dead = items.filter((i) => i.category === "dead");
   const withStock = items.filter((i) => i.stockQty > 0);
 
+  const valuedWithStock = withStock.filter((item) => item.costAvailable);
+  const negativeStockQty = items.reduce((sum, item) => sum + item.negativeStockQty, 0);
+  const unvaluedQty = withStock
+    .filter((item) => !item.costAvailable)
+    .reduce((sum, item) => sum + item.stockQty, 0);
+
   return {
     period: params.period,
     summary: {
       totalItems: items.length,
       itemsWithStock: withStock.length,
-      totalStockCost: withStock.reduce((s, i) => s + i.stockCost, 0),
-      totalStockRetail: withStock.reduce((s, i) => s + i.stockRetailValue, 0),
+      totalStockCost: valuedWithStock.reduce((sum, item) => sum + item.stockCost, 0),
+      totalStockRetail: withStock.reduce((sum, item) => sum + item.stockRetailValue, 0),
       outOfStockCount: outOfStock.length,
       overstockCount: overstock.length,
       slowMovingCount: slowMoving.length,
       deadCount: dead.length,
-      reservedQty: withStock.reduce((s, i) => s + i.reservedQty, 0),
-      stockPeriod: items.find((item) => item.stockPeriod)?.stockPeriod ?? null
+      reservedQty: withStock.reduce((sum, item) => sum + item.reservedQty, 0),
+      negativeStockQty,
+      unvaluedQty,
+      costCoveragePct:
+        withStock.length > 0 ? (valuedWithStock.length / withStock.length) * 100 : 100,
+      stockPeriod: items.reduce<string | null>(
+        (latest, item) => (!latest || (item.stockPeriod && item.stockPeriod > latest) ? item.stockPeriod : latest),
+        null
+      )
     },
     items,
     outOfStock,

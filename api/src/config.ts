@@ -7,6 +7,7 @@ const configSchema = z
   .object({
     DATABASE_URL: z.string().min(1),
     PGSCHEMA: z.string().min(1).default("raw_1c"),
+    APP_SCHEMA: z.string().min(1).default("public"),
     DB_CONNECTION_LIMIT: z.coerce.number().int().positive().max(50).default(5),
     REPORT_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(3600).default(60),
     REPORT_CACHE_MAX_MB: z.coerce.number().int().positive().max(1024).default(64),

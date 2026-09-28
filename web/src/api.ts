@@ -190,9 +190,14 @@ export type SalesReport = {
     returns: number;
     revenue: number;
     orderCount: number;
+    returnCount: number;
     avgCheck: number;
     avgItemsPerCheck: number;
     reportCount: number;
+    coveredDays: number;
+    expectedDays: number | null;
+    checkCoveragePct: number | null;
+    checkStatus: "ready" | "partial";
   };
   revenueSeries: Array<{
     bucket: string;
@@ -200,8 +205,17 @@ export type SalesReport = {
     returns: number;
     revenue: number;
     orderCount: number;
+    returnCount: number;
     avgCheck: number;
     avgItemsPerCheck: number;
+  }>;
+  composition: Array<{
+    itemKey: string;
+    itemName: string;
+    quantity: number;
+    revenue: number;
+    checkCount: number;
+    checkSharePct: number;
   }>;
   heatmap: {
     days: string[];
@@ -221,6 +235,18 @@ export type SalesReport = {
       intensity: number;
     }>;
   };
+  reconciliation: {
+    checkRevenue: number;
+    retailReportRevenue: number;
+    difference: number | null;
+    comparable: boolean;
+    retailReportDays: number;
+    retailReportCoveragePct: number;
+    linkedCheckCount: number;
+    loadedCheckCount: number;
+    linkedCheckPct: number;
+  };
+  source: "Document_ЧекККМ";
 };
 
 export type IncomeReport = {
@@ -278,9 +304,11 @@ export type ItemAnalysis = {
   name: string;
   qty: number;
   revenue: number;
-  cost: number;
-  grossProfit: number;
-  marginPct: number;
+  cost: number | null;
+  grossProfit: number | null;
+  marginPct: number | null;
+  costAvailable: boolean;
+  unvaluedRevenue: number;
   abcClass: string;
   xyzClass: string;
   cvPct: number;
@@ -297,8 +325,7 @@ export type ExitProductReason =
   | "no_sales"
   | "dead_stock"
   | "slow_moving"
-  | "overstock"
-  | "old_stock";
+  | "overstock";
 
 export type ExitProduct = {
   key: string;
@@ -309,18 +336,17 @@ export type ExitProduct = {
   warehouseCount: number;
   recentSoldQty: number;
   recentRevenue: number;
-  recentDaysActive: number;
   dailySalesRate: number;
   daysOfStock: number | null;
-  stockCost: number;
+  stockCost: number | null;
+  frozenStockCost: number | null;
+  costAvailable: boolean;
   lastSaleDate: string | null;
-  lastSaleInPeriod: string | null;
   lastPurchaseDate: string | null;
   stockPeriod: string | null;
   daysSinceLastSale: number | null;
   daysSinceLastPurchase: number | null;
   reason: ExitProductReason;
-  riskScore: number;
 };
 
 export type NomenclatureReport = {
@@ -331,14 +357,24 @@ export type NomenclatureReport = {
     totalItems: number;
     stockQty: number;
     stockCost: number;
+    frozenStockCost: number;
+    unvaluedQty: number;
+    costCoveragePct: number;
     noSalesCount: number;
     deadStockCount: number;
     slowMovingCount: number;
     overstockCount: number;
-    oldStockCount: number;
     stockPeriod: string | null;
   };
   totalDays: number;
+  costCoveragePct: number;
+  unvaluedRevenue: number;
+  methodology: {
+    returnsIncluded: boolean;
+    calendarDaysIncluded: boolean;
+    frozenStockTargetDays: number;
+    costHierarchy: string;
+  };
 };
 
 export type MarketingPromotionItem = {
@@ -437,6 +473,7 @@ export type InventoryItem = {
   totalPurchased: number;
   totalSold: number;
   stockQty: number;
+  negativeStockQty: number;
   reservedQty: number;
   availableQty: number;
   warehouseCount: number;
@@ -446,6 +483,7 @@ export type InventoryItem = {
   daysOfStock: number | null;
   depletionDays: number | null;
   stockCost: number;
+  costAvailable: boolean;
   stockRetailValue: number;
   lastSaleDate: string | null;
   lastPurchaseDate: string | null;
@@ -466,6 +504,9 @@ export type InventoryReport = {
     slowMovingCount: number;
     deadCount: number;
     reservedQty: number;
+    negativeStockQty: number;
+    unvaluedQty: number;
+    costCoveragePct: number;
     stockPeriod: string | null;
   };
   items: InventoryItem[];
@@ -499,19 +540,25 @@ export type LossMetrics = {
 
 export type AcquiringMetrics = {
   summary: {
+    sales: number;
+    returns: number;
     turnover: number;
-    commission: number;
-    commissionPct: number;
-    paymentLines: number;
-    commissionAvailable: boolean;
+    commission: number | null;
+    commissionPct: number | null;
+    recordCount: number;
+    commissionSourceLines: number;
+    commissionStatus: "ready" | "unavailable";
   };
   stores: Array<{
     storeKey: string;
     storeName: string;
+    sales: number;
+    returns: number;
     turnover: number;
-    commission: number;
-    commissionPct: number;
-    paymentLines: number;
+    commission: number | null;
+    commissionPct: number | null;
+    commissionSourceLines: number;
+    recordCount: number;
   }>;
   limitation: string;
 };
@@ -526,29 +573,72 @@ export type CashArticleMetrics = {
     categorizedLines: number;
     categorizedPct: number;
     storeTaggedPct: number;
+    internalInflow: number;
+    internalOutflow: number;
+    externalInflow: number;
+    externalOutflow: number;
+  };
+  statement: {
+    status: "ready" | "partial" | "unavailable";
+    classifiedCoveragePct: number;
+    classifiedTurnover: number;
+    unclassifiedTurnover: number;
+    internalTransferTurnover: number;
+    internalTransferStatus: "partial" | "unavailable";
+    unallocatedInternalInflow: number;
+    unallocatedInternalOutflow: number;
+    unallocatedInternalDocumentCount: number;
+    classifiedArticleCount: number;
+    unclassifiedArticleCount: number;
+    approvedInternalArticleCount: number;
+    flows: Record<"operating" | "investing" | "financing", {
+      inflow: number | null;
+      outflow: number | null;
+      net: number | null;
+    }>;
   };
   articles: Array<{
     articleKey: string;
     articleName: string;
+    flowType: "operating" | "investing" | "financing" | "internal" | null;
     inflow: number;
     outflow: number;
     net: number;
     lineCount: number;
     storeTagged: number;
+    internalLineCount: number;
+    internalInflow: number;
+    internalOutflow: number;
   }>;
   limitation: string;
 };
 
 export type SupplierTermsMetrics = {
   summary: {
-    receiptCount: number;
-    stagedReceiptCount: number;
+    orderCount: number;
+    stagedOrderCount: number;
     stageCoveragePct: number;
-    weightedDeferralDays: number;
+    weightedDeferralDays: number | null;
+    status: "ready" | "experimental" | "unavailable";
+    orderedAmount: number;
     stagedAmount: number;
-    paidFlagCount: number;
+    receivedAmount: number;
+    executionPct: number | null;
+    linkedReceiptCount: number;
+    closedOrderCount: number;
+    next30DayScheduledAmount: number;
+    next56DayScheduledAmount: number;
+    upcomingScheduleStatus: "partial";
+    upcomingScheduleFrom: string;
+    upcomingScheduleTo: string;
   };
   schedule: Array<{
+    dueDay: string;
+    counterpartyName: string;
+    amount: number;
+    documentCount: number;
+  }>;
+  upcomingSchedule: Array<{
     dueDay: string;
     counterpartyName: string;
     amount: number;
@@ -565,6 +655,10 @@ export type StoreStockMetrics = {
     stockCost: number;
     unvaluedQty: number;
     negativeStockQty: number;
+    itemCount: number;
+    valuedItemCount: number;
+    snapshotAt: string | null;
+    costCoveragePct: number;
   };
   stores: Array<{
     storeKey: string;
@@ -582,12 +676,70 @@ export type StoreStockMetrics = {
   }>;
 };
 
+export type StorePerformanceMetrics = {
+  summary: {
+    activeStoreCount: number;
+    revenue: number;
+    cost: number;
+    losses: number;
+    grossProfitAfterLoss: number;
+    marginAfterLossPct: number | null;
+    closingStockCost: number;
+    stockMovement: number | null;
+    frozenStockCost: number | null;
+    frozenStockPct: number | null;
+    frozenSnapshotCoveragePct: number;
+    stockSnapshotCoveragePct: number;
+    gmroi: number | null;
+    unvaluedRevenue: number;
+    closingUnvaluedQty: number;
+    openingCoveragePct: number;
+  };
+  stores: Array<{
+    storeKey: string;
+    storeName: string;
+    active: boolean;
+    revenue: number;
+    cost: number;
+    unvaluedRevenue: number;
+    costCoveragePct: number;
+    writeoffs: number;
+    surpluses: number;
+    losses: number;
+    grossProfitAfterLoss: number;
+    marginAfterLossPct: number | null;
+    closingStockCost: number;
+    openingStockCost: number | null;
+    stockMovement: number | null;
+    closingUnvaluedQty: number;
+    stockCostCoveragePct: number;
+    daysOfStock: number | null;
+    frozenStockCost: number | null;
+    frozenStockPct: number | null;
+    averageStockCost: number | null;
+    stockSnapshotCoveragePct: number;
+    frozenSnapshotCoveragePct: number;
+    gmroi: number | null;
+    closingSnapshotAt: string | null;
+    openingSnapshotAt: string | null;
+  }>;
+  methodology: {
+    analysisDays: number;
+    stockDaysWindow: number;
+    frozenStockTargetDays: number;
+    activeStoreWindowDays: number;
+    frozenStockStatus: "ready" | "partial";
+    frozenStockLimitation: string;
+    lossSources: string;
+  };
+};
+
 export type SourceHealth = {
-  checks: { count: number; dateFrom: string | null; dateTo: string | null };
+  checks: { count: number; selectedCount: number; selectedDays: number; dateFrom: string | null; dateTo: string | null };
   storeAreas: { total: number; filled: number };
   payroll: { timesheets: number; payrollDocuments: number };
   bankStatements: { tableCount: number };
-  vat: { bazzaRevenue: number; recordedVat: number };
+  vat: { bazzaRevenue: number; recordedVat: number; salesLineCount: number; populatedLineCount: number; lineCoveragePct: number };
   reconciliation: {
     grossHeaderRevenue: number;
     grossLineRevenue: number;
@@ -602,6 +754,122 @@ export type SourceHealth = {
   }>;
 };
 
+export type MoneyPositionMetrics = {
+  summary: {
+    cashBalance: number;
+    kkmBalance: number;
+    totalCash: number;
+    bankBalance: null;
+    cashSales28d: number;
+    averageDailyCashSales: number;
+    uncollectedCashDays: number | null;
+    cashSalesCoveragePct: number;
+    cashDaysStatus: "ready" | "partial";
+    supplierSumRaw: number;
+    supplierPayableRaw: number;
+    supplierReceivableRaw: number;
+    supplierBalanceStatus: "experimental";
+  };
+  stores: Array<{
+    storeKey: string;
+    storeName: string;
+    cashBalance: number;
+    kkmBalance: number;
+    totalCash: number;
+    cashSales28d: number;
+    averageDailyCashSales: number;
+    uncollectedCashDays: number | null;
+    cashSalesCoveragePct: number;
+    supplierSumRaw: number;
+    supplierPayableRaw: number;
+    supplierReceivableRaw: number;
+    cashSnapshotAt: string | null;
+    kkmSnapshotAt: string | null;
+    supplierSnapshotAt: string | null;
+  }>;
+  limitation: string;
+};
+
+export type LostSalesMetrics = {
+  summary: {
+    lostSales: number | null;
+    observedLostSales: number;
+    zeroStockItemDays: number;
+    affectedItemCount: number;
+    checkDays: number;
+    snapshotCoveragePct: number;
+    checkCoveragePct: number;
+    snapshotDays: number;
+    analysisDays: number;
+    coveragePct: number;
+    status: "ready" | "partial";
+  };
+  stores: Array<{
+    storeKey: string;
+    storeName: string;
+    lostSales: number;
+    zeroStockItemDays: number;
+  }>;
+  items: Array<{
+    storeKey: string;
+    storeName: string;
+    itemKey: string;
+    itemName: string;
+    abcClass: "A" | "B";
+    revenue: number;
+    averageDailyRevenue: number;
+    zeroStockDays: number;
+    snapshotDays: number;
+    lostSales: number;
+  }>;
+  methodology: string;
+};
+
+export type PurchasingRecommendations = {
+  summary: {
+    recommendationCount: number;
+    recommendedQty: number;
+    recommendedAmount: number | null;
+    recommendationsWithSupplier: number;
+    purchaseBudgetQty: number;
+    purchaseBudgetAmount: number | null;
+    observedPurchaseBudgetAmount: number;
+    budgetCostCoveragePct: number;
+    budgetStatus: "ready" | "partial";
+    executionBudgetAmount: number | null;
+    orderedAmount: number;
+    budgetExecutionPct: number | null;
+    executionCostCoveragePct: number;
+    executionStatus: "ready" | "partial";
+    budgetSnapshotAt: string;
+    executionFrom: string;
+    executionTo: string;
+    velocityWindowDays: number;
+    forecastDays: number;
+  };
+  recommendations: Array<{
+    storeKey: string;
+    storeName: string;
+    itemKey: string;
+    itemName: string;
+    supplierKey: string | null;
+    supplierName: string | null;
+    stockQty: number;
+    openOrderQty: number;
+    targetStock: number;
+    salesQty28d: number;
+    dailySalesQty: number;
+    forecastQty7d: number;
+    daysOfStock: number | null;
+    unitCost: number | null;
+    recommendedQty: number;
+    recommendedAmount: number | null;
+    purchaseBudgetQty: number;
+    purchaseBudgetAmount: number | null;
+  }>;
+  methodology: string;
+};
+
 function appendReportParams(params: URLSearchParams, filters: ReportDateRange) {
   if (filters.from) {
     params.set("from", filters.from);
@@ -611,6 +879,57 @@ function appendReportParams(params: URLSearchParams, filters: ReportDateRange) {
     params.set("to", nextDate(filters.to));
   }
 }
+
+export type ManagementSettings = {
+  stores: Array<{
+    storeKey: string;
+    sourceName: string;
+    displayName: string | null;
+    active: boolean;
+    configured: boolean;
+    lastSaleAt: string | null;
+  }>;
+  metrics: Array<{
+    metricId: string;
+    normal: string;
+    critical: string;
+    cadence: string;
+    owner: string;
+    configured: boolean;
+  }>;
+  cashArticles: Array<{
+    articleKey: string;
+    articleName: string;
+    lineCount: number;
+    flowType: "operating" | "investing" | "financing" | "internal" | null;
+    approved: boolean;
+    suggestedFlow: "operating" | "investing" | "financing" | "internal" | null;
+  }>;
+  obligations: Array<{
+    id: number;
+    kind: "permanent" | "payroll" | "loan";
+    name: string;
+    amount: number;
+    dueDate: string | null;
+    frequency: string;
+    active: boolean;
+  }>;
+  projects: Array<{
+    id: number;
+    name: string;
+    budget: number;
+    actual: number;
+    startDate: string | null;
+    status: "planned" | "active" | "completed" | "cancelled";
+  }>;
+  recurringExpenseSuggestions: Array<{
+    articleKey: string;
+    articleName: string;
+    activeMonths: number;
+    averageMonthlyAmount: number;
+    lastMonth: string;
+  }>;
+};
 
 function nextDate(value: string) {
   const parts = value.split("-").map((part) => Number(part));
@@ -727,8 +1046,78 @@ export const api = {
   storeStockMetrics(filters: ManagementRequest, signal?: AbortSignal) {
     return managementRequest<StoreStockMetrics>("store-stock", filters, signal);
   },
+  moneyPositionMetrics(filters: ManagementRequest, signal?: AbortSignal) {
+    return managementRequest<MoneyPositionMetrics>("money-position", filters, signal);
+  },
+  lostSalesMetrics(filters: ManagementRequest, signal?: AbortSignal) {
+    return managementRequest<LostSalesMetrics>("lost-sales", filters, signal);
+  },
+  purchasingRecommendations(filters: ManagementRequest, signal?: AbortSignal) {
+    return managementRequest<PurchasingRecommendations>("purchasing", filters, signal);
+  },
   sourceHealth(filters: ManagementRequest, signal?: AbortSignal) {
     return managementRequest<SourceHealth>("source-health", filters, signal);
+  },
+  storePerformanceMetrics(filters: ManagementRequest, signal?: AbortSignal) {
+    return managementRequest<StorePerformanceMetrics>("store-performance", filters, signal);
+  },
+  managementSettings(signal?: AbortSignal) {
+    return request<ManagementSettings>("/api/management/settings", { signal });
+  },
+  updateStoreSetting(input: { storeKey: string; active: boolean; displayName?: string | null }) {
+    return request<{ saved: true }>("/api/management/settings/store", {
+      method: "PUT",
+      body: JSON.stringify(input)
+    });
+  },
+  updateMetricSetting(input: {
+    metricId: string;
+    normal: string;
+    critical: string;
+    cadence: string;
+    owner: string;
+  }) {
+    return request<{ saved: true }>("/api/management/settings/metric", {
+      method: "PUT",
+      body: JSON.stringify(input)
+    });
+  },
+  updateCashArticleSetting(input: {
+    articleKey: string;
+    flowType: "operating" | "investing" | "financing" | "internal" | null;
+    approved: boolean;
+  }) {
+    return request<{ saved: true }>("/api/management/settings/cash-article", {
+      method: "PUT",
+      body: JSON.stringify(input)
+    });
+  },
+  updateObligation(input: {
+    id?: number;
+    kind: "permanent" | "payroll" | "loan";
+    name: string;
+    amount: number;
+    dueDate?: string | null;
+    frequency: string;
+    active: boolean;
+  }) {
+    return request<{ saved: true; id: number }>("/api/management/settings/obligation", {
+      method: "PUT",
+      body: JSON.stringify(input)
+    });
+  },
+  updateProject(input: {
+    id?: number;
+    name: string;
+    budget: number;
+    actual: number;
+    startDate?: string | null;
+    status: "planned" | "active" | "completed" | "cancelled";
+  }) {
+    return request<{ saved: true; id: number }>("/api/management/settings/project", {
+      method: "PUT",
+      body: JSON.stringify(input)
+    });
   },
   table(tableName: string) {
     return request<TableProfile>(

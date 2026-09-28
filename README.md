@@ -1,25 +1,39 @@
 # Naliv web analytics
 
 This is the API and React web UI for the data loaded by `naliv_data1` into
-PostgreSQL. Sales, heatmaps, income, nomenclature, and marketing analytics use
-the final 1C retail-report tables:
+PostgreSQL. Checks, check composition, and the hourly heatmap use the KKM check
+tables:
+
+- `document_chek_kkm`
+- `document_chek_kkm_tovary`
+
+The nightly receipt sync requests only the receipt header and `Товары` fields
+these queries read. The `Оплата` part is fetched only by one-off diagnostics
+(`--full-fields`) and is not refreshed by the schedule.
+
+Income, nomenclature, and marketing attribution use the final 1C retail-report
+tables:
 
 - `document_otchet_o_roznichnyh_prodazhah`
 - `document_otchet_o_roznichnyh_prodazhah_tovary`
 - `document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary`
 
 Sales revenue is net of the explicit return table. Income reverses both revenue
-and cost for returned items. Cost follows the auditable hierarchy: latest
-store-specific `document_ustanovka_sebestoimosti`, latest network value for the
-item, then weighted purchase cost excluding recorded VAT over the preceding 90
-days. Missing valuation stays visible as cost-coverage and unvalued-revenue
+and cost for returned items. Cost follows the auditable hierarchy: the latest
+live store/item record from `СебестоимостьНоменклатуры`, the latest
+store-specific `document_ustanovka_sebestoimosti` line, the latest network value
+for the item, then weighted purchase cost excluding recorded VAT over the
+preceding 90 days. Missing valuation stays visible as cost-coverage and unvalued-revenue
 metrics instead of silently pretending that zero is a known cost.
 
-The sales report still uses retail reports as its counting unit and hourly
-proxy. It does not claim to show individual checks. The source-health panel
-queries `document_chek_kkm` only to expose its loaded row/date coverage; detailed
-check history is excluded from the normal exporter unless its compatibility
-flag is supplied.
+The sales report is sourced from KKM checks (`document_chek_kkm` with its
+`Товары` part): real check counts, average check, items per check,
+an hourly heatmap built from check timestamps, and top-item composition. Retail
+reports remain the official basis for income/P&L and promotion attribution, and
+the report shows a checks-versus-reports reconciliation — loaded checks, the
+share linked to a retail report, and the revenue difference — instead of hiding
+the gap. Check export stays behind the `--include-check-kkm` gate, which the
+scheduled management profile supplies explicitly.
 
 ## Development: API and web UI together
 
@@ -37,7 +51,9 @@ npm run dev
 Before starting, edit `.env` and set `DATABASE_URL`, both account credentials,
 and a random `JWT_SECRET` of at least 24 characters. The admin and marketing
 accounts must have different email addresses and passwords. Keep
-`PGSCHEMA=raw_1c` when using the default loader schema.
+`PGSCHEMA=raw_1c` when using the default loader schema. `APP_SCHEMA=public`
+selects the separate schema used by app-owned directories; it defaults to
+`public` and the API creates its five `naliv_*` tables on first use.
 
 Open <http://localhost:5173> and sign in with `APP_ADMIN_EMAIL` and
 `APP_ADMIN_PASSWORD`. Vite serves the web UI and proxies `/api` to the API port
@@ -53,31 +69,114 @@ web UI prefills the same month and shows the end date inclusively, converting it
 to the exclusive bound before sending. `period` (`day`, `week`, `month`) only
 selects the chart bucket.
 
-## Source-ready management metrics
+## Management workspaces and source-ready metrics
 
-The admin-only "Контроль" page loads its sections independently so a slow stock
-query does not hold back losses, acquiring, cash articles, or source health:
+Primary navigation follows the handbook's owner questions rather than raw
+database entities:
 
-- `GET /api/management/losses` — write-offs less capitalized surpluses, with
-  store revenue and loss rate;
-- `GET /api/management/acquiring` — card turnover and recorded acquiring
-  commission by store;
-- `GET /api/management/cash-articles` — actual PKO/RKO grouped by DDS article;
-- `GET /api/management/supplier-terms` — weighted planned deferral and payment
-  stages for the subset of receipts where stages are physically filled;
-- `GET /api/management/store-stock` — current positive stock valuation by store
-  using the same canonical cost hierarchy as income; negative balances are
-  exposed separately and never reduce the valued stock total;
-- `GET /api/management/source-health` — receipt coverage, store areas, payroll,
-  bank-table availability, VAT availability, and sales/return reconciliation.
+`Главная` → `Финансы` → `Точки` → `Запасы и закупки` → `P&L` → `Реинвест`
+→ `Решения и тревоги` → `Маркетинг` → `Администрирование`.
 
-The page deliberately does **not** call cash orders a complete cash flow,
-supplier stages a confirmed payable balance, or card turnover "acquiring in
-transit." Bank statements are not loaded, supplier stages cover only a small
-subset of receipts, acquiring commission fields can be zero, store areas are
-empty, and payroll/timesheet headers are absent. Those limitations are rendered
-next to the numbers so unavailable data cannot appear as a trustworthy zero.
+Technical source health, synchronization, table profiles, and raw samples live
+under `Администрирование`. A source-blocked business metric renders `Нет данных`
+with the missing prerequisite; absence is never formatted as a valid zero.
+Every metric card, analytical table header, and major chart has an accessible
+info button backed by `web/src/metric-definitions.ts`. The first layer gives a
+plain-language meaning and formula; `Подробнее` shows source, period, grain,
+limitations, thresholds, and owner. Live status, coverage, and snapshot date
+come from the report response.
 
+Admin-only management endpoints:
+
+- `GET /api/management/losses` — write-offs plus revision shortages, less
+  capitalized surpluses and revision gains, with store revenue and loss rate;
+- `GET /api/management/acquiring` — card sales and returns from the payment-card
+  accumulation register; commission remains `null` with `unavailable` status
+  because every available commission field is zero;
+- `GET /api/management/cash-articles` — cash-only ОДДС from PKO/RKO: operating,
+  investing, and financing flows from financier-approved DDS mappings;
+  unambiguous own-desk/KKM-extraction documents and approved internal-transfer
+  articles are excluded. Internal documents without payment lines are reported
+  from header amounts instead of disappearing from the excluded total. The
+  available PKO/RKO bank-account fields contain only zero-key placeholders,
+  so cash↔bank and other ambiguous articles require financier approval.
+  Unclassified turnover
+  and amount coverage remain explicit;
+- `GET /api/management/money-position` — current ordinary cash and KKM cash by
+  store, days of uncollected KKM cash against 28-day cash revenue, plus the raw
+  supplier-settlement register values; bank remains `null`;
+- `GET /api/management/supplier-terms` — supplier-order payment stages, weighted
+  planned deferral, order amount, linked-receipt amount, execution, and an
+  explicitly partial eight-week calendar for open-order stages;
+- `GET /api/management/purchasing` — target-stock replenishment recommendations,
+  a monetary seven-day purchase budget, and prior-seven-day budget execution
+  using store norms, current stock, open orders, 28-day check velocity, canonical
+  cost, and primary regional suppliers;
+- `GET /api/management/lost-sales` — monetary Lost Sales for A/B items from
+  daily zero-stock snapshots, with explicit snapshot coverage;
+- `GET /api/management/store-stock` — positive stock valuation by store as of
+  the selected end date, with cost coverage, unvalued quantity, and negative
+  balances kept separate;
+- `GET /api/management/store-performance` — net revenue, profit after document
+  and revision losses, 28-day stock days, in-stock-day frozen stock, stock
+  movement, and annualized GMROI over average daily stock by active store;
+- `GET /api/management/source-health` — KKM coverage in the selected window,
+  store areas, payroll, bank-table availability, VAT availability, and
+  sales/return reconciliation. Check-day coverage is measured only against
+  completed UTC days, so the remaining future days of the selected month do
+  not create a false gap.
+- `GET /api/management/settings` and `PUT /api/management/settings/*` — active
+  store master, metric thresholds/owners, approved DDS classification, manual
+  obligations/payroll/loans, and reinvestment projects.
+
+App-owned configuration is stored outside the `raw_1c` export in
+`naliv_store_settings`, `naliv_metric_settings`,
+`naliv_cash_article_settings`, `naliv_obligations`, and `naliv_projects`.
+`APP_SCHEMA` chooses their schema. Export synchronization does not overwrite
+them. Repeated RKO articles seen in at least two of the previous six months are
+offered as permanent-payment candidates; no suggestion is saved until a user
+accepts and saves it. DDS keyword suggestions likewise remain unapproved until
+the financier confirms them. A confirmed `internal` DDS mapping excludes the
+article from all three flows; this is how the financier marks collection,
+bank-deposit, change-replenishment, and other own-money transfer articles.
+
+Nomenclature uses net sales, full calendar days (including zero-sale days),
+lifetime first/last sale dates, and the same dated canonical cost hierarchy as
+income and inventory:
+
+1. live `СебестоимостьНоменклатуры` record by store/item/date;
+2. store-specific cost-setting document;
+3. network-level cost-setting document;
+4. weighted external purchase cost over the preceding 90 days.
+
+Missing item cost produces `null` profit/margin and explicit unvalued revenue.
+`Дни без продаж` remains a separate observed behavior. Monetary Lost Sales is
+published only when both the daily stock-snapshot coverage and the KKM-check
+coverage of the window reach 90%; below that the observed amount is shown with a
+`partial` state instead of a trusted figure.
+
+Balance-function imports are complete non-zero snapshots. Stock consumers select
+one global `balance_period` at each boundary; they never carry a dimension's
+older non-zero row into a newer snapshot where that dimension is absent.
+Frozen-stock velocity uses only days with positive stock. Frozen stock and
+GMROI are trusted only when their daily-snapshot window is at least 90% covered.
+The purchase budget is
+`max(norm + forecast_7d - stock - open_orders, 0) × canonical_cost`; execution
+compares the prior seven days' orders with the budget reconstructed at that
+window's opening snapshot.
+
+The UI deliberately does **not** call cash balances a complete cash position,
+open-order payment stages complete obligations, raw supplier-register signs
+confirmed payables, card turnover acquiring in transit, or promotion
+attribution ROI. Bank statements are not loaded, so §4.4 cash/bank
+reconciliation remains unavailable even when cash-only flow classification is
+complete. Supplier balance signs still need financier approval, store areas are
+empty, current payroll/timesheets are absent, loan schedules are absent, VAT is
+populated on only a negligible share of retail lines, and promotion returns
+cannot be linked reliably to the original sale. §7.5 intercompany markup also
+remains unavailable until the ownership/policy and internal-supply links are
+approved. Those limitations stay next to the affected numbers; absent sources
+are never rendered as zero.
 The account configured by `APP_MARKETING_EMAIL` and `APP_MARKETING_PASSWORD`
 can open only the marketing section. This restriction is enforced by the API:
 the account may call `/api/marketing` and its own `/api/auth` session endpoints,
@@ -105,7 +204,7 @@ compatibility flag is supplied. Detailed commands are in
 
 ## Sync panel
 
-The "База данных" page starts with a read-only "Синхронизация" panel fed by
+The `Администрирование` page includes a read-only `Синхронизация` panel fed by
 `GET /api/sync/health` (admin only). It shows the scheduler's own state read from
 `ops.sync_scheduler` (is the container alive, what it last decided and why, the
 cooldown holding a startup sync back, the flags it actually received, the last
@@ -157,6 +256,8 @@ Verification on 2026-09-21: the closest rule percents on one shop differ by
 0.3 pp, and widening the tolerance from 0.25 to 1.0 pp produced identical totals
 for September, so no line is attributed by rounding alone. A line that satisfies
 several rules of one promotion is counted once, at its highest rule percent.
+Promotion cards are therefore labelled as an estimate before returns; they do
+not claim ROI, incremental revenue, or contribution profit.
 
 Item composition is parsed from the data-composition schema inside
 `shema_komponovki_dannyh_base64_data`: the `ФормированиеСегмента` settings
@@ -264,13 +365,24 @@ call adds row mapping on top of both). The nomenclature exit query merges its
 period metrics, period bounds, and per-item last-sale lookups into one pass
 (3.7 s → 1.7 s for `from=2026-06-02&to=2026-09-16`, where stock balances exist —
 the standard range has no balance snapshot, so that query returns no rows there
-and reports nothing either way). All rewrites were verified row-for-row against
-the previous implementations on the same database, except for floating-point
-summation order; the report integration test pins the derived income totals and
-the inventory key set.
+and reports nothing either way). Those performance rewrites were verified
+row-for-row against their previous implementations except for floating-point
+summation order. Current fixtures additionally pin unavailable commission,
+low-coverage supplier terms, canonical nomenclature returns/cost/as-of behavior,
+store profit-after-loss/stock-days/GMROI, and app-owned management directories.
 
-Run `npm test` for cache and authorization regressions and `npm run build` for
-the API and web build. Set `ANALYTICS_TEST_DATABASE_URL` to a PostgreSQL connection
-URL to enable the additional report integration test. That test uses only
-connection-local temporary tables, including discount, null, duplicate-catalog,
-empty-period, and date-boundary fixtures; it does not modify source data.
+The 2026-09-25 source-led pass verified the live result end to end for
+`2026-09-01..2026-09-26`: 11 active stores, net revenue ≈285.90m ₸,
+profit after losses ≈94.46m ₸, closing stock ≈287.71m ₸, frozen stock
+≈166.30m ₸ (58%), GMROI ≈5.09 with 100% daily-snapshot coverage, uncollected
+KKM cash ≈22.3 days at 100% cash-report coverage, a seven-day purchase budget
+of ≈6.47m ₸ at ≈99.95% cost coverage with ≈37.3% execution, and ≈9.60m ₸ of
+open-order payment stages over the next 56 days (explicitly partial; most
+staged orders in that window are already closed).
+
+Run `npm test` for cache, authorization, metric-state, canonical-calculation,
+and management-directory regressions; run `npm run build` for the API and web
+build. Set `ANALYTICS_TEST_DATABASE_URL` to a PostgreSQL connection URL to
+enable database integration tests. They use connection-local temporary source
+and application tables and roll back their transactions; they do not modify
+source data.

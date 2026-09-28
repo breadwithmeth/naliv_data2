@@ -20,85 +20,83 @@ function qualifiedTable(tableName: string) {
   return Prisma.raw(`${quoteIdent(config.PGSCHEMA)}.${quoteIdent(tableName)}`);
 }
 
-function retailSalesFilters(params: SalesReportParams) {
+function checkFilters(params: SalesReportParams) {
   const filters: Prisma.Sql[] = [
-    Prisma.sql`r.date is not null`,
-    Prisma.sql`r.deletion_mark is not true`,
-    Prisma.sql`r.posted = true`,
-    Prisma.sql`(
-      coalesce(r.summa_dokumenta, 0) <> 0
-      or coalesce(r.summa_vozvratov, 0) <> 0
-    )`
+    Prisma.sql`c.date is not null`,
+    Prisma.sql`c.deletion_mark is not true`,
+    Prisma.sql`c.posted = true`,
+    Prisma.sql`coalesce(c.summa_dokumenta, 0) <> 0`
   ];
 
   if (params.from) {
-    filters.push(Prisma.sql`r.date >= ${params.from}`);
+    filters.push(Prisma.sql`c.date >= ${params.from}`);
   }
-
   if (params.to) {
-    filters.push(Prisma.sql`r.date < ${params.to}`);
+    filters.push(Prisma.sql`c.date < ${params.to}`);
   }
-
   return Prisma.join(filters, " and ");
 }
 
-function retailReportsCte(params: SalesReportParams) {
-  const reportsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah");
-  const itemsTable = qualifiedTable("document_otchet_o_roznichnyh_prodazhah_tovary");
-  const returnItemsTable = qualifiedTable(
-    "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary"
-  );
-  const whereSql = retailSalesFilters(params);
+function retailReportFilters(params: SalesReportParams) {
+  const filters: Prisma.Sql[] = [
+    Prisma.sql`r.date is not null`,
+    Prisma.sql`r.deletion_mark is not true`,
+    Prisma.sql`r.posted = true`
+  ];
+  if (params.from) {
+    filters.push(Prisma.sql`r.date >= ${params.from}`);
+  }
+  if (params.to) {
+    filters.push(Prisma.sql`r.date < ${params.to}`);
+  }
+  return Prisma.join(filters, " and ");
+}
+
+function checksCte(params: SalesReportParams) {
+  const checksTable = qualifiedTable("document_chek_kkm");
+  const itemsTable = qualifiedTable("document_chek_kkm_tovary");
+  const whereSql = checkFilters(params);
   const unknownStore = "Без магазина";
   const emptyRef = "00000000-0000-0000-0000-000000000000";
 
   return Prisma.sql`
-    with selected_reports as materialized (
+    with selected_checks as materialized (
       select
-        r.ref_key,
-        r.date,
-        coalesce(r.summa_dokumenta, 0)::float8 as gross_revenue,
-        coalesce(r.summa_vozvratov, 0)::float8 as return_amount,
-        r.magazin_key
-      from ${reportsTable} r
+        c.ref_key,
+        c.date,
+        coalesce(c.summa_dokumenta, 0)::float8 as document_amount,
+        (coalesce(c.vid_operatsii, '') like '%Возврат%' or coalesce(c.vid_operatsii, '') like '%возврат%') as is_return,
+        c.otchet_o_roznichnyh_prodazhah_key,
+        c.magazin_key
+      from ${checksTable} c
       where ${whereSql}
-    ),
-    item_movements as (
-      select
-        t."_parent_ref_key" as parent_ref_key,
-        coalesce(t.kolichestvo, 0)::float8 as item_quantity
-      from ${itemsTable} t
-      where exists (
-        select 1 from selected_reports r where r.ref_key = t."_parent_ref_key"
-      )
-      union all
-      select
-        t."_parent_ref_key" as parent_ref_key,
-        -coalesce(t.kolichestvo, 0)::float8 as item_quantity
-      from ${returnItemsTable} t
-      where exists (
-        select 1 from selected_reports r where r.ref_key = t."_parent_ref_key"
-      )
     ),
     item_totals as (
       select
-        parent_ref_key,
-        sum(item_quantity)::float8 as item_quantity
-      from item_movements
-      group by parent_ref_key
+        t."_parent_ref_key" as parent_ref_key,
+        sum(
+          case when c.is_return
+            then -coalesce(t.kolichestvo, 0)
+            else coalesce(t.kolichestvo, 0)
+          end
+        )::float8 as item_quantity
+      from ${itemsTable} t
+      join selected_checks c on c.ref_key = t."_parent_ref_key"
+      group by t."_parent_ref_key"
     ),
     checks as (
       select
-        r.ref_key,
-        r.date as sale_at,
-        r.gross_revenue,
-        r.return_amount,
-        (r.gross_revenue - r.return_amount)::float8 as revenue,
+        c.ref_key,
+        c.date as sale_at,
+        case when c.is_return then 0 else c.document_amount end::float8 as gross_revenue,
+        case when c.is_return then c.document_amount else 0 end::float8 as return_amount,
+        case when c.is_return then -c.document_amount else c.document_amount end::float8 as revenue,
+        c.is_return,
         i.item_quantity,
-        nullif(r.ref_key, ${emptyRef}) as retail_report_key,
-        coalesce(nullif(r.magazin_key, ''), ${unknownStore}) as store_key
-      from selected_reports r
-      left join item_totals i on i.parent_ref_key = r.ref_key
+        nullif(c.otchet_o_roznichnyh_prodazhah_key, ${emptyRef}) as retail_report_key,
+        coalesce(nullif(c.magazin_key, ''), ${unknownStore}) as store_key
+      from selected_checks c
+      left join item_totals i on i.parent_ref_key = c.ref_key
     )
   `;
 }
@@ -116,10 +114,6 @@ function displayStoreName(name: string | null, key: string) {
 }
 
 export async function getSalesReport(params: SalesReportParams) {
-  // One GROUPING SETS scan produces the period series (grouped rows) and the
-  // grand summary (the null-bucket row); a second scan yields the heatmap and
-  // per-store totals. Previously each of these re-ran the same CTEs in four
-  // separate queries per request.
   const seriesQuery = prisma.$queryRaw<
     Array<{
       bucket: Date | null;
@@ -127,25 +121,35 @@ export async function getSalesReport(params: SalesReportParams) {
       returns: number | null;
       revenue: number | null;
       order_count: bigint | number;
+      return_count: bigint | number;
       avg_check: number | null;
       avg_items_per_check: number | null;
       date_from: Date | null;
       date_to: Date | null;
       report_count: bigint | number;
+      covered_day_count: bigint | number;
     }>
   >`
-    ${retailReportsCte(params)}
+    ${checksCte(params)}
     select
       date_trunc(${params.period}, sale_at) as bucket,
       coalesce(sum(gross_revenue), 0)::float8 as gross_revenue,
       coalesce(sum(return_amount), 0)::float8 as returns,
       coalesce(sum(revenue), 0)::float8 as revenue,
-      count(*) as order_count,
-      coalesce(avg(revenue), 0)::float8 as avg_check,
-      coalesce(avg(item_quantity) filter (where item_quantity is not null), 0)::float8 as avg_items_per_check,
+      count(*) filter (where not is_return) as order_count,
+      count(*) filter (where is_return) as return_count,
+      coalesce(
+        sum(gross_revenue) / nullif(count(*) filter (where not is_return), 0),
+        0
+      )::float8 as avg_check,
+      coalesce(
+        sum(item_quantity) / nullif(count(*) filter (where not is_return), 0),
+        0
+      )::float8 as avg_items_per_check,
       min(sale_at) as date_from,
       max(sale_at) as date_to,
-      count(distinct retail_report_key) filter (where retail_report_key is not null) as report_count
+      count(distinct retail_report_key) filter (where retail_report_key is not null) as report_count,
+      count(distinct sale_at::date) as covered_day_count
     from checks
     group by grouping sets ((1), ())
     order by 1 asc nulls last
@@ -161,22 +165,16 @@ export async function getSalesReport(params: SalesReportParams) {
       order_count: bigint | number;
     }>
   >`
-    ${retailReportsCte(params)},
+    ${checksCte(params)},
     store_totals as (
-      select
-        store_key,
-        sum(revenue)::float8 as revenue
+      select store_key, sum(revenue)::float8 as revenue
       from checks
       group by store_key
       order by revenue desc
       limit ${params.storeLimit}
     ),
-    -- Catalog keys are not guaranteed unique; collapse them before the join so
-    -- duplicate catalog rows cannot multiply the aggregated store cells.
     store_names as (
-      select
-        ref_key,
-        max(description) as description
+      select ref_key, max(description) as description
       from ${qualifiedTable("catalog_magaziny")}
       group by ref_key
     )
@@ -186,7 +184,7 @@ export async function getSalesReport(params: SalesReportParams) {
       coalesce(nullif(max(m.description), ''), c.store_key) as store_name,
       extract(hour from c.sale_at)::int as hour,
       coalesce(sum(c.revenue), 0)::float8 as revenue,
-      count(*) as order_count
+      count(*) filter (where not c.is_return) as order_count
     from checks c
     join store_totals st on st.store_key = c.store_key
     left join store_names m on m.ref_key = c.store_key
@@ -194,10 +192,104 @@ export async function getSalesReport(params: SalesReportParams) {
     order by sale_day, c.store_key, hour
   `;
 
-  const [seriesRows, heatmapRows] = await Promise.all([seriesQuery, heatmapQuery]);
+  const reconciliationQuery = prisma.$queryRaw<
+    Array<{
+      check_revenue: number | null;
+      retail_report_revenue: number | null;
+      check_count: bigint | number;
+      linked_check_count: bigint | number;
+      report_days: bigint | number;
+    }>
+  >`
+    ${checksCte(params)},
+    retail_reports as (
+      select
+        sum(coalesce(r.summa_dokumenta, 0) - coalesce(r.summa_vozvratov, 0))::float8
+          as revenue,
+        count(distinct date_trunc('day', r.date)) as report_days
+      from ${qualifiedTable("document_otchet_o_roznichnyh_prodazhah")} r
+      where ${retailReportFilters(params)}
+    )
+    select
+      coalesce((select sum(revenue) from checks), 0)::float8 as check_revenue,
+      coalesce((select revenue from retail_reports), 0)::float8 as retail_report_revenue,
+      (select count(*) from checks) as check_count,
+      (select count(*) from checks where retail_report_key is not null) as linked_check_count,
+      coalesce((select report_days from retail_reports), 0) as report_days
+  `;
+  const compositionQuery = prisma.$queryRaw<
+    Array<{
+      item_key: string;
+      item_name: string | null;
+      quantity: number | null;
+      revenue: number | null;
+      check_count: bigint | number;
+    }>
+  >`
+    ${checksCte(params)},
+    item_names as (
+      select ref_key, max(description) as description
+      from ${qualifiedTable("catalog_nomenklatura")}
+      group by ref_key
+    )
+    select
+      l.nomenklatura_key as item_key,
+      n.description as item_name,
+      sum(case when c.is_return
+        then -coalesce(l.kolichestvo, 0)
+        else coalesce(l.kolichestvo, 0)
+      end)::float8 as quantity,
+      sum(case when c.is_return
+        then -coalesce(l.summa, 0)
+        else coalesce(l.summa, 0)
+      end)::float8 as revenue,
+      count(distinct c.ref_key) filter (where not c.is_return) as check_count
+    from checks c
+    join ${qualifiedTable("document_chek_kkm_tovary")} l
+      on l."_parent_ref_key" = c.ref_key
+    left join item_names n on n.ref_key = l.nomenklatura_key
+    where l.nomenklatura_key is not null
+    group by l.nomenklatura_key, n.description
+    order by revenue desc
+    limit 30
+  `;
+
+  const [seriesRows, heatmapRows, reconciliationRows, compositionRows] =
+    await Promise.all([
+      seriesQuery,
+      heatmapQuery,
+      reconciliationQuery,
+      compositionQuery
+    ]);
 
   const summaryRow = seriesRows.find((row) => row.bucket === null);
   const periodRows = seriesRows.filter((row) => row.bucket !== null);
+  const reconciliationRow = reconciliationRows[0];
+  const checkRevenue = Number(reconciliationRow?.check_revenue ?? 0);
+  const retailReportRevenue = Number(
+    reconciliationRow?.retail_report_revenue ?? 0
+  );
+  const loadedCheckCount = Number(reconciliationRow?.check_count ?? 0);
+  const linkedCheckCount = Number(reconciliationRow?.linked_check_count ?? 0);
+  const now = new Date();
+  const today = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  );
+  const coverageEnd = params.to && params.to < today ? params.to : today;
+  const expectedDays = params.from
+    ? Math.max(1, (coverageEnd.getTime() - params.from.getTime()) / 86_400_000)
+    : null;
+  const coveredDays = Number(summaryRow?.covered_day_count ?? 0);
+  const checkCoveragePct =
+    expectedDays === null ? null : Math.min(100, (coveredDays / expectedDays) * 100);
+  const retailReportDays = Number(reconciliationRow?.report_days ?? 0);
+  // Compare like with like: the share of check days that also have a retail
+  // report day. An empty retail-report window must never read as "report
+  // revenue 0", so the difference is withheld until both sources overlap.
+  const retailReportCoveragePct =
+    coveredDays > 0 ? Math.min(100, (retailReportDays / coveredDays) * 100) : 0;
+  const reconciliationComparable =
+    loadedCheckCount > 0 && coveredDays > 0 && retailReportCoveragePct >= 80;
 
   const maxHeatRevenue = Math.max(
     ...heatmapRows.map((row) => Number(row.revenue ?? 0)),
@@ -238,9 +330,18 @@ export async function getSalesReport(params: SalesReportParams) {
       returns: Number(summaryRow?.returns ?? 0),
       revenue: Number(summaryRow?.revenue ?? 0),
       orderCount: Number(summaryRow?.order_count ?? 0),
+      returnCount: Number(summaryRow?.return_count ?? 0),
       avgCheck: Number(summaryRow?.avg_check ?? 0),
       avgItemsPerCheck: Number(summaryRow?.avg_items_per_check ?? 0),
-      reportCount: Number(summaryRow?.report_count ?? 0)
+      reportCount: Number(summaryRow?.report_count ?? 0),
+      coveredDays,
+      expectedDays,
+      checkCoveragePct,
+      checkStatus:
+        loadedCheckCount > 0 &&
+        (checkCoveragePct === null || checkCoveragePct >= 90)
+          ? "ready"
+          : "partial"
     },
     revenueSeries: periodRows.map((row) => ({
       bucket: row.bucket!.toISOString(),
@@ -248,9 +349,24 @@ export async function getSalesReport(params: SalesReportParams) {
       returns: Number(row.returns ?? 0),
       revenue: Number(row.revenue ?? 0),
       orderCount: Number(row.order_count ?? 0),
+      returnCount: Number(row.return_count ?? 0),
       avgCheck: Number(row.avg_check ?? 0),
       avgItemsPerCheck: Number(row.avg_items_per_check ?? 0)
     })),
+    composition: compositionRows.map((row) => {
+      const checkCount = Number(row.check_count ?? 0);
+      return {
+        itemKey: row.item_key,
+        itemName: row.item_name?.trim() || row.item_key,
+        quantity: Number(row.quantity ?? 0),
+        revenue: Number(row.revenue ?? 0),
+        checkCount,
+        checkSharePct:
+          Number(summaryRow?.order_count ?? 0) > 0
+            ? (checkCount / Number(summaryRow?.order_count ?? 0)) * 100
+            : 0
+      };
+    }),
     heatmap: {
       days: heatmapDays,
       hours: Array.from({ length: 24 }, (_value, hour) => hour),
@@ -264,7 +380,22 @@ export async function getSalesReport(params: SalesReportParams) {
         intensity:
           maxHeatRevenue > 0 ? Number(row.revenue ?? 0) / maxHeatRevenue : 0
       }))
-    }
+    },
+    reconciliation: {
+      checkRevenue,
+      retailReportRevenue,
+      difference: reconciliationComparable
+        ? checkRevenue - retailReportRevenue
+        : null,
+      comparable: reconciliationComparable,
+      retailReportDays,
+      retailReportCoveragePct,
+      linkedCheckCount,
+      loadedCheckCount,
+      linkedCheckPct:
+        loadedCheckCount > 0 ? (linkedCheckCount / loadedCheckCount) * 100 : 0
+    },
+    source: "Document_ЧекККМ"
   };
 }
 
@@ -276,7 +407,7 @@ function retailReportCte(params: SalesReportParams) {
   const returnItemsTable = qualifiedTable(
     "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary"
   );
-  const whereSql = retailSalesFilters(params);
+  const whereSql = retailReportFilters(params);
 
   return Prisma.sql`
     retail_items as (
