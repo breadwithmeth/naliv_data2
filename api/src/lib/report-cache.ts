@@ -6,6 +6,7 @@ export class ReportCache {
   private entries = new Map<string, Entry>();
   private pending = new Map<string, Promise<string>>();
   private bytes = 0;
+  private generation = 0;
 
   constructor(
     private readonly ttlMs: number,
@@ -13,6 +14,13 @@ export class ReportCache {
     private readonly maxEntries = 128,
     private readonly now = Date.now
   ) {}
+
+  clear() {
+    this.generation++;
+    this.entries.clear();
+    this.pending.clear();
+    this.bytes = 0;
+  }
 
   async get(key: string, load: () => Promise<string>): Promise<{ value: string; status: CacheStatus }> {
     const cached = this.entries.get(key);
@@ -27,9 +35,10 @@ export class ReportCache {
 
     // Bound bookkeeping even when many distinct filters arrive together.
     if (this.pending.size >= this.maxEntries) return { value: await load(), status: "miss" };
+    const generation = this.generation;
     const task = Promise.resolve().then(load).then((value) => {
       const bytes = Buffer.byteLength(value, "utf8");
-      if (this.ttlMs > 0 && bytes <= this.maxBytes) {
+      if (generation === this.generation && this.ttlMs > 0 && bytes <= this.maxBytes) {
         for (const [entryKey, entry] of this.entries) {
           if (entry.expiresAt <= this.now()) this.remove(entryKey);
         }
@@ -45,7 +54,7 @@ export class ReportCache {
     try {
       return { value: await task, status: "miss" };
     } finally {
-      this.pending.delete(key);
+      if (this.pending.get(key) === task) this.pending.delete(key);
     }
   }
 

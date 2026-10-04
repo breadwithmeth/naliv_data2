@@ -983,6 +983,12 @@ export async function getSourceHealth(params: ManagementMetricParams) {
   const salesLines = qualifiedTable("document_otchet_o_roznichnyh_prodazhah_tovary");
   const returnLines = qualifiedTable("document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary");
   const organizations = qualifiedTable("catalog_organizatsii");
+  // Eligibility is applied once below; these aggregate filters need only the
+  // date window, allowing the partial covering receipt index to serve them.
+  const checkDateFilters: Prisma.Sql[] = [Prisma.sql`c.date is not null`];
+  if (params.from) checkDateFilters.push(Prisma.sql`c.date >= ${params.from}`);
+  if (params.to) checkDateFilters.push(Prisma.sql`c.date < ${params.to}`);
+  const checkWindow = Prisma.join(checkDateFilters, " and ");
 
   const [row] = await prisma.$queryRaw<
     Array<{
@@ -1006,36 +1012,91 @@ export async function getSourceHealth(params: ManagementMetricParams) {
       line_returns: number | null;
     }>
   >`
+    with check_totals as (
+      select
+        count(*) as check_count,
+        min(c.date) as check_from,
+        max(c.date) as check_to,
+        count(*) filter (where ${checkWindow}) as selected_check_count,
+        count(distinct c.date::date) filter (where ${checkWindow}) as selected_check_days
+      from ${checks} c
+      where c.deletion_mark is not true and c.posted = true
+    ),
+    store_totals as (
+      select
+        count(*) as store_count,
+        count(*) filter (where s.ploschad_torgovogo_zala > 0) as stores_with_area
+      from ${stores} s
+      where s.deletion_mark is not true
+    ),
+    selected_sales_documents as materialized (
+      select d.ref_key, d.organizatsiya_key, d.summa_dokumenta, d.summa_vozvratov
+      from ${salesDocuments} d
+      where ${dateFilters("d", params)}
+    ),
+    sales_header_totals as (
+      select
+        coalesce(sum(d.summa_dokumenta), 0)::float8 as gross_header_revenue,
+        coalesce(sum(d.summa_vozvratov), 0)::float8 as header_returns
+      from selected_sales_documents d
+    ),
+    bazza_totals as (
+      select coalesce(sum(d.summa_dokumenta), 0)::float8 as bazza_revenue
+      from selected_sales_documents d
+      join ${organizations} o on o.ref_key = d.organizatsiya_key
+      where o.description ilike '%BaZZa%'
+    ),
+    sales_line_totals as (
+      select
+        coalesce(sum(l.sales_vat), 0)::float8 as sales_vat,
+        coalesce(sum(l.sales_line_count), 0)::bigint as sales_line_count,
+        coalesce(sum(l.vat_line_count), 0)::bigint as vat_line_count,
+        coalesce(sum(l.gross_line_revenue), 0)::float8 as gross_line_revenue
+      from selected_sales_documents d
+      -- Aggregate only each selected parent's lines. A broad merge join can
+      -- otherwise read most of the randomly ordered raw-line heap for a month.
+      cross join lateral (
+        select
+          sum(l.summa_nds) as sales_vat,
+          count(*) as sales_line_count,
+          count(*) filter (where abs(coalesce(l.summa_nds, 0)) > 0.000001) as vat_line_count,
+          sum(l.summa) as gross_line_revenue
+        from ${salesLines} l
+        where l."_parent_ref_key" = d.ref_key
+      ) l
+    ),
+    return_line_totals as (
+      select coalesce(sum(l.summa), 0)::float8 as line_returns
+      from ${returnLines} l
+      join selected_sales_documents d on d.ref_key = l."_parent_ref_key"
+    )
     select
-      (select count(*) from ${checks} c where c.deletion_mark is not true and c.posted = true) as check_count,
-      (select min(c.date) from ${checks} c where c.deletion_mark is not true and c.posted = true) as check_from,
-      (select max(c.date) from ${checks} c where c.deletion_mark is not true and c.posted = true) as check_to,
-      (select count(*) from ${checks} c where ${dateFilters("c", params)}) as selected_check_count,
-      (select count(distinct c.date::date) from ${checks} c where ${dateFilters("c", params)}) as selected_check_days,
-      (select count(*) from ${stores} s where s.deletion_mark is not true) as store_count,
-      (select count(*) from ${stores} s where s.deletion_mark is not true and s.ploschad_torgovogo_zala > 0) as stores_with_area,
+      c.check_count,
+      c.check_from,
+      c.check_to,
+      c.selected_check_count,
+      c.selected_check_days,
+      s.store_count,
+      s.stores_with_area,
       (select count(*) from ${timesheets} t where ${dateFilters("t", params)}) as timesheet_count,
       (select count(*) from ${payroll} p where ${dateFilters("p", params)}) as payroll_count,
       (select count(*) from information_schema.tables t
         where t.table_schema = ${config.PGSCHEMA}
           and (t.table_name ilike '%raschetnogo_scheta%' or t.table_name ilike '%bankovskaya_vypiska%')) as bank_table_count,
-      (select coalesce(sum(d.summa_dokumenta), 0)::float8
-        from ${salesDocuments} d left join ${organizations} o on o.ref_key = d.organizatsiya_key
-        where ${dateFilters("d", params)} and o.description ilike '%BaZZa%') as bazza_revenue,
-      (select coalesce(sum(l.summa_nds), 0)::float8
-        from ${salesLines} l join ${salesDocuments} d on d.ref_key = l."_parent_ref_key"
-        where ${dateFilters("d", params)}) as sales_vat,
-      (select count(*) from ${salesLines} l
-        join ${salesDocuments} d on d.ref_key = l."_parent_ref_key"
-        where ${dateFilters("d", params)}) as sales_line_count,
-      (select count(*) from ${salesLines} l
-        join ${salesDocuments} d on d.ref_key = l."_parent_ref_key"
-        where ${dateFilters("d", params)}
-          and abs(coalesce(l.summa_nds, 0)) > 0.000001) as vat_line_count,
-      (select coalesce(sum(d.summa_dokumenta), 0)::float8 from ${salesDocuments} d where ${dateFilters("d", params)}) as gross_header_revenue,
-      (select coalesce(sum(l.summa), 0)::float8 from ${salesLines} l join ${salesDocuments} d on d.ref_key = l."_parent_ref_key" where ${dateFilters("d", params)}) as gross_line_revenue,
-      (select coalesce(sum(d.summa_vozvratov), 0)::float8 from ${salesDocuments} d where ${dateFilters("d", params)}) as header_returns,
-      (select coalesce(sum(l.summa), 0)::float8 from ${returnLines} l join ${salesDocuments} d on d.ref_key = l."_parent_ref_key" where ${dateFilters("d", params)}) as line_returns
+      b.bazza_revenue,
+      l.sales_vat,
+      l.sales_line_count,
+      l.vat_line_count,
+      h.gross_header_revenue,
+      l.gross_line_revenue,
+      h.header_returns,
+      r.line_returns
+    from check_totals c
+    cross join store_totals s
+    cross join sales_header_totals h
+    cross join bazza_totals b
+    cross join sales_line_totals l
+    cross join return_line_totals r
   `;
 
   const data = {

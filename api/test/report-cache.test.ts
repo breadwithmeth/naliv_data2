@@ -49,3 +49,24 @@ test("zero TTL disables retention and distinct filters do not share results", as
   assert.deepEqual(await cache.get("a", async () => "two"), { value: "two", status: "miss" });
   assert.equal((await cache.get("b", async () => "three")).value, "three");
 });
+
+test("invalidation drops stale in-flight work without evicting a newer load", async () => {
+  const cache = new ReportCache(1000, 1000);
+  const oldLoad = Promise.withResolvers<string>();
+  const newLoad = Promise.withResolvers<string>();
+  const old = cache.get("report", () => oldLoad.promise);
+  await Promise.resolve();
+  cache.clear();
+  const current = cache.get("report", () => newLoad.promise);
+  await Promise.resolve();
+  oldLoad.resolve("before-settings-change");
+  assert.equal((await old).value, "before-settings-change");
+  const shared = cache.get("report", async () => "must-not-load");
+  newLoad.resolve("after-settings-change");
+  assert.equal((await current).value, "after-settings-change");
+  assert.deepEqual(await shared, { value: "after-settings-change", status: "shared" });
+  assert.deepEqual(await cache.get("report", async () => "must-not-load"), {
+    value: "after-settings-change",
+    status: "hit"
+  });
+});

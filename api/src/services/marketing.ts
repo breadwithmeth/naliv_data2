@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { config } from "../config.js";
 import { prisma } from "../prisma.js";
+import { reportGeneration } from "../lib/report-generation.js";
 import type { SalesPeriod } from "./reports.js";
 
 function qualifiedTable(tableName: string) {
@@ -208,17 +209,18 @@ function parseSegmentItems(schema: string | null | undefined) {
   return [...new Set(keys)];
 }
 
-let cachedRuleSet: { expiresAt: number; rules: PromotionRuleSet } | null = null;
+let cachedRuleSet: { generation: number; expiresAt: number; rules: PromotionRuleSet } | null = null;
 
 /**
  * Promotion documents, the stores they cover, and the discount rules they
- * apply. The rule set is reused for `REPORT_CACHE_TTL_SECONDS`, so a 1C export
- * becomes visible no later than the report cache itself and segment
- * compositions are parsed once per rule set instead of once per request.
+ * apply. Rules follow the report generation and TTL so a completed sync cannot
+ * repopulate new report caches with a stale rule set. Segment compositions are
+ * parsed once per retained rule set instead of once per request.
  */
 async function loadPromotionRules(): Promise<PromotionRuleSet> {
   const ttlMs = config.REPORT_CACHE_TTL_SECONDS * 1000;
-  if (ttlMs > 0 && cachedRuleSet && cachedRuleSet.expiresAt > Date.now()) {
+  const generation = reportGeneration.value;
+  if (ttlMs > 0 && cachedRuleSet?.generation === generation && cachedRuleSet.expiresAt > Date.now()) {
     return cachedRuleSet.rules;
   }
 
@@ -343,7 +345,9 @@ async function loadPromotionRules(): Promise<PromotionRuleSet> {
   }
 
   const ruleSet: PromotionRuleSet = { rules, promotions };
-  cachedRuleSet = ttlMs > 0 ? { expiresAt: Date.now() + ttlMs, rules: ruleSet } : null;
+  cachedRuleSet = ttlMs > 0 && generation === reportGeneration.value
+    ? { generation, expiresAt: Date.now() + ttlMs, rules: ruleSet }
+    : null;
   return ruleSet;
 }
 

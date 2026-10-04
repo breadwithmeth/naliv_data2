@@ -361,6 +361,32 @@ test("inventory preserves its key set and uses auditable cost sources", {
       assert.equal(k1.lastSaleDate, "2026-08-25T00:00:00.000Z");
       // Inventory measures against the exclusive `to` bound itself.
       assert.equal(k1.daysSinceLastSale, 7);
+
+      // Equal business timestamps must not let physical row/index order change
+      // inventory money. Both costs/prices remain real source candidates.
+      await tx.$executeRawUnsafe(`insert into document_ustanovka_sebestoimosti values
+        ('cost-a', null, '2026-08-30', false, true), ('cost-z', null, '2026-08-30', false, true)`);
+      await tx.$executeRawUnsafe(`insert into document_ustanovka_sebestoimosti_tovary values
+        ('cost-a', 0, 'k1', 40), ('cost-z', 0, 'k1', 60)`);
+      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah values
+        ('sale-a', '2026-08-26', false, true, 45, 's1'), ('sale-z', '2026-08-26', false, true, 75, 's1')`);
+      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
+        ('sale-a', 'k1', 1, 45, 45), ('sale-z', 'k1', 1, 75, 75)`);
+      const tied = await getInventoryReport({ period: "day", from: new Date("2026-08-24"), to: new Date("2026-09-01") });
+      const tiedItem = tied.items.find((item) => item.key === "k1")!;
+      assert.equal(tiedItem.stockQty, 4);
+      assert.equal(tiedItem.stockCost, 240);
+      assert.equal(tiedItem.stockRetailValue, 300);
+
+      await tx.$executeRawUnsafe(`delete from document_ustanovka_sebestoimosti_tovary where _parent_ref_key in ('cost-a', 'cost-z')`);
+      await tx.$executeRawUnsafe(`insert into document_ustanovka_sebestoimosti_tovary values
+        ('cost-z', 0, 'k1', 60), ('cost-a', 0, 'k1', 40)`);
+      await tx.$executeRawUnsafe(`delete from document_otchet_o_roznichnyh_prodazhah_tovary where _parent_ref_key in ('sale-a', 'sale-z')`);
+      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
+        ('sale-z', 'k1', 1, 75, 75), ('sale-a', 'k1', 1, 45, 45)`);
+      const reordered = await getInventoryReport({ period: "day", from: new Date("2026-08-24"), to: new Date("2026-09-01") });
+      const reorderedItem = reordered.items.find((item) => item.key === "k1")!;
+      assert.deepEqual([reorderedItem.stockCost, reorderedItem.stockRetailValue], [tiedItem.stockCost, tiedItem.stockRetailValue]);
     }, { timeout: 30000 });
   } finally {
     prisma.$queryRaw = original;

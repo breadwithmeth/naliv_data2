@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import cookieParser from "cookie-parser";
+import compression from "compression";
 import cors from "cors";
 import express from "express";
 import { ZodError } from "zod";
@@ -16,6 +17,7 @@ import { reportsRouter } from "./routes/reports.js";
 import { syncRouter } from "./routes/sync.js";
 
 const app = express();
+app.use(compression({ threshold: 1024 }));
 
 app.use(
   cors({
@@ -47,13 +49,23 @@ app.use("/api/sync", syncRouter);
 const clientDistPath = path.resolve(process.cwd(), "web/dist");
 
 if (existsSync(clientDistPath)) {
-  app.use(express.static(clientDistPath));
+  app.use("/assets", express.static(path.join(clientDistPath, "assets"), {
+    maxAge: "1y",
+    immutable: true
+  }));
+  app.use(express.static(clientDistPath, {
+    maxAge: 0,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith(".html")) res.setHeader("Cache-Control", "no-cache");
+    }
+  }));
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api")) {
       next();
       return;
     }
 
+    res.setHeader("Cache-Control", "no-cache");
     res.sendFile(path.join(clientDistPath, "index.html"));
   });
 }
@@ -63,8 +75,12 @@ app.use(
     error: unknown,
     _req: express.Request,
     res: express.Response,
-    _next: express.NextFunction
+    next: express.NextFunction
   ) => {
+    if (res.headersSent || res.destroyed) {
+      next(error);
+      return;
+    }
     if (error instanceof ZodError) {
       res.status(400).json({ error: "Некорректный запрос", details: error.flatten() });
       return;

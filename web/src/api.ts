@@ -181,6 +181,51 @@ export type ReportRequest = ReportDateRange & {
   storeLimit?: number;
 };
 
+
+// Unlike ReportDateRange, these dates already describe a half-open API window.
+export type YearComparisonRequest = {
+  from: string;
+  to: string;
+  cohort: "observed" | "custom";
+  comparableStore?: string[];
+};
+
+export type PresentationReportRequest = Pick<YearComparisonRequest, "from" | "to"> & {
+  monthFrom: string;
+  monthTo: string;
+  city?: string[];
+};
+
+export type YearComparisonPreview = {
+  periods: {
+    current: { from: string; to: string };
+    previous: { from: string; to: string };
+  };
+  stores: Array<{
+    key: string;
+    name: string;
+    city: string;
+    sourceStoreKeys: string[];
+    comparableByActivity: boolean;
+  }>;
+  coverage: Array<{
+    period: "current" | "previous";
+    coveredDays: number;
+    expectedDays: number;
+    receiptCount: number;
+    status: "observed" | "partial" | "empty";
+    dateFrom: string | null;
+    dateTo: string | null;
+  }>;
+  quality: Array<{
+    period: "current" | "previous";
+    headerRevenue: number | null;
+    lineRevenue: number | null;
+    difference: number | null;
+    unvaluedQuantity: number;
+    unvaluedRevenue: number | null;
+  }>;
+};
 export type SalesReport = {
   period: SalesPeriod;
   summary: {
@@ -954,14 +999,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    let message = "Ошибка запроса";
-    try {
-      const body = (await response.json()) as { error?: string };
-      message = body.error ?? message;
-    } catch {
-      message = response.statusText || message;
-    }
-    throw new Error(message);
+    throw await responseError(response);
   }
 
   if (response.status === 204) {
@@ -969,6 +1007,157 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+async function responseError(response: Response): Promise<Error> {
+  if (response.status >= 500) {
+    return new Error("Не удалось получить данные. Повторите попытку позже.");
+  }
+  let message = "Не удалось выполнить запрос";
+  try {
+    const body = (await response.json()) as { error?: string };
+    message = body.error ?? message;
+  } catch {
+    // A non-JSON error response still has a useful HTTP status.
+  }
+  return new Error(message);
+}
+
+type SettingsFlight = {
+  controller: AbortController;
+  promise: Promise<ManagementSettings>;
+  subscribers: number;
+  settled: boolean;
+};
+
+// Only an in-flight transport is shared; completed results are never cached.
+let settingsFlight: SettingsFlight | null = null;
+
+function invalidateSettingsFlight() {
+  const flight = settingsFlight;
+  settingsFlight = null;
+  flight?.controller.abort();
+}
+
+async function authRequest<T>(url: string, init?: RequestInit): Promise<T> {
+  invalidateSettingsFlight();
+  try {
+    return await request<T>(url, init);
+  } finally {
+    invalidateSettingsFlight();
+  }
+}
+
+async function saveManagementSetting<T>(endpoint: string, input: unknown): Promise<T> {
+  invalidateSettingsFlight();
+  try {
+    return await request<T>(`/api/management/settings/${endpoint}`, {
+      method: "PUT",
+      body: JSON.stringify(input)
+    });
+  } finally {
+    invalidateSettingsFlight();
+  }
+}
+
+function loadManagementSettings(signal?: AbortSignal): Promise<ManagementSettings> {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException("Запрос отменён", "AbortError"));
+  }
+
+  let flight = settingsFlight;
+  if (!flight) {
+    const controller = new AbortController();
+    const created: SettingsFlight = {
+      controller,
+      subscribers: 0,
+      settled: false,
+      promise: request<ManagementSettings>("/api/management/settings", {
+        signal: controller.signal,
+        cache: "no-store"
+      }).finally(() => {
+        created.settled = true;
+        if (settingsFlight === created) settingsFlight = null;
+      })
+    };
+    settingsFlight = flight = created;
+  }
+
+  const shared = flight;
+  shared.subscribers += 1;
+  return new Promise<ManagementSettings>((resolve, reject) => {
+    let finished = false;
+    const release = () => {
+      if (finished) return false;
+      finished = true;
+      signal?.removeEventListener("abort", abort);
+      shared.subscribers -= 1;
+      if (!shared.settled && shared.subscribers === 0) {
+        if (settingsFlight === shared) settingsFlight = null;
+        shared.controller.abort();
+      }
+      return true;
+    };
+    const abort = () => {
+      if (release()) reject(new DOMException("Запрос отменён", "AbortError"));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    shared.promise.then(
+      (data) => {
+        if (release()) resolve(data);
+      },
+      (error: unknown) => {
+        if (release()) reject(error);
+      }
+    );
+  });
+}
+
+function yearComparisonParams(filters: YearComparisonRequest): URLSearchParams {
+  const params = new URLSearchParams({
+    from: filters.from,
+    to: filters.to,
+    cohort: filters.cohort
+  });
+  if (filters.cohort === "custom") {
+    for (const key of filters.comparableStore ?? []) {
+      params.append("comparableStore", key);
+    }
+  }
+  return params;
+}
+
+function downloadFilename(disposition: string | null): string {
+  const extended = disposition?.match(/filename\*\s*=\s*(?:"([^"]+)"|([^;]+))/i);
+  const encoded = (extended?.[1] ?? extended?.[2])?.trim().match(/^UTF-8'[^']*'(.*)$/i);
+  let filename: string | undefined;
+  if (encoded) {
+    try {
+      filename = decodeURIComponent(encoded[1]);
+    } catch {
+      // Fall back to the standard filename if an extended name is malformed.
+    }
+  }
+  if (!filename) {
+    const plain = disposition?.match(/(?:^|;)\s*filename\s*=\s*(?:"((?:\\.|[^"])*)"|([^;]+))/i);
+    filename = plain?.[1]?.replace(/\\(.)/g, "$1") ?? plain?.[2]?.trim();
+  }
+  filename = filename?.replace(/[\\/\u0000-\u001f\u007f]/g, "");
+  if (!filename) throw new Error("Сервер не передал имя Excel-файла");
+  return filename;
+}
+
+async function downloadWorkbook(url: string, signal?: AbortSignal) {
+  const response = await fetch(url, {
+    credentials: "include",
+    cache: "no-store",
+    headers: { Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+    signal
+  });
+  if (!response.ok) throw await responseError(response);
+  const filename = downloadFilename(response.headers.get("Content-Disposition"));
+  const blob = await response.blob();
+  return { blob, filename };
 }
 
 function managementRequest<T>(
@@ -983,19 +1172,40 @@ function managementRequest<T>(
 
 export const api = {
   login(email: string, password: string) {
-    return request<{ user: User }>("/api/auth/login", {
+    return authRequest<{ user: User }>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password })
     });
   },
   logout() {
-    return request<void>("/api/auth/logout", { method: "POST" });
+    return authRequest<void>("/api/auth/logout", { method: "POST" });
   },
-  me() {
-    return request<{ user: User }>("/api/auth/me");
+  me(signal?: AbortSignal) {
+    return authRequest<{ user: User }>("/api/auth/me", { signal });
   },
-  overview() {
-    return request<Overview>("/api/analytics/overview");
+  overview(signal?: AbortSignal) {
+    return request<Overview>("/api/analytics/overview", { signal });
+  },
+  yearComparison(filters: YearComparisonRequest, signal?: AbortSignal) {
+    const params = yearComparisonParams(filters);
+    return request<YearComparisonPreview>(`/api/reports/year-comparison?${params}`, {
+      signal,
+      cache: "no-store"
+    });
+  },
+  async yearComparisonWorkbook(filters: YearComparisonRequest, signal?: AbortSignal) {
+    const params = yearComparisonParams(filters);
+    return downloadWorkbook(`/api/reports/year-comparison.xlsx?${params}`, signal);
+  },
+  presentationReportWorkbook(filters: PresentationReportRequest, signal?: AbortSignal) {
+    const params = new URLSearchParams({
+      from: filters.from,
+      to: filters.to,
+      monthFrom: filters.monthFrom,
+      monthTo: filters.monthTo
+    });
+    for (const city of filters.city ?? []) params.append("city", city);
+    return downloadWorkbook(`/api/reports/presentation.xlsx?${params}`, signal);
   },
   syncHealth(signal?: AbortSignal) {
     return request<SyncHealth>("/api/sync/health", { signal });
@@ -1062,13 +1272,10 @@ export const api = {
     return managementRequest<StorePerformanceMetrics>("store-performance", filters, signal);
   },
   managementSettings(signal?: AbortSignal) {
-    return request<ManagementSettings>("/api/management/settings", { signal });
+    return loadManagementSettings(signal);
   },
   updateStoreSetting(input: { storeKey: string; active: boolean; displayName?: string | null }) {
-    return request<{ saved: true }>("/api/management/settings/store", {
-      method: "PUT",
-      body: JSON.stringify(input)
-    });
+    return saveManagementSetting<{ saved: true }>("store", input);
   },
   updateMetricSetting(input: {
     metricId: string;
@@ -1077,20 +1284,14 @@ export const api = {
     cadence: string;
     owner: string;
   }) {
-    return request<{ saved: true }>("/api/management/settings/metric", {
-      method: "PUT",
-      body: JSON.stringify(input)
-    });
+    return saveManagementSetting<{ saved: true }>("metric", input);
   },
   updateCashArticleSetting(input: {
     articleKey: string;
     flowType: "operating" | "investing" | "financing" | "internal" | null;
     approved: boolean;
   }) {
-    return request<{ saved: true }>("/api/management/settings/cash-article", {
-      method: "PUT",
-      body: JSON.stringify(input)
-    });
+    return saveManagementSetting<{ saved: true }>("cash-article", input);
   },
   updateObligation(input: {
     id?: number;
@@ -1101,10 +1302,7 @@ export const api = {
     frequency: string;
     active: boolean;
   }) {
-    return request<{ saved: true; id: number }>("/api/management/settings/obligation", {
-      method: "PUT",
-      body: JSON.stringify(input)
-    });
+    return saveManagementSetting<{ saved: true; id: number }>("obligation", input);
   },
   updateProject(input: {
     id?: number;
@@ -1114,23 +1312,22 @@ export const api = {
     startDate?: string | null;
     status: "planned" | "active" | "completed" | "cancelled";
   }) {
-    return request<{ saved: true; id: number }>("/api/management/settings/project", {
-      method: "PUT",
-      body: JSON.stringify(input)
-    });
+    return saveManagementSetting<{ saved: true; id: number }>("project", input);
   },
-  table(tableName: string) {
+  table(tableName: string, signal?: AbortSignal) {
     return request<TableProfile>(
-      `/api/analytics/tables/${encodeURIComponent(tableName)}`
+      `/api/analytics/tables/${encodeURIComponent(tableName)}`,
+      { signal }
     );
   },
-  timeSeries(tableName: string, dateColumn: string, metricColumn?: string) {
+  timeSeries(tableName: string, dateColumn: string, metricColumn?: string, signal?: AbortSignal) {
     const params = new URLSearchParams({ dateColumn });
     if (metricColumn) {
       params.set("metricColumn", metricColumn);
     }
     return request<TimeSeriesPoint[]>(
-      `/api/analytics/tables/${encodeURIComponent(tableName)}/timeseries?${params}`
+      `/api/analytics/tables/${encodeURIComponent(tableName)}/timeseries?${params}`,
+      { signal }
     );
   }
 };

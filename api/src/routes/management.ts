@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { sendCachedJson } from "../lib/cached-json.js";
+import { invalidateReports, sendCachedJson } from "../lib/cached-json.js";
 import { asyncHandler } from "../lib/http.js";
 import { reportRangeFields, resolveReportRange } from "../lib/report-range.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -172,42 +172,52 @@ managementRouter.get(
 
 managementRouter.get(
   "/settings",
-  asyncHandler(async (_req, res) => {
-    res.json(await getManagementSettings());
+  asyncHandler(async (req, res) => {
+    await sendCachedJson(req, res, ["getManagementSettings"], () => getManagementSettings());
   })
 );
 
 managementRouter.put(
   "/settings/store",
   asyncHandler(async (req, res) => {
-    res.json(await updateStoreSetting(storeSettingSchema.parse(req.body)));
+    const result = await updateStoreSetting(storeSettingSchema.parse(req.body));
+    invalidateReports();
+    res.json(result);
   })
 );
 
 managementRouter.put(
   "/settings/metric",
   asyncHandler(async (req, res) => {
-    res.json(await updateMetricSetting(metricSettingSchema.parse(req.body)));
+    const result = await updateMetricSetting(metricSettingSchema.parse(req.body));
+    invalidateReports();
+    res.json(result);
   })
 );
 
 managementRouter.put(
   "/settings/cash-article",
   asyncHandler(async (req, res) => {
-    res.json(await updateCashArticleSetting(cashArticleSettingSchema.parse(req.body)));
+    const result = await updateCashArticleSetting(cashArticleSettingSchema.parse(req.body));
+    invalidateReports();
+    res.json(result);
   })
 );
 
 managementRouter.put(
   "/settings/obligation",
   asyncHandler(async (req, res) => {
-    res.json(await updateObligation(obligationSchema.parse(req.body)));
+    const result = await updateObligation(obligationSchema.parse(req.body));
+    invalidateReports();
+    res.json(result);
   })
 );
 
 managementRouter.put(
   "/settings/project",
   asyncHandler(async (req, res) => {
-    res.json(await updateProject(projectSchema.parse(req.body)));
+    const result = await updateProject(projectSchema.parse(req.body));
+    invalidateReports();
+    res.json(result);
   })
 );

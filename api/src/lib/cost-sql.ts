@@ -41,7 +41,7 @@ export function canonicalItemCostsCtes(asOf?: Date) {
         and nullif(c.magazin_key, '') is not null
         and c.nomenklatura_key is not null
         and c.tsena > 0
-      order by c.magazin_key, c.nomenklatura_key, c.period desc, c.line_number desc
+      order by c.magazin_key, c.nomenklatura_key, c.period desc, c.line_number desc, c.tsena desc
     ),
     document_store_costs as (
       select distinct on (d.magazin_key, l.nomenklatura_key)
@@ -56,7 +56,7 @@ export function canonicalItemCostsCtes(asOf?: Date) {
         and nullif(d.magazin_key, '') is not null
         and l.nomenklatura_key is not null
         and l.tsena > 0
-      order by d.magazin_key, l.nomenklatura_key, d.date desc, l."_parent_line_index" desc
+      order by d.magazin_key, l.nomenklatura_key, d.date desc, l."_parent_line_index" desc, d.ref_key desc, l.tsena desc
     ),
     latest_store_costs as (
       select
@@ -79,7 +79,7 @@ export function canonicalItemCostsCtes(asOf?: Date) {
         and d.date < ${boundary}
         and l.nomenklatura_key is not null
         and l.tsena > 0
-      order by l.nomenklatura_key, d.date desc, l."_parent_line_index" desc
+      order by l.nomenklatura_key, d.date desc, l."_parent_line_index" desc, d.ref_key desc, l.tsena desc
     ),
     purchase_costs_90d as (
       select

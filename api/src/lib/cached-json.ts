@@ -1,10 +1,29 @@
 import type { Request, Response } from "express";
 import { config } from "../config.js";
-import { jsonSafe } from "./http.js";
+import { stringifyJson } from "./http.js";
 import { ReportCache } from "./report-cache.js";
+import { refreshReportGeneration, reportGeneration } from "./report-generation.js";
 
 const cache = new ReportCache(config.REPORT_CACHE_TTL_SECONDS * 1000, config.REPORT_CACHE_MAX_MB * 1024 * 1024);
 
+export function invalidateReports() {
+  reportGeneration.value++;
+  cache.clear();
+}
+
+// Both JSON previews and downloadable reports share the same bounded snapshot.
+export async function loadCachedJson(
+  req: Request,
+  key: readonly unknown[],
+  load: () => Promise<unknown>
+) {
+  if (!req.user) throw Object.assign(new Error("Authentication required"), { statusCode: 401 });
+  refreshReportGeneration(invalidateReports);
+  return cache.get(
+    JSON.stringify([config.PGSCHEMA, config.APP_SCHEMA, req.user.role, reportGeneration.value, ...key]),
+    async () => stringifyJson(await load())
+  );
+}
 // Call only after authentication, role checks, and query validation. Use parsed
 // parameters for the key so defaults and query-string order share one result.
 export async function sendCachedJson(
@@ -13,12 +32,8 @@ export async function sendCachedJson(
   key: readonly unknown[],
   load: () => Promise<unknown>
 ) {
-  if (!req.user) throw Object.assign(new Error("Authentication required"), { statusCode: 401 });
   const start = performance.now();
-  const result = await cache.get(
-    JSON.stringify([config.PGSCHEMA, req.user.role, ...key]),
-    async () => JSON.stringify(jsonSafe(await load()))
-  );
+  const result = await loadCachedJson(req, key, load);
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Report-Cache", result.status);
   res.setHeader("Server-Timing", `report;dur=${(performance.now() - start).toFixed(1)};desc="${result.status}"`);

@@ -18,13 +18,17 @@ tables:
 - `document_otchet_o_roznichnyh_prodazhah_tovary`
 - `document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary`
 
-Sales revenue is net of the explicit return table. Income reverses both revenue
+Retail-report revenue is net of the explicit return table. Income reverses both revenue
 and cost for returned items. Cost follows the auditable hierarchy: the latest
 live store/item record from `СебестоимостьНоменклатуры`, the latest
 store-specific `document_ustanovka_sebestoimosti` line, the latest network value
 for the item, then weighted purchase cost excluding recorded VAT over the
 preceding 90 days. Missing valuation stays visible as cost-coverage and unvalued-revenue
 metrics instead of silently pretending that zero is a known cost.
+Equal source timestamps and line numbers are resolved deterministically: document
+key, then price for cost documents; price for live cost-register rows. Latest
+retail-price ties use document key, then price. Index choice and insertion order
+must not change a valuation.
 
 The sales report is sourced from KKM checks (`document_chek_kkm` with its
 `Товары` part): real check counts, average check, items per check,
@@ -69,22 +73,212 @@ web UI prefills the same month and shows the end date inclusively, converting it
 to the exclusive bound before sending. `period` (`day`, `week`, `month`) only
 selects the chart bucket.
 
+## Year-over-year Excel
+
+Admins open `Продажи` → `Сравнение годов` and apply the shared inclusive dates.
+The coverage preview loads automatically. Review coverage/valuation warnings,
+choose the comparable outlets, then use `Скачать отчёт Excel`. The export has
+no dashboard top-store limit. A manual physical-outlet checklist supports both
+one outlet and an explicitly empty comparable network; all-outlet rows remain
+in either case. Leaving the analysis or changing dates cancels obsolete browser
+requests; changing the selection cancels an outdated download. Preview and
+download also have explicit cancel buttons. A shared in-flight server report can
+still finish for other subscribers.
+
+Russian reader instructions are embedded on `Методология` under
+`Как читать отчет: оформление, показатели и источники`, including the colour
+legend, `*`, zero versus `n/a`, B–U formulas, receipt/average semantics, share
+denominators, source tables, valuation priorities, and audit checks. These
+instructions are included in future exports without adding another worksheet.
+The delivered [printable Russian guide](<../Инструкция к аналитическому отчету год к году.pdf>)
+contains the workbook's compact instructions. The
+[detailed Russian instructions](<../Инструкция к аналитическому отчету год к году.md>)
+add a real-number example from the delivered quarter and a step-by-step audit.
+
+Admin-only endpoints:
+
+- `GET /api/reports/year-comparison` — lightweight `periods`, `stores`,
+  `coverage`, and `quality` preview;
+- `GET /api/reports/year-comparison.xlsx` — streamed XLSX from the same cached
+  report snapshot when parameters match.
+  Shared strings and level-9 ZIP compression reduce repeated audit keys/names
+  without dropping detailed rows or reducing numeric precision.
+
+Example: `?from=2026-04-01&to=2026-07-01&cohort=observed`. Both bounds are required
+real `YYYY-MM-DD` dates, years start at `0002`, and the current half-open window
+contains 1–366 days. The previous window shifts both calendar bounds back one
+year, clamping February 29 to February 28. A collapsed previous window stays
+empty. Source receipt timestamps use the stored 1C business calendar; they are
+not timezone-shifted. UTC is used for boundary arithmetic and file snapshot time.
+
+`cohort=observed` selects outlets with positive sale activity in both windows,
+not a proven opening date. For `cohort=custom`, repeat
+`comparableStore=<physical key>` from the preview; no keys means an empty network.
+Unknown keys return 400. Observed mode rejects a supplied custom list. Anonymous
+requests return 401; the marketing account cannot access either endpoint (403).
+
+The supplied human workbook is a layout/business-category reference, not a data
+source: its filename and date headers disagree. Generated headers use the
+requested windows. The seven comparison sheets cover the combined category and
+its six members; `Доли продажи общие` and `Доли продаж внутри группы` complete
+the business sheets. `Методология`, `Качество данных`, `Магазины`,
+`Классификация`, and `Оценка стоимости` retain the audit trail.
+
+Calculation rules:
+
+- Eligible posted, nondeleted, nonzero KKM receipts supply recorded goods-line
+  revenue and quantities. Returns reduce values once, including source lines
+  already recorded negative. Header/line differences are shown, never allocated.
+- Recorded revenue includes the VAT embedded in 1C retail amounts; it is not
+  VAT-exclusive revenue. Quantities retain raw 1C units, including services;
+  mixed totals are not normalized pieces or liters.
+- Physical outlets merge legal-entity keys only by the exact normalized address
+  beginning at `г.`. Costs are calculated by original store key before merging.
+- Categories use the current `catalog_nomenklatura` folder tree and nearest
+  matching ancestor. The combined group contains `Пивной напиток`, `Пиво бут`,
+  `Пиво жб`, `Пиво розлив`, `Разливные напитки`, and `Энергетический напиток`.
+  `Мульти пак` is excluded from the combined group but included in within-group
+  shares. Missing references, orphans, cycles, depth limits, and other items
+  remain auditable rather than disappearing.
+- Counts are distinct positive sale receipts per group, not sums of overlapping
+  category counts. Subtotal averages divide net totals by those distinct counts;
+  they do not sum outlet averages. Missing data and zero-base growth are `n/a`.
+- Gross income is an estimate using the canonical cost hierarchy separately at
+  each exclusive period end, not historical COGS, accounting profit, or P&L.
+  Unknown material costs make the affected aggregate unavailable. Known cost,
+  unvalued quantity/revenue, and selected valuation sources remain visible.
+- One SQL statement reads both windows, taxonomy, and valuations from one
+  database snapshot. Days with receipts prove observed activity, not complete
+  source ingestion; the workbook lists missing days and global source coverage.
+
+Validation on 2026-10-03 for April–June 2025/2026: 91 observed days in each window,
+15 source store keys merged into 11 physical outlets, 10 automatically comparable.
+All-item line revenue was 977,023,929 ₸ (2025) and 1,168,049,165 ₸ (2026);
+lines minus headers were −67,890.23 ₸ and −47,174.05 ₸ respectively.
+After historical valuation recovery, unvalued net revenue remained 2,915 ₸ and
+790,280 ₸; unavailable costs must not be presented as zero. Receipt history starts
+on 2025-01-24; retail-report history still starts on 2026-06-01, so the existing
+retail-based income/P&L cannot supply a complete April–June comparison.
+
+## Configurable presentation Excel
+
+The presentation and `year_report_notes.txt` define an additional report, not a
+replacement for the existing quarterly workbook. In `Продажи` → `Сравнение годов`,
+choose `Итоги периода и месяца — по презентации` in `Формат Excel`. Shared dates
+set the main window; separate inclusive dates set the additional window. By
+default the latter is the final calendar month intersected with the main window.
+Select cities, or leave the selection empty for the whole network. Both windows
+compare their calendar bounds with the preceding year; neither year nor month is
+hardcoded. Each current window accepts 1–366 days.
+
+`GET /api/reports/presentation.xlsx` is admin-only. API/CLI dates are half-open:
+`from`/`to` are required; `monthFrom`/`monthTo` must be supplied together or omitted
+together. Repeat `city` for several cities; omitted/empty selection means all.
+The endpoint uses the existing authenticated report cache and streaming XLSX
+download conventions. The first sheet records all parameters and the coverage
+of all four sales windows. Missing previous-year history does **not** block the
+download: unavailable values, changes and comparable-network indicators are
+`n/a`, not fabricated zeros. The browser also warns when the main previous window
+is empty. Partial history remains explicitly marked as observed, incomplete data.
+
+CLI export uses the same calculation and writer, and refuses to overwrite an
+existing output file:
+
+```powershell
+npm run export:presentation-report -- --from=2025-01-01 --to=2026-01-01 --month-from=2025-12-01 --month-to=2026-01-01 --output="../Итоги года и декабря 2025 — аналитика.xlsx"
+```
+
+The 18 sheets include all main-window root groups, additional-window packaged
+and draught subcategories, all-goods totals, all-group city shares, every supplier
+in each window, unassigned income, observed declines, editable actions, and
+methodology/source audits. A direct DISTINCT union supplies all-goods/beverage
+receipt counts; overlapping category counts are never summed. Beverage
+classification uses the current catalog, with its rule and uncertainties
+recorded per item. Nonbeverage and unmapped items stay in all-goods totals/shares.
+
+Supplier rules:
+
+- Purchases are posted, nondeleted receipt-header amounts less the normalized
+  magnitudes of supplier-return-header amounts. Recorded VAT semantics are
+  retained; missing document amounts make affected totals unavailable.
+- Income is an explicitly labelled **unique-supplier model**, not proven sale-lot
+  provenance, historical COGS, supplier accounting profit, or P&L. Only one valid
+  supplier in positive-quantity purchase lines of the same original store/item
+  and window permits attribution. Unknown suppliers, multiple suppliers and
+  absent purchases stay in reason-specific residuals; the current catalog's
+  main-supplier fields are not used.
+- Costs use the existing period-end hierarchy before physical-outlet merging.
+  Unknown material costs keep full gross income unavailable; the known portion
+  is separate. Assigned plus residual revenue/known income reconcile to sales.
+- Receiving city governs purchases; selling-store city governs modeled income.
+  Internal-tax-ID matches are flagged, not automatically excluded. Comparable
+  indicators use only outlets with positive sales in both windows, not claimed
+  opening dates.
+- City/numeric-share AutoFilters have `SUBTOTAL` visible financial totals.
+  Unknown visible amounts/income remain `n/a` rather than partial numeric sums.
+  Share denominators remain fixed city totals; sums of shares across cities are
+  not a network share. Category-filtered receipt totals are deliberately absent.
+- Export-city selection limits business sheets only. Quality, valuation,
+  classification and attribution audits remain explicitly labelled full-network
+  evidence. Overlapping main/additional windows must not be added together.
+
+Delivered FY2025/December2025 evidence: no 2024 sales/purchases; sales begin
+2025-01-24 (342/365 annual days), December has 31/31 observed days. Net line revenue
+is 3,566,587,300 ₸ and 385,816,562 ₸; purchases are 2,836,936,290.24 ₸ and
+397,077,850.64 ₸, covering 235/150 distinct suppliers. The model assigns 82.82%/
+86.13% of net sales revenue, not a proven percentage of gross income. Full-period
+gross income remains unavailable because absolute unvalued quantities are 6.608/
+4 in mixed 1C accounting units.
+
+Verification: API/web compilation, 34/34 PostgreSQL-enabled tests, actual
+city/independent-period browser download reconciled against SQL, and CLI export
+with both current and previous histories absent. Microsoft Excel 16.0 opened the
+delivered workbook normally, fully recalculated and saved all 18 sheets with
+zero formula errors. Native city/share filtering recalculated visible supplier
+totals; the recalculated package passed Open XML validation without errors.
+
 ## Management workspaces and source-ready metrics
 
-Primary navigation follows the handbook's owner questions rather than raw
-database entities:
+Primary navigation follows business tasks rather than database entities:
 
-`Главная` → `Финансы` → `Точки` → `Запасы и закупки` → `P&L` → `Реинвест`
-→ `Решения и тревоги` → `Маркетинг` → `Администрирование`.
+`Обзор` · `Продажи` · `Магазины` · `Товары` · `Финансы` · `Маркетинг`.
 
-Technical source health, synchronization, table profiles, and raw samples live
-under `Администрирование`. A source-blocked business metric renders `Нет данных`
-with the missing prerequisite; absence is never formatted as a valid zero.
-Every metric card, analytical table header, and major chart has an accessible
-info button backed by `web/src/metric-definitions.ts`. The first layer gives a
-plain-language meaning and formula; `Подробнее` shows source, period, grain,
-limitations, thresholds, and owner. Live status, coverage, and snapshot date
-come from the report response.
+Each workspace shows one selected analysis instead of stacking unrelated
+reports. Inventory and assortment use a task selector for their detailed
+tables; income analysis separates the result, stores, items, and a chosen
+store's items. Existing sorting, drill-downs, and full-list controls remain.
+`Финансы` includes income analysis and development projects; control rules live
+under `Обзор`. The overview leads with available results and links to the next
+analysis; longer explanations and source-blocked strategic metrics use
+disclosures.
+
+Reports share one applied period while the dashboard is open. Draft date
+changes do not alter the figures until `Применить`; both dates are required and
+reversed ranges cannot be applied. Switching analyses preserves the applied
+dates. Day/week/month grouping belongs to sales and income charts, separately
+from the reporting window. Hash navigation (`#page/view`) restores the selected
+analysis on browser back. Date-independent settings, control rules, payments,
+and project forms keep their own business controls.
+
+`Настройки` is separate from business navigation. Technical source health,
+table profiles, and raw samples load only after explicitly opening
+`Настройки` → `Диагностика`; synchronization has its own settings view.
+Marketing users only see `Маркетинг`; the API still enforces the same role
+restrictions. Account details and logout are inside `Профиль`.
+
+A source-blocked business metric renders `Нет данных` with the missing
+prerequisite; absence is never formatted as a valid zero. Partial coverage,
+unknown costs, and estimates remain visible beside the affected analysis.
+Income estimates are not presented as accounting profit. Ordinary server-error
+states do not expose backend/database diagnostics.
+
+Metric cards, analytical table headers, and major charts use the existing
+`web/src/metric-definitions.ts` glossary. Their info buttons open a flat,
+business-language explanation of meaning, calculation, scope, limitations,
+and responsibility without raw database field lists. The help panel stays
+within the viewport, supports explicit close and Escape, and returns keyboard
+focus to its trigger. Live status, coverage, and snapshot dates come from the
+report response.
 
 Admin-only management endpoints:
 
@@ -268,9 +462,10 @@ so a new export becomes visible no later than the report cache itself.
 These inputs are part of the nightly export of `naliv_data1`:
 `Document_МаркетинговаяАкция` is read in full on every run (no date window, so a
 promotion edited after its document date still refreshes) and
-`Catalog_СегментыНоменклатуры` is one of the default catalogs. The deployment
-runs the incremental `SCHEDULER_EXPORT_ARGS=--with-catalogs`, which is enough for
-this page, so the analytics follows the export without the heavyweight full set.
+`Catalog_СегментыНоменклатуры` is one of the default catalogs. The incremental
+`--with-catalogs` profile is enough for marketing. Sales and Excel additionally
+require `--include-check-kkm`; verify the deployed scheduler environment, because
+a local `.env` update does not change a running export container.
 
 `npm run check:sync-freshness` prints per synced table the row count, how often
 its content changed, and when it last changed, which is the quickest way to see
@@ -311,20 +506,38 @@ The exporter creates partial unique indexes for upserts. Those do not cover
 analytics joins on `_parent_ref_key`; full reference-key indexes also allow
 joins without assuming every source key is nonempty. Date and balance-period
 indexes support bounded reports. These indexes persist across normal exports.
-Sales now filters reports before aggregating their lines, marketing derives its
-summary from the store aggregate, and table profiles compute numeric and date
-summaries in a single table scan.
+Sales filters receipts before sharing their lines across series, heatmap, and
+composition in one query; income shares selected retail-report lines in one
+query. Source health aggregates only selected parents' goods lines. Marketing
+derives its summary from the store aggregate, and table profiles compute numeric
+and date summaries in a single scan. The Excel query aggregates numeric facts
+and distinct receipt counts at source-store grain before address/scope expansion;
+JIT is disabled locally in that report transaction, not globally.
 
 Authenticated report responses have a bounded, per-process cache: by default
 `REPORT_CACHE_TTL_SECONDS=60`, `REPORT_CACHE_MAX_MB=64`, and at most 128 entries.
-Identical simultaneous requests share one load. Keys include the schema, role,
-endpoint, and validated parameters. Authentication and role checks run before
-every lookup; browser responses remain `Cache-Control: no-store`. Data can lag
-an export by at most the TTL after a report finishes computing. Set the TTL to
-`0` to disable retention while retaining concurrent-request sharing. Restarting
-the API clears its cache. Errors and oversized responses are not retained.
+Identical simultaneous requests share one load. Keys include source/application
+schemas, authenticated role, report generation, endpoint, and validated parameters.
+Authentication and role checks run before every lookup; browser responses remain
+`Cache-Control: no-store`. TTL starts when computation completes and remains the
+retention bound. Set it to `0` to disable retention while retaining request
+sharing. Restarting the API clears its cache. Errors and oversized responses are
+not retained; an invalidated in-flight load cannot repopulate the new generation.
 `X-Report-Cache` (`miss`, `shared`, `hit`) and `Server-Timing` expose request
 timings in browser developer tools without logging report contents.
+
+`REPORT_CACHE_SYNC_POLL_SECONDS=2` checks completed `ops.sync_runs` in the
+background on report traffic; `0` disables this optional signal. Every completed
+run, including a failed run that may have committed batches, invalidates reports.
+Missing/unreadable telemetry falls back to TTL. Sync telemetry is not an atomic
+cross-entity publication boundary. Management-setting writes invalidate the
+current API process immediately; other replicas retain the TTL bound.
+
+The login/session shell does not load the chart-heavy Dashboard until successful
+authentication. Administration overview loads only on administration navigation.
+Concurrent settings subscribers share a request with independent cancellation,
+not a completed-result browser cache. API/static responses use compression;
+content-hashed assets are immutable for one year, while HTML revalidates.
 
 Independent report queries use the database pool concurrently. The default
 pool size is `DB_CONNECTION_LIMIT=5`; increase it only when PostgreSQL has spare
@@ -379,6 +592,58 @@ KKM cash ≈22.3 days at 100% cash-report coverage, a seven-day purchase budget
 of ≈6.47m ₸ at ≈99.95% cost coverage with ≈37.3% execution, and ≈9.60m ₸ of
 open-order payment stages over the next 56 days (explicitly partial; most
 staged orders in that window are already closed).
+
+Validation on 2026-10-03 for `from=2026-09-01&to=2026-09-25&period=day`:
+
+| Request | Captured before | Final cache miss | Final cache hit |
+| --- | ---: | ---: | ---: |
+| Sales | 24.497 s | 5.648 s | 0.017 s |
+| Income | 16.243 s | 4.636 s | 0.091 s |
+| Marketing | 8.501 s | 8.670 s | 0.007 s |
+| Inventory | 7.069 s | 4.840 s | 0.102 s |
+| Nomenclature | 5.941 s | 2.843 s | 0.055 s |
+| Store performance | 16.525 s | 10.677 s | 0.004 s |
+| Money position | 0.236 s | 0.217 s | 0.003 s |
+| Lost sales | 33.683 s | 4.866 s | 0.003 s |
+| Purchasing | 33.287 s | 9.045 s | 0.003 s |
+| Source health | 25.869 s | 1.075 s | 0.003 s |
+
+These are sequential individual localhost HTTP measurements against PostgreSQL
+17.11, not percentiles or guaranteed cold-disk timings. Marketing did not improve
+in this monthly run. Sales and marketing matched every captured response field
+and identity-aligned row within floating-point tolerance; recorded income and
+nomenclature quantities/revenues also matched. Historical purchase/cost recovery
+and deterministic tie selection legitimately changed valuation, purchase-history,
+and coverage fields, so those are not claimed unchanged.
+
+Default current-month cache misses: sales 0.371 s, income 1.619 s, money position
+0.124 s, source health 0.539 s. The actual anonymous compiled browser load
+transferred about 65 KB of JavaScript without Dashboard/admin requests;
+administration overview was first requested after navigation. All 28 analytics
+indexes were valid and occupied 1,347.5 MiB in this database, including the eight
+original indexes retained by the optimizer; unrelated indexes were not removed.
+
+The quarterly Excel preview took 27.495 s on a cache miss; its matching download
+uses the same cached snapshot. The initial query exceeded 300 s. The first
+streaming file passed tolerant reader checks but had invalid worksheet-property
+ordering: ExcelJS emitted explicit `outlinePr` after `pageSetUpPr`. The writer
+now uses the correct default outline placement; a regression checks OOXML
+`sheetPr` ordering rather than trusting the same library's reader.
+
+The repaired full-quarter HTTP XLSX is about 2.01 MB instead of 3.12 MB (35.6%
+smaller), with all 14 sheets and all taxonomy/valuation audit rows retained.
+Shared strings and level-9 compression preserve quantities, amounts, receipt
+counts, and formula results. A same-data 256 MiB-heap render took 2.35 s at about
+205 MiB peak process RSS, versus 574 MiB for the old in-memory writer.
+Worksheet schema checks passed. Microsoft Excel 16.0 opened the actual HTTP
+download in its documented normal-load mode, without a repair/extraction option,
+and fully recalculated all sheets with zero formula errors; combined revenue and
+distinct receipt totals matched the report.
+
+Actual browser custom/empty selection and cancellation, an interrupted HTTP
+stream, and anonymous/marketing denial were exercised. Canceling output stops
+the writer; a shared database computation may still complete. Rebuild/redeploy
+the API and web assets to enable these changes.
 
 Run `npm test` for cache, authorization, metric-state, canonical-calculation,
 and management-directory regressions; run `npm run build` for the API and web

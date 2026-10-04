@@ -9,6 +9,7 @@ process.env.APP_ADMIN_PASSWORD ??= "admin-test-password";
 process.env.APP_MARKETING_EMAIL ??= "marketing@test.local";
 process.env.APP_MARKETING_PASSWORD ??= "marketing-test-password";
 process.env.JWT_SECRET ??= "test-jwt-secret-with-at-least-24-characters";
+process.env.REPORT_CACHE_SYNC_POLL_SECONDS = "0";
 
 const {
   requireAuth,

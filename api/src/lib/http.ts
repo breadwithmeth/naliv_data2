@@ -8,33 +8,7 @@ export function asyncHandler(
   };
 }
 
-export function jsonSafe(value: unknown): unknown {
-  if (typeof value === "bigint") {
-    return Number(value);
-  }
-
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
-  if (
-    value &&
-    typeof value === "object" &&
-    "toJSON" in value &&
-    typeof value.toJSON === "function"
-  ) {
-    return jsonSafe(value.toJSON());
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(jsonSafe);
-  }
-
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, child]) => [key, jsonSafe(child)])
-    );
-  }
-
-  return value;
+/** Native JSON encoding avoids recursively copying large analytics payloads. */
+export function stringifyJson(value: unknown) {
+  return JSON.stringify(value, (_key, child) => typeof child === "bigint" ? Number(child) : child);
 }

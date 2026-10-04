@@ -123,6 +123,7 @@ export async function getInventoryReport(params: InventoryParams) {
       select
         ri.nomenklatura_key,
         r.date as sale_at,
+        r.ref_key as document_key,
         coalesce(ri.kolichestvo, 0)::float8 as sold_qty,
         nullif(ri.tsena, 0)::float8 as sale_price,
         false as is_return
@@ -133,6 +134,7 @@ export async function getInventoryReport(params: InventoryParams) {
       select
         ri.nomenklatura_key,
         r.date as sale_at,
+        r.ref_key as document_key,
         -coalesce(ri.kolichestvo, 0)::float8 as sold_qty,
         null::float8 as sale_price,
         true as is_return
@@ -147,7 +149,7 @@ export async function getInventoryReport(params: InventoryParams) {
         coalesce(sum(sm.sold_qty) filter (where ${recentWhere}), 0)::float8 as recent_sold_qty,
         count(distinct date_trunc('day', sm.sale_at)) filter (where ${recentWhere} and sm.sold_qty <> 0)::int as recent_days_active,
         max(sm.sale_at) filter (where ${recentWhere} and not sm.is_return) as last_sale_date,
-        (array_agg(sm.sale_price order by sm.sale_at desc) filter (
+        (array_agg(sm.sale_price order by sm.sale_at desc, sm.document_key desc, sm.sale_price desc) filter (
           where not sm.is_return and sm.sale_price is not null
         ))[1]::float8 as last_sale_price,
         bool_or(sm.sold_qty <> 0) as has_quantity_line

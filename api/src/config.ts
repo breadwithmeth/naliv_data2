@@ -11,6 +11,7 @@ const configSchema = z
     DB_CONNECTION_LIMIT: z.coerce.number().int().positive().max(50).default(5),
     REPORT_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(3600).default(60),
     REPORT_CACHE_MAX_MB: z.coerce.number().int().positive().max(1024).default(64),
+    REPORT_CACHE_SYNC_POLL_SECONDS: z.coerce.number().int().min(0).max(60).default(2),
     PORT: z.coerce.number().int().positive().default(4000),
     WEB_ORIGIN: z.string().url().default("http://localhost:5173"),
     APP_ADMIN_EMAIL: z.string().email(),
