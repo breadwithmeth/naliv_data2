@@ -473,7 +473,7 @@ export async function getNomenclatureReport(params: NomenclatureParams) {
       returnsIncluded: true,
       calendarDaysIncluded: true,
       frozenStockTargetDays: FROZEN_TARGET_DAYS,
-      costHierarchy: "Себестоимость магазина → установка себестоимости → закупка за 90 дней"
+      costHierarchy: "Последняя установка среди магазинов → средневзвешенные поступления за 90 дней до конца периода"
     }
   };
 }

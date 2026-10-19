@@ -91,6 +91,17 @@ test("sales preserve report totals, discount amounts, and date boundaries", {
       assert.equal(uncomparable.reconciliation.comparable, false);
       assert.equal(uncomparable.reconciliation.difference, null);
       assert.equal(sales.revenueSeries.length, 3);
+      // Handbook 6.2: average check is withheld while either source is partial.
+      assert.equal(sales.summary.avgCheck, null);
+      const fullCoverageWindow = await getSalesReport({
+        period: "day",
+        storeLimit: 12,
+        from: new Date("2026-08-24T00:00:00Z"),
+        to: new Date("2026-08-27T00:00:00Z")
+      });
+      // Official net revenue 310 ÷ (3 sale checks − 1 return check) = 155.
+      assert.equal(fullCoverageWindow.summary.avgCheck, 155);
+      assert.equal(fullCoverageWindow.summary.checkCoveragePct, 100);
       assert.equal(sales.summary.coveredDays, 3);
       assert.equal(sales.summary.expectedDays, 8);
       assert.equal(sales.summary.checkCoveragePct, 37.5);
@@ -137,6 +148,7 @@ test("income report derives store and item totals with catalog name fallbacks", 
 }, async () => {
   process.env.DATABASE_URL = process.env.ANALYTICS_TEST_DATABASE_URL;
   process.env.PGSCHEMA = "pg_temp";
+  process.env.APP_SCHEMA = "pg_temp";
   process.env.APP_ADMIN_EMAIL ??= "admin@test.local";
   process.env.APP_ADMIN_PASSWORD ??= "admin-test-password";
   process.env.APP_MARKETING_EMAIL ??= "marketing@test.local";
@@ -148,6 +160,7 @@ test("income report derives store and item totals with catalog name fallbacks", 
   const { config } = await import("../src/config.js");
   // A previous test may have pinned the schema to its own temp namespace.
   config.PGSCHEMA = "pg_temp";
+  config.APP_SCHEMA = "pg_temp";
   const original = prisma.$queryRaw;
   try {
     await prisma.$transaction(async (tx) => {
@@ -173,6 +186,22 @@ test("income report derives store and item totals with catalog name fallbacks", 
       await tx.$executeRawUnsafe(`create temp table document_ustanovka_sebestoimosti_tovary (
         _parent_ref_key text, _parent_line_index integer, nomenklatura_key text,
         tsena numeric) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_spisanie_tovarov (
+        ref_key text, date timestamp, deletion_mark boolean, posted boolean,
+        magazin_key text) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_spisanie_tovarov_tovary (
+        _parent_ref_key text, summa numeric) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_oprihodovanie_tovarov (
+        ref_key text, date timestamp, deletion_mark boolean, posted boolean,
+        magazin_key text) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_oprihodovanie_tovarov_tovary (
+        _parent_ref_key text, summa numeric) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_pereschet_tovarov (
+        ref_key text, date timestamp, magazin_key text, deletion_mark boolean,
+        posted boolean, uchetnye_dannye_zapolneny boolean) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_pereschet_tovarov_tovary (
+        _parent_ref_key text, nomenklatura_key text, summa numeric,
+        summa_fakt numeric, line_number bigint) on commit drop`);
       for (const table of ["catalog_magaziny", "catalog_nomenklatura"]) {
         await tx.$executeRawUnsafe(`create temp table ${table} (ref_key text, description text) on commit drop`);
       }
@@ -195,6 +224,14 @@ test("income report derives store and item totals with catalog name fallbacks", 
         ('r2', 'i2', 3, 150), ('r3', 'i1', 4, 300)`);
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values
         ('r1', 'i1', 1, 100)`);
+      await tx.$executeRawUnsafe(`insert into document_spisanie_tovarov values
+        ('w1', '2026-08-26', false, true, 's1')`);
+      await tx.$executeRawUnsafe(`insert into document_spisanie_tovarov_tovary values
+        ('w1', 50)`);
+      await tx.$executeRawUnsafe(`insert into document_oprihodovanie_tovarov values
+        ('o1', '2026-08-26', false, true, 's1')`);
+      await tx.$executeRawUnsafe(`insert into document_oprihodovanie_tovarov_tovary values
+        ('o1', 20)`);
       // s2 and i2 stay out of the catalogs to exercise the name fallbacks.
       await tx.$executeRawUnsafe(`insert into catalog_magaziny values ('s1', 'Store One')`);
       await tx.$executeRawUnsafe(`insert into catalog_nomenklatura values ('i1', 'Item One')`);
@@ -214,6 +251,21 @@ test("income report derives store and item totals with catalog name fallbacks", 
       assert.equal(report.summary.grossProfit, -80);
       assert.equal(report.summary.costCoveragePct, 100);
       assert.equal(report.summary.unvaluedRevenue, 0);
+      // Handbook 7: gross profit after losses = revenue − cost − (write-offs − surpluses).
+      assert.equal(report.summary.losses, 30);
+      assert.equal(report.summary.grossProfitAfterLoss, -110);
+      assert.equal(report.summary.marginAfterLossPct, (-110 / 650) * 100);
+      assert.equal(
+        report.incomeSeries.reduce((sum, point) => sum + point.losses, 0),
+        30
+      );
+      assert.equal(
+        report.incomeSeries.reduce(
+          (sum, point) => sum + point.grossProfitAfterLoss,
+          0
+        ),
+        report.summary.grossProfitAfterLoss
+      );
       assert.equal(report.incomeSeries.length, 3);
       assert.equal(
         report.incomeSeries.reduce((sum, point) => sum + point.revenue, 0),
@@ -230,10 +282,10 @@ test("income report derives store and item totals with catalog name fallbacks", 
 
       // Store and item totals are sums of the store-item rows, not repeats.
       assert.deepEqual(
-        report.stores.map((store) => [store.key, store.name, store.revenue, store.cost, store.grossProfit]),
+        report.stores.map((store) => [store.key, store.name, store.revenue, store.cost, store.grossProfit, store.losses, store.grossProfitAfterLoss]),
         [
-          ["s1", "Store One", 350, 330, 20],
-          ["s2", "Магазин s2", 300, 400, -100]
+          ["s1", "Store One", 350, 330, 20, 30, -10],
+          ["s2", "Магазин s2", 300, 400, -100, 0, -100]
         ]
       );
       assert.deepEqual(
@@ -251,6 +303,170 @@ test("income report derives store and item totals with catalog name fallbacks", 
           ["s2", "Магазин s2", "i1", "Item One", 300, 400]
         ]
       );
+
+      // Sales-only aggregates must not hide documents on dates/stores with no
+      // sales. Catalog duplicates and absent/null names cannot change money.
+      await tx.$executeRawUnsafe(`insert into catalog_magaziny values
+        ('s3', 'Store Three'), ('s3', 'Store Three'), ('s-zero', null)`);
+      await tx.$executeRawUnsafe(`insert into document_spisanie_tovarov values
+        ('w-before-sales', '2026-08-24', false, true, 's3'),
+        ('w-after-sales', '2026-08-29', false, true, 's4'),
+        ('w-no-store', '2026-08-28', false, true, null),
+        ('w-empty-store', '2026-08-28', false, true, ''),
+        ('w-zero', '2026-08-28', false, true, 's-zero'),
+        ('w-before-window', '2026-08-23', false, true, 'outside'),
+        ('w-end-window', '2026-09-01', false, true, 'outside'),
+        ('w-deleted', '2026-08-28', true, true, 'outside'),
+        ('w-unposted', '2026-08-28', false, false, 'outside')`);
+      await tx.$executeRawUnsafe(`insert into document_spisanie_tovarov_tovary values
+        ('w-before-sales', 40), ('w-after-sales', 25), ('w-no-store', 10),
+        ('w-empty-store', 6), ('w-zero', 5), ('w-before-window', 10000),
+        ('w-end-window', 10000), ('w-deleted', 10000), ('w-unposted', 10000)`);
+      await tx.$executeRawUnsafe(`insert into document_oprihodovanie_tovarov values
+        ('o-no-sales', '2026-08-27', false, true, 's3'),
+        ('o-zero', '2026-08-28', false, true, 's-zero')`);
+      await tx.$executeRawUnsafe(`insert into document_oprihodovanie_tovarov_tovary values
+        ('o-no-sales', 12), ('o-zero', 5)`);
+      await tx.$executeRawUnsafe(`insert into document_pereschet_tovarov values
+        ('revision', '2026-08-31', 's5', false, true, true)`);
+      // The existing last-line-per-document/item rule and additive recount
+      // policy remain intact; only the output's key set changes.
+      await tx.$executeRawUnsafe(`insert into document_pereschet_tovarov_tovary values
+        ('revision', 'shortage', 100, 0, 1),
+        ('revision', 'shortage', 100, 80, 2),
+        ('revision', 'excess', 10, 17, 3)`);
+      const mixed = await getIncomeReport({
+        period: "day",
+        from: new Date("2026-08-24T00:00:00Z"),
+        to: new Date("2026-09-01T00:00:00Z"),
+        storeLimit: 12
+      });
+      assert.equal(mixed.summary.soldQty, 9);
+      assert.equal(mixed.summary.revenue, report.summary.revenue);
+      assert.equal(mixed.summary.cost, report.summary.cost);
+      assert.equal(mixed.summary.losses, 112);
+      assert.equal(mixed.summary.grossProfitAfterLoss, -192);
+      assert.equal(mixed.summary.dateFrom, report.summary.dateFrom);
+      assert.equal(mixed.summary.dateTo, report.summary.dateTo);
+      assert.deepEqual(mixed.items, report.items);
+      assert.deepEqual(mixed.storeItems, report.storeItems);
+      for (const field of ["soldQty", "revenue", "cost", "grossProfit", "losses", "grossProfitAfterLoss"] as const) {
+        assert.equal(
+          mixed.incomeSeries.reduce((sum, point) => sum + point[field], 0),
+          mixed.summary[field],
+          `income series reconciles ${field}`
+        );
+        assert.equal(
+          mixed.stores.reduce((sum, store) => sum + store[field], 0),
+          mixed.summary[field],
+          `income stores reconcile ${field}`
+        );
+      }
+      assert.deepEqual(
+        mixed.incomeSeries.map((point) => [point.bucket, point.losses]),
+        [
+          ["2026-08-24T00:00:00.000Z", 40],
+          ["2026-08-25T00:00:00.000Z", 0],
+          ["2026-08-26T00:00:00.000Z", 30],
+          ["2026-08-27T00:00:00.000Z", -12],
+          ["2026-08-28T00:00:00.000Z", 16],
+          ["2026-08-29T00:00:00.000Z", 25],
+          ["2026-08-30T00:00:00.000Z", 0],
+          ["2026-08-31T00:00:00.000Z", 13]
+        ]
+      );
+      const lossOnlyStoreExpectations: Record<string, { name: string; losses: number }> = {
+        s3: { name: "Store Three", losses: 28 },
+        s4: { name: "Магазин s4", losses: 25 },
+        s5: { name: "Магазин s5", losses: 13 },
+        "Без магазина": { name: "Без магазина", losses: 16 },
+        "s-zero": { name: "Магазин s-zero", losses: 0 }
+      };
+      assert.deepEqual(
+        mixed.stores.map((store) => store.key).sort(),
+        ["s1", "s2", ...Object.keys(lossOnlyStoreExpectations)].sort()
+      );
+      for (const [key, expected] of Object.entries(lossOnlyStoreExpectations)) {
+        const store = mixed.stores.find((candidate) => candidate.key === key)!;
+        assert.equal(store.name, expected.name);
+        assert.equal(store.losses, expected.losses);
+        assert.equal(store.grossProfitAfterLoss, 0 - expected.losses);
+        assert.equal(store.revenue, 0);
+        assert.equal(store.cost, 0);
+        assert.equal(store.soldQty, 0);
+        assert.equal(store.grossProfit, 0);
+        assert.equal(store.marginPct, null);
+        assert.equal(store.marginAfterLossPct, null);
+      }
+      for (const point of mixed.incomeSeries.filter((point) => point.revenue === 0)) {
+        assert.equal(point.cost, 0);
+        assert.equal(point.soldQty, 0);
+        assert.equal(point.grossProfit, 0);
+        assert.equal(point.grossProfitAfterLoss, 0 - point.losses);
+        assert.equal(point.marginPct, null);
+        assert.equal(point.marginAfterLossPct, null);
+      }
+
+      // An entirely loss-only window is still a report, not empty detail.
+      const onlyLosses = await getIncomeReport({
+        period: "day",
+        from: new Date("2026-08-27T00:00:00Z"),
+        to: new Date("2026-08-29T00:00:00Z"),
+        storeLimit: 12
+      });
+      assert.equal(onlyLosses.summary.revenue, 0);
+      assert.equal(onlyLosses.summary.cost, 0);
+      assert.equal(onlyLosses.summary.soldQty, 0);
+      assert.equal(onlyLosses.summary.losses, 4);
+      assert.equal(onlyLosses.summary.grossProfitAfterLoss, -4);
+      assert.equal(onlyLosses.summary.marginPct, null);
+      assert.equal(onlyLosses.summary.marginAfterLossPct, null);
+      assert.equal(onlyLosses.summary.dateFrom, null);
+      assert.equal(onlyLosses.summary.dateTo, null);
+      assert.deepEqual(onlyLosses.items, []);
+      assert.deepEqual(onlyLosses.storeItems, []);
+      assert.deepEqual(
+        onlyLosses.incomeSeries.map((point) => point.bucket),
+        ["2026-08-27T00:00:00.000Z", "2026-08-28T00:00:00.000Z"]
+      );
+      assert.equal(onlyLosses.incomeSeries.reduce((sum, point) => sum + point.losses, 0), 4);
+      assert.equal(onlyLosses.stores.reduce((sum, store) => sum + store.losses, 0), 4);
+
+      // Zero and negative sales denominators are undefined percentages at
+      // every level; return quantities/costs retain their original signs.
+      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah values
+        ('zero-sales', '2026-09-02', false, true, 100, 100, 's-zero-sales'),
+        ('negative-sales', '2026-09-03', false, true, 0, 200, 's-negative-sales')`);
+      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
+        ('zero-sales', 'i1', 1, 100)`);
+      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values
+        ('zero-sales', 'i1', 1, 100), ('negative-sales', 'i1', 2, 200)`);
+      for (const fixture of [
+        { from: "2026-09-02", to: "2026-09-03", revenue: 0, cost: 0, soldQty: 0 },
+        { from: "2026-09-03", to: "2026-09-04", revenue: -200, cost: -200, soldQty: -2 }
+      ]) {
+        const nonpositive = await getIncomeReport({
+          period: "day",
+          from: new Date(`${fixture.from}T00:00:00Z`),
+          to: new Date(`${fixture.to}T00:00:00Z`),
+          storeLimit: 12
+        });
+        assert.equal(nonpositive.summary.revenue, fixture.revenue);
+        assert.equal(nonpositive.summary.cost, fixture.cost);
+        assert.equal(nonpositive.summary.soldQty, fixture.soldQty);
+        assert.equal(nonpositive.summary.marginPct, null);
+        assert.equal(nonpositive.summary.marginAfterLossPct, null);
+        for (const details of [nonpositive.incomeSeries, nonpositive.stores, nonpositive.items, nonpositive.storeItems]) {
+          assert.equal(details.length, 1);
+          assert.equal(details[0].revenue, fixture.revenue);
+          assert.equal(details[0].cost, fixture.cost);
+          assert.equal(details[0].soldQty, fixture.soldQty);
+          assert.equal(details[0].grossProfit, fixture.revenue - fixture.cost);
+          assert.equal(details[0].marginPct, null);
+        }
+        assert.equal(nonpositive.incomeSeries[0].marginAfterLossPct, null);
+        assert.equal(nonpositive.stores[0].marginAfterLossPct, null);
+      }
     }, { timeout: 30000 });
   } finally {
     prisma.$queryRaw = original;
@@ -308,12 +524,14 @@ test("inventory preserves its key set and uses auditable cost sources", {
         rezerv_balance numeric, balance_period timestamp) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table catalog_nomenklatura (ref_key text, description text) on commit drop`);
       await tx.$executeRawUnsafe(`insert into catalog_nomenklatura values ('k1', 'Item One')`);
-      // One valid retail report; the sales lines below all hang off it.
+      // Inventory stock-days must use the handbook's fixed 28-day demand window,
+      // even when the selected reporting range starts later.
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah values
+        ('r0', '2026-08-10', false, true, 100, 's1'),
         ('r1', '2026-08-25', false, true, 500, 's1')`);
-      // k1 sells with a quantity; n1 only ever has quantity-less lines.
+      // The 10 August sale falls outside the selected range but inside its last 28 days.
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
-        ('r1', 'k1', 4, 200, 50), ('r1', 'n1', null, 50, 50)`);
+        ('r0', 'k1', 2, 100, 50), ('r1', 'k1', 4, 200, 50), ('r1', 'n1', null, 50, 50)`);
 
       await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov values
         ('p1', '2026-08-20', false, true)`);
@@ -324,7 +542,9 @@ test("inventory preserves its key set and uses auditable cost sources", {
         ('p1', 'p1', null, 100, 100, 0)`);
 
       await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance values
-        ('b1', 's1', 5, 1, '2026-08-31'), ('p1', 's1', 2, 0, '2026-08-31')`);
+        ('b1', 's1', 5, 1, '2026-08-31'),
+        ('p1', 's1', 2, 0, '2026-08-31'),
+        ('k1', 's1', 6, 1, '2026-08-31')`);
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
 
       const report = await getInventoryReport({
@@ -349,18 +569,32 @@ test("inventory preserves its key set and uses auditable cost sources", {
         [2, 0]
       );
 
-      // Lifetime and period figures survive the merge.
+      // Lifetime quantities and the fixed handbook sales window use different
+      // boundaries: the 10 August sale is outside `from` but inside the last 28 days.
       const k1 = byKey.get("k1")!;
       assert.equal(k1.name, "Item One");
       assert.equal(k1.totalPurchased, 10);
-      assert.equal(k1.totalSold, 4);
+      assert.equal(k1.totalSold, 6);
       assert.equal(k1.stockQty, 6);
       assert.equal(k1.stockCost, 300);
-      assert.equal(k1.recentSoldQty, 4);
-      assert.equal(k1.recentDaysActive, 1);
+      assert.equal(k1.recentSoldQty, 6);
+      assert.equal(k1.recentDaysActive, 2);
+      assert.equal(k1.dailySalesRate, 6 / 28);
+      assert.equal(k1.daysOfStock, 28);
       assert.equal(k1.lastSaleDate, "2026-08-25T00:00:00.000Z");
-      // Inventory measures against the exclusive `to` bound itself.
+      // Inventory age is measured against the exclusive `to` bound itself.
       assert.equal(k1.daysSinceLastSale, 7);
+
+      const narrower = await getInventoryReport({
+        period: "day",
+        from: new Date("2026-08-26"),
+        to: new Date("2026-09-01")
+      });
+      const narrowerK1 = narrower.items.find((item) => item.key === "k1")!;
+      assert.deepEqual(
+        [narrowerK1.recentSoldQty, narrowerK1.dailySalesRate, narrowerK1.daysOfStock],
+        [6, 6 / 28, 28]
+      );
 
       // Equal business timestamps must not let physical row/index order change
       // inventory money. Both costs/prices remain real source candidates.
@@ -374,9 +608,9 @@ test("inventory preserves its key set and uses auditable cost sources", {
         ('sale-a', 'k1', 1, 45, 45), ('sale-z', 'k1', 1, 75, 75)`);
       const tied = await getInventoryReport({ period: "day", from: new Date("2026-08-24"), to: new Date("2026-09-01") });
       const tiedItem = tied.items.find((item) => item.key === "k1")!;
-      assert.equal(tiedItem.stockQty, 4);
-      assert.equal(tiedItem.stockCost, 240);
-      assert.equal(tiedItem.stockRetailValue, 300);
+      assert.equal(tiedItem.stockQty, 6);
+      assert.equal(tiedItem.stockCost, 360);
+      assert.equal(tiedItem.stockRetailValue, 450);
 
       await tx.$executeRawUnsafe(`delete from document_ustanovka_sebestoimosti_tovary where _parent_ref_key in ('cost-a', 'cost-z')`);
       await tx.$executeRawUnsafe(`insert into document_ustanovka_sebestoimosti_tovary values

@@ -18,22 +18,23 @@ tables:
 - `document_otchet_o_roznichnyh_prodazhah_tovary`
 - `document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary`
 
-Retail-report revenue is net of the explicit return table. Income reverses both revenue
-and cost for returned items. Cost follows the auditable hierarchy: the latest
-live store/item record from `СебестоимостьНоменклатуры`, the latest
-store-specific `document_ustanovka_sebestoimosti` line, the latest network value
-for the item, then weighted purchase cost excluding recorded VAT over the
-preceding 90 days. Missing valuation stays visible as cost-coverage and unvalued-revenue
-metrics instead of silently pretending that zero is a known cost.
+Retail-report revenue is net of the explicit return table. Income reverses both
+revenue and cost for returned items. Income's cost hierarchy is the latest
+store/item `СебестоимостьНоменклатуры` record with `active IS NOT FALSE`, the
+latest store-specific cost-setting line, the latest item cost-setting line among
+stores, then quantity-weighted purchase cost less recorded VAT over 90 days.
+Every source is bounded strictly before the selected period end. Missing
+valuation stays visible through coverage and unvalued revenue, not trusted zero.
 Equal source timestamps and line numbers are resolved deterministically: document
 key, then price for cost documents; price for live cost-register rows. Latest
 retail-price ties use document key, then price. Index choice and insertion order
 must not change a valuation.
 
-The sales report is sourced from KKM checks (`document_chek_kkm` with its
-`Товары` part): real check counts, average check, items per check,
-an hourly heatmap built from check timestamps, and top-item composition. Retail
-reports remain the official basis for income/P&L and promotion attribution, and
+The sales report uses KKM checks (`document_chek_kkm` with its `Товары` part) for
+check counts, items per check, the timestamp-based hourly heatmap, and top-item
+composition. The average check instead divides official retail-report header
+net revenue by sale checks minus return checks. Retail reports remain the
+official basis for income/P&L and promotion attribution, and
 the report shows a checks-versus-reports reconciliation — loaded checks, the
 share linked to a retail report, and the revenue difference — instead of hiding
 the gap. Check export stays behind the `--include-check-kkm` gate, which the
@@ -237,6 +238,118 @@ delivered workbook normally, fully recalculated and saved all 18 sheets with
 zero formula errors. Native city/share filtering recalculated visible supplier
 totals; the recalculated package passed Open XML validation without errors.
 
+## Оборачиваемость товарных запасов
+
+Раздел **Товары → Оборачиваемость** (`#stock/turnover`) формирует Excel в двух вариантах:
+«Сводно по товарам» и «По магазинам».
+В форме выбираются **«Товараоборот в шт.»** или **«Товараоборот в деньгах»**, детализация,
+период, магазины, склад, несколько категорий, бренд и товар, затем нажимается
+**Скачать Excel**. Настройки находятся слева, состав выбранной выгрузки и скачивание —
+справа; на телефоне блоки располагаются друг под другом. Предпросмотр и повторный расчёт
+в браузере не нужны: файл формируется одним запросом.
+
+- **«Сводно по товарам»** — две таблицы: остатки и продажи; одна строка на SKU.
+  **«По магазинам»** — строки магазин × SKU, листы динамики 7/14/30, ежедневных
+  остатков, перемещений и параметров. По умолчанию выбран сводный отчёт.
+- **Вся сеть** — 11 физических магазинов с проведёнными розничными отчётами, а не 24
+  записи `catalog_magaziny`. Юридические лица с одинаковым точным адресом от «г.»
+  объединены: их остатки и продажи суммируются, себестоимость берётся по исходному
+  ключу до объединения. Офисы и отделы по умолчанию исключены; их остатки можно
+  включить отдельным флажком (`storeScope=all`), при этом продажи останутся `n/a`.
+  Магазин с остатком, но без проведённого розничного отчёта за доступную историю,
+  по умолчанию не входит в сеть: его нужно выбрать явно. Склад по умолчанию — склад
+  выбранного магазина; удалённые и помеченные «не использовать» склады исключены.
+- Период задаётся непосредственно в отчёте; обе даты включены, изменения действуют сразу.
+  Быстрые кнопки: **Прошлый месяц**, **Текущий месяц**, **Последние 30 дней**,
+  **Прошлый квартал**. Месяц и квартал — календарные; последние 30 дней заканчиваются
+  вчера, без незавершённого сегодня. Текущий месяц охватывает весь календарный месяц.
+- Категории выбираются флажками с поиском. Выбор сохраняется при поиске; выбранные
+  категории можно убрать по одной или очистить все. В отчёт входит объединение
+  выбранных групп и их вложенных категорий, без повторного учёта пересечений.
+  Пустой выбор означает все категории. API передаёт ключи повторяющимся параметром
+  `category=key1&category=key2`; `TurnoverRequest.category` — массив ключей.
+- Флажок **«Исключить нулевые товары»** удаляет строку только тогда, когда все
+  дневные остатки и продажи равны точному нулю за весь период. Пропуски, `null` и
+  нулевая продажа при ненулевом остатке остаются в отчёте.
+- При смене магазинов склад сбрасывается, чтобы не сохранять несовместимый отбор.
+  Пустой справочник брендов явно обозначен; выбор бренда в этом случае недоступен.
+
+Сводный формат файла:
+
+- Лист **«рассчет оборачиваемости»** (в денежном варианте — с завершающим пробелом):
+  строка заголовков закреплена; `Номенклатура`, дневные остатки, колонки `01.09.` и `01.09. / 2`,
+  последняя дата с половинной колонкой, `сумма остатков за период`,
+  `средний товарный запас в шт`, `Коэффицент оборачиваемости`,
+  `количество дней в периоде`, `продажи в шт за период`, `количесто дней оборота в шт`.
+- Лист **«Продажи за период »**: номенклатура и продажи; в денежном варианте добавляется
+  себестоимость и итоговая строка `Итого`.
+- Совпадают ширины колонок (A = 65.5703125; даты = 9.140625; последние шесть колонок —
+  26.7109375 / 29.28515625 / 29.28515625 / 27.28515625 / 24.5703125 / 29.28515625),
+  шрифт и числовой формат `0.00` у среднего, коэффициента, дней и оборота, границы и
+  заливка по умолчанию, альбомная ориентация A4, поля и автофильтр денежного листа
+  `A1:AM1` для 30-дневного периода. Закреплённых строк, объединённых ячеек и цветных
+  заголовков нет.
+- Формулы: `B/2`, `AG/2`, сумма взвешенных дневных остатков,
+  `AH/(N−1)`, `AL/AI`, `AK/AJ`, `VLOOKUP` на лист продаж. Сумма строится по колонкам
+  `C…AF` (половины крайних дней), поэтому не воспроизводит ошибочный `SUM(B:AG)` из
+  части исходных строк; отображение и формат при этом те же.
+- Сводный отчёт требует не менее двух календарных дней; одна строка соответствует одному SKU. Пропущенные
+  остатки и цены выводятся как `n/a`, а не как нули. В денежном отчёте используется
+  учётная себестоимость; розничная выручка не подменяет её.
+- В сводном формате количество и денежные значения каждого товара суммируются по
+  всем выбранным физическим магазинам и складам. Выбор магазинов или конкретного
+  склада ограничивает эту же сводную строку, а не создаёт отдельные строки.
+- Дневные остатки и продажи объединяются после применения исторических цен своего
+  исходного юридического лица. Средний запас, коэффициент и дни оборота
+  пересчитываются по сводным значениям; коэффициенты отдельных магазинов не
+  складываются. Пропуск стоимости или остатка не заменяется нулём и делает
+  соответствующий итог неизвестным.
+- Точный SKU и текстовый поиск используют одну и ту же совокупность фактических
+  магазинов; отсутствующая строка не создаётся для офиса или магазина без данных.
+- Разные SKU и учётные единицы не смешиваются. В денежном листе продаж общий
+  количественный `Итого` доступен только при единой учётной единице; иначе — `n/a`.
+- К названиям не добавляются магазины. Если разные SKU имеют одинаковые названия,
+  в обоих листах добавляется ключ SKU, чтобы `VLOOKUP` находил правильный товар.
+
+Поиск товара заранее сужает источник по названию, артикулу, коду или ключу SKU.
+Справочники формы загружаются отдельным запросом `GET /api/reports/turnover/options`.
+Готовый XLSX кэшируется; заголовки `X-Report-Cache`, `X-Report-Rows` и `Server-Timing`
+показывают источник и объём результата.
+
+Admin API: `GET /api/reports/turnover/options` — физические магазины и склады;
+`GET /api/reports/turnover.xlsx` — сводный отчёт при `profile=sample` или
+отчёт по магазинам при `profile=full`; `GET /api/reports/turnover` — компактный JSON для
+интеграций; `GET /api/reports/turnover/row` — подробности строки по `auditGroup`.
+`storeScope=retail` (по умолчанию) — розничные физические магазины; `storeScope=all` —
+включая офисы и отделы. `excludeZero=true` скрывает только строки, где все дневные
+остатки и продажи равны нулю за весь период. Границы API — `[from,to)`, максимум 366 дней;
+UI показывает включительную конечную дату. Все маршруты требуют admin.
+
+Для новой установки подготовьте покрывающие индексы без изменения исходных записей:
+`npm run db:optimize -- --turnover-only` показывает DDL,
+`npm run db:optimize -- --turnover-only --apply` применяет только индексы отчёта через
+`CREATE INDEX CONCURRENTLY` и обновляет статистику. При отсутствии данных отчёт
+показывает ошибку; при недоступности PostgreSQL — сообщение и действие повторной загрузки.
+
+### Измерения на полном ассортименте
+
+Замеры после объединения магазинов: сентябрь 2026, **5 152 строки** SKU × физический
+магазин, 11 магазинов. Замеры на реальном PostgreSQL и собранном сервере:
+
+| Сценарий | Время |
+|---|---:|
+| Полная сеть, штуки, первый запрос | **32,1 с**, файл **1,69 МБ** |
+| Полная сеть, деньги, первый запрос | **42,3 с**, файл **1,56 МБ** |
+| Повторная выгрузка того же файла | **0,012 с** из кэша |
+| Поиск «Трубочка чёрная», 7 строк | **~2–3 с** |
+| Справочники формы | **~0,1–0,3 с** |
+
+Ранее полный внутренний отчёт занимал 130 МБ и не сохранялся в кэше 64 МБ, поэтому
+каждая выгрузка пересчитывалась; теперь готовый файл помещается в кэш. Первичное
+формирование широкой выборки остаётся тяжёлой операцией; это не SLA. Контрольный SKU
+с SQL-сверкой дневного среднего для одного магазина: 4443,241379; нетто-продажи 4, оценка по себестоимости
+17,2 ₸, розничная выручка 40 ₸.
+
 ## Management workspaces and source-ready metrics
 
 Primary navigation follows business tasks rather than database entities:
@@ -272,13 +385,13 @@ unknown costs, and estimates remain visible beside the affected analysis.
 Income estimates are not presented as accounting profit. Ordinary server-error
 states do not expose backend/database diagnostics.
 
-Metric cards, analytical table headers, and major charts use the existing
-`web/src/metric-definitions.ts` glossary. Their info buttons open a flat,
-business-language explanation of meaning, calculation, scope, limitations,
-and responsibility without raw database field lists. The help panel stays
-within the viewport, supports explicit close and Escape, and returns keyboard
-focus to its trigger. Live status, coverage, and snapshot dates come from the
-report response.
+Metric cards, analytical table headers, and charts use the
+`web/src/metric-definitions.ts` glossary and native collapsible guides.
+Each explanation pairs Russian business meaning with the exact formula, unit,
+source entities/fields, window, denominator, missing-data rules, and handbook
+differences. The help panel stays within the viewport, supports explicit close
+and Escape, and returns keyboard focus to its trigger. Live status, coverage,
+and snapshot dates come from the response, separately from static definitions.
 
 Admin-only management endpoints:
 
@@ -299,9 +412,10 @@ Admin-only management endpoints:
 - `GET /api/management/money-position` — current ordinary cash and KKM cash by
   store, days of uncollected KKM cash against 28-day cash revenue, plus the raw
   supplier-settlement register values; bank remains `null`;
-- `GET /api/management/supplier-terms` — supplier-order payment stages, weighted
-  planned deferral, order amount, linked-receipt amount, execution, and an
-  explicitly partial eight-week calendar for open-order stages;
+- `GET /api/management/supplier-terms` — amount-weighted deferral from delivery
+  payment stages, plus order amount, linked receipts, execution, and partial
+  open-order calendars. Their UTC-midnight start is the earlier of the requested
+  end and today; stages cover the following 30/56 days, not bank payments;
 - `GET /api/management/purchasing` — target-stock replenishment recommendations,
   a monetary seven-day purchase budget, and prior-seven-day budget execution
   using store norms, current stock, open orders, 28-day check velocity, canonical
@@ -334,14 +448,19 @@ the financier confirms them. A confirmed `internal` DDS mapping excludes the
 article from all three flows; this is how the financier marks collection,
 bank-deposit, change-replenishment, and other own-money transfer articles.
 
-Nomenclature uses net sales, full calendar days (including zero-sale days),
-lifetime first/last sale dates, and the same dated canonical cost hierarchy as
-income and inventory:
+Nomenclature uses net retail-report sales and full calendar days, including days
+without a sale row. Nomenclature **and Inventory item valuation** use only:
 
-1. live `СебестоимостьНоменклатуры` record by store/item/date;
-2. store-specific cost-setting document;
-3. network-level cost-setting document;
-4. weighted external purchase cost over the preceding 90 days.
+1. the latest cost-setting item line among all stores before the window end;
+2. quantity-weighted purchase lines less recorded VAT over the preceding 90 days.
+
+They do not consume store/item register or store-specific cost-setting priority.
+Nomenclature lifetime first/last sale and candidate last-purchase dates are not
+bounded by a historical end: later loaded dates can appear in historical views.
+Its days-since calculation floors UTC dates and clamps negative differences to
+zero. ABC includes the current item in cumulative positive revenue
+(A ≤80%, B ≤95%); XYZ uses sample deviation over the zero-filled daily calendar.
+Nonpositive mean yields technical class Z, while the UI says CV is undefined.
 
 Missing item cost produces `null` profit/margin and explicit unvalued revenue.
 `Дни без продаж` remains a separate observed behavior. Monetary Lost Sales is
@@ -352,8 +471,11 @@ coverage of the window reach 90%; below that the observed amount is shown with a
 Balance-function imports are complete non-zero snapshots. Stock consumers select
 one global `balance_period` at each boundary; they never carry a dimension's
 older non-zero row into a newer snapshot where that dimension is absent.
-Frozen-stock velocity uses only days with positive stock. Frozen stock and
-GMROI are trusted only when their daily-snapshot window is at least 90% covered.
+Store-performance frozen-stock velocity uses only positive-stock days and
+requires 90% daily-snapshot coverage; its GMROI uses average valued daily stock.
+Nomenclature candidate frozen stock instead uses nonnegative calendar-day
+velocity for the selected window and a 30-day target, without that daily-stock
+coverage gate. These are different estimates, not interchangeable totals.
 The purchase budget is
 `max(norm + forecast_7d - stock - open_orders, 0) × canonical_cost`; execution
 compares the prior seven days' orders with the budget reconstructed at that
@@ -365,9 +487,10 @@ confirmed payables, card turnover acquiring in transit, or promotion
 attribution ROI. Bank statements are not loaded, so §4.4 cash/bank
 reconciliation remains unavailable even when cash-only flow classification is
 complete. Supplier balance signs still need financier approval, store areas are
-empty, current payroll/timesheets are absent, loan schedules are absent, VAT is
-populated on only a negligible share of retail lines, and promotion returns
-cannot be linked reliably to the original sale. §7.5 intercompany markup also
+empty, current payroll/timesheets and loan schedules are absent. Separate VAT
+fields are sparse; this does not make recorded prices VAT-free. The owner
+confirmed the VAT-inclusive price basis, which is retained without deduction.
+Promotion returns cannot be linked reliably to the original sale. §7.5 markup
 remains unavailable until the ownership/policy and internal-supply links are
 approved. Those limitations stay next to the affected numbers; absent sources
 are never rendered as zero.
@@ -651,3 +774,84 @@ build. Set `ANALYTICS_TEST_DATABASE_URL` to a PostgreSQL connection URL to
 enable database integration tests. They use connection-local temporary source
 and application tables and roll back their transactions; they do not modify
 source data.
+
+## Current status against `Справочник метрик Naliv 1.docx`
+
+The dashboard's `ⓘ` explanations give each displayed value's unit, formula,
+source fields, period, denominator, zero/`Нет данных` behavior, owner, and known
+limitations. Chart disclosures describe axes, aggregation, and interpretation.
+Use those explanations before comparing values across pages: sales receipts,
+retail-report lines, retail-report headers, and balance snapshots are distinct
+source populations. A missing/partial value is not a measured zero.
+
+| Area | Formula or source currently used | Difference / status against the handbook |
+| --- | --- | --- |
+| Sales, composition, and hourly heatmap | Posted KKM receipt headers/lines, with return receipts subtracted. The heatmap bins receipt timestamps by store, weekday, and hour. | Revenue remains at the recorded price basis. The heatmap sums the selected weekday across the chosen range; §6.3 asks for a four-week average, not currently shown. Coverage and links to retail reports do not prove complete ingestion. |
+| Income report revenue | Sum of retail-report sale-item `summa` minus returned-item `summa`; this is line revenue. | The owner confirms that 1C prices correctly include VAT. The dashboard does not remove the VAT component. The handbook's P&L requires revenue without VAT, so current income and margins are explicitly VAT-inclusive and do **not** yet match that P&L line. No VAT rate or subtraction is inferred. |
+| Cost | Income/store performance/purchasing use store cost register → store-specific cost-setting → latest cost-setting item among stores → quantity-weighted 90-day purchases. Inventory/nomenclature use only the last two sources. | All prices are before the window end, not each sale date. The “global” installation can belong to another store; purchases are not proven external-only. Missing себестоимость will be filled in 1C: recheck coverage after synchronization, not by inserting application zeros. |
+| Losses and after-loss gross profit | Posted, nondeleted write-offs and capitalization plus signed inventory-recount differences; net losses = write-offs + shortages − capitalization − surpluses. After-loss gross profit = line revenue − estimated cost − net losses. | Recount differences are not causally linked to generated adjustment documents. A recount variance may therefore overlap a later write-off/capitalization; no duplicate-event reconciliation is proven. Product-level profit remains before losses because no evidenced allocation exists. |
+| Average check | Retail-report header revenue (`summa_dokumenta − summa_vozvratov`) ÷ (sale checks − return checks). | Below 90% calendar-day coverage for either source, or a nonpositive denominator, the application returns `Нет данных`. This 90% publication gate is an application safeguard, not a handbook threshold. Receipt-header revenue on the Sales page is a separate reconciliation value. |
+| Supplier payment deferral | Amount-weighted days from delivery stages (`summa × otsrochka_platezha` ÷ stage amount). Order stages serve only order statistics/calendars. | Below 80% of receipts with usable stages, or with nonpositive/missing total weight, deferral is unavailable. A genuine zero-day term with positive weight remains valid. The 80% gate is an application safeguard. Future order calendars start at UTC midnight of `min(requested end, now)` and are not complete obligations. |
+| Stock and purchasing | Store performance computes monetary stock-days using 28-day cost of goods sold. Purchasing uses mapped 1C target-stock quantities, balances, open-order quantities, and a seven-day demand forecast. | Item inventory tables show quantity-based days over a fixed 28-day demand window; the store-level figure is monetary. Purchasing has no fallback group-day norms for unmapped product/store pairs. Adding себестоимость enables money valuation but does not supply a missing target-stock norm or confirm a store/group mapping. |
+| Frozen inventory / GMROI / lost sales | Store frozen stock uses positive-stock-day velocity; nomenclature candidates use calendar-day velocity. Both currently use a 30-day target. GMROI annualizes after-loss profit over average valued daily stock. Lost sales estimates calendar-day check revenue × zero-stock snapshot-days for local A/B items. | These populations/denominators differ. No group-specific frozen target or dynamic 10%/20% alert bands are applied. Lost-sales A/B includes a threshold-crossing item in the previous class, unlike nomenclature ABC. Lost-sales dates end no later than the latest available balance; missing daily snapshots are not zero-stock observations. Publication gates are application safeguards, not handbook norms. |
+| Cash, bank, and full P&L | Cash and KKM are the latest available 1C balance snapshots; cash-days uses KKM balance ÷ average reported cash sales over 28 calendar days. | Bank statements are not available yet; bank balances, acquiring in transit, payment coverage, and a complete bank/cash-flow statement are unavailable, not zero. The legacy KKM/store-key relationship and opening-balance treatment have not been approved, so the dashboard does not merge or discard balances. Full store contribution, EBITDA, and net profit also require the handbook's rent, payroll, expense, tax, and internal-transfer inputs; they are not represented by gross profit. |
+| Owner-set policies and unprovided dimensions | Handbook proposals for reserve weeks and owner payout share remain parameters requiring owner approval; current source data has no completed store-area values or payroll-by-point source. | Free cash, payout limit, rent/payroll ratios, per-square-metre output, shift contribution, and metrics depending on these inputs remain unavailable. They are never filled with zero or silently seeded from handbook examples. |
+| Expense and margin controls | Gross profit subtracts estimated product costs and additive inventory losses only. A static directory exposes unavailable handbook formulas without fake numeric cards. | Consumables and internal markup are not eliminated, and payroll/rent/tax/other expenses are not fully supplied. The handbook's store-margin comparison to network median (−2/−5 percentage points) is documented but not calculated dynamically. Full contribution, break-even, safety margin, EBITDA and net profit remain unavailable. |
+
+Inventory demand, last-sale lookup, and quantity-based stock days use the fixed
+28 days ending at the exclusive end, independent of `from`. The rate retains
+signed returns; stock days are `null` unless both stock and net demand are
+positive. Latest retail price, purchases, and cumulative sales use loaded
+history, not that 28-day window; a historical snapshot is therefore not a fully
+historical reconstruction. “Локаций” counts distinct stored `sklad_key` values,
+not a proven physical warehouse count.
+
+Display rounding: `formatMoney`/`formatNumber` show whole ₸/integers;
+decimal columns choose their own precision; compact numbers retain at most one
+decimal. Calculations and API values are not rounded to those displayed digits,
+so a sum of visible rounded cells can differ from the displayed rounded total.
+Storage sizes use powers of 1024, not 1000; PostgreSQL estimated row counts are
+estimates, not exact `COUNT(*)`.
+
+Read-only inventory-event investigation for `[2026-06-01,2026-10-09)` found 50
+posted recounts with bases; 45 share an inventory-order base with an adjustment.
+The adjustment basis type is
+`StandardODATA.Document_ПриказНаПроведениеИнвентаризацииТоваров`.
+For those 45 shared bases:
+
+| Comparison | Recount amount, ₸ | Adjustment amount, ₸ | Bases equal within 0.01 ₸ |
+| --- | ---: | ---: | ---: |
+| Shortage vs write-off | 34,857,076.47 | 34,846,611.16 | 30 |
+| Surplus vs capitalization | 20,624,449.93 | 21,000,517.00 | 18 |
+
+This is evidence of overlap risk, not a universal deduplication rule. No event
+is removed merely because amounts match. The dashboard retains additive loss
+semantics and discloses the unresolved reconciliation of base, item, and date.
+
+Application coverage gates and classification cut-offs are documented separately
+from handbook targets in the metric explanations. The metric registry contains
+defaults for decision thresholds; stored owner overrides are not replaced by
+those defaults.
+
+Verification of this handbook/explanation pass:
+
+- API and web TypeScript checks and the full `npm run build` completed.
+  The final wording-only web rebuild also completed. Vite still reports the
+  dashboard chunk-size warning; it is not a failed build.
+- The full isolated suite passed **35/35**, **0 failures**, **0 skipped**,
+  with fixture-only accounts and `APP_SCHEMA=pg_temp`.
+- Actual authenticated local API requests checked Income summary/period/store
+  reconciliation, the official-header/net-check average, signed fixed-28-day
+  Inventory rates and independence from `from`, supplier coverage/horizon rules,
+  purchase recommendations and execution, and marketing/catalogue denominators.
+  Six positive brewery recommendations matched the actual 1C
+  `normativnyy_zapas_karagandinskiy_pivzavod` field.
+- The built web application was exercised in Chromium at 1440×960 and 390×844:
+  metric and numeric-column help, source fields after scrolling, Enter/Escape
+  and restored focus, native chart/table guides, Income legends, matrix counts,
+  undefined margins/CV, comparison accessibility, source/freshness diagnostics,
+  and manual obligation/project guides. Unavailable handbook formulas expose
+  explanations rather than fabricated values.
+- Verification used read-only exported data and connection-local temporary
+  application tables. No production deployment, backfill, source correction,
+  remote `.env` mutation, or accounting-policy cutover was performed.

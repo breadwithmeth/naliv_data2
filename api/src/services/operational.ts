@@ -621,7 +621,9 @@ export async function getPurchasingRecommendations(params: ManagementMetricParam
             when sn.normalized_description like '%сатпа%' then n.normativnyy_zapas_satpaeva
             when sn.normalized_description like '%горьк%' then n.normativnyy_zapas_gorkogo
             when sn.normalized_description like '%шахт%' then n.normativnyy_zapas_karaganda_shahter
-            when sn.normalized_description like '%пивзавод%' then n.normativnyy_zapas_karagandinskiy_pivzavod
+            when sn.normalized_description like '%пивовар%'
+              or sn.normalized_description like '%пивзавод%'
+              then n.normativnyy_zapas_karagandinskiy_pivzavod
             when sn.normalized_description like '%бухар%' then n.normativnyy_zapas_karaganda_buhar_zhyrau
             when sn.normalized_description like '%толст%' then n.normativnyy_zapas_tolstogo
             when sn.normalized_description like '%астан%' then n.normativnyy_zapas_astana

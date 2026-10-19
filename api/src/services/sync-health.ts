@@ -24,6 +24,9 @@ export const SYNC_TABLE_GROUPS: Array<{ title: string; tables: string[] }> = [
     title: "Справочники периода — экспортируются в финальной порции каждого запуска",
     tables: [
       "catalog_nomenklatura",
+      "catalog_marki",
+      "catalog_bazovye_edinitsy_izmereniya",
+      "catalog_tovarnye_gruppy",
       "catalog_informatsionnye_karty",
       "catalog_skidki_natsenki",
       "catalog_segmenty_nomenklatury",

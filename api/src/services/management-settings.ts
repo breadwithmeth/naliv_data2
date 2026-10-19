@@ -20,10 +20,12 @@ function applicationTableName(tableName: string) {
 
 const defaultMetrics = [
   { metricId: "money.free", normal: "≥ 0", critical: "< −недельные расходы", cadence: "Ежедневно", owner: "Собственник, финансист" },
+  { metricId: "money.cash-days", normal: "≤ 1 дня", critical: "> 2 дней", cadence: "Ежедневно", owner: "Операционный директор" },
   { metricId: "cash.categorized", normal: "≥ 98%", critical: "< 95%", cadence: "Ежедневно", owner: "Финансист" },
   { metricId: "loss.rate", normal: "≤ 1%", critical: "> 2,5%", cadence: "Еженедельно", owner: "Управляющий" },
   { metricId: "stock.days", normal: "≤ 30 дней", critical: "> 45 дней", cadence: "Еженедельно", owner: "Закупки" },
   { metricId: "stock.frozen", normal: "≤ 10%", critical: "> 20%", cadence: "Еженедельно", owner: "Закупки" },
+  { metricId: "purchase.execution", normal: "≤ 105%", critical: "> 115%", cadence: "Еженедельно", owner: "Закупки, финансист" },
   { metricId: "store.margin-after-loss", normal: "≥ медиана − 2 п. п.", critical: "< медиана − 5 п. п.", cadence: "Еженедельно", owner: "Операционный директор" }
 ];
 

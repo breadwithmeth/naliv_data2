@@ -35,6 +35,9 @@ test("missing commission and sparse supplier, payroll, and VAT sources are not t
       await tx.$executeRawUnsafe(`create temp table document_postuplenie_tovarov (
         ref_key text, date timestamp, deletion_mark boolean, posted boolean,
         summa_dokumenta numeric, zakaz_postavschiku_key text) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_postuplenie_tovarov_etapy_oplat (
+        _parent_ref_key text, summa numeric, data_platezha timestamp,
+        otsrochka_platezha numeric) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table catalog_kontragenty (
         ref_key text, description text) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table document_chek_kkm (
@@ -65,6 +68,12 @@ test("missing commission and sparse supplier, payroll, and VAT sources are not t
         ('p4', '2026-08-04', false, true, 100, false, 'v1')`);
       await tx.$executeRawUnsafe(`insert into document_zakaz_postavschiku_etapy_oplat values
         ('p1', 100, '2026-08-11')`);
+      // Handbook 5.5: deferral is weighted over deliveries, not orders.
+      // The order path would report 10 days for p1; the delivery reports 3.
+      await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov values
+        ('rc1', '2026-08-05', false, true, 100, null)`);
+      await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov_etapy_oplat values
+        ('rc1', 100, '2026-08-08', 3)`);
       await tx.$executeRawUnsafe(`insert into document_chek_kkm values
         ('c1', '2026-08-10', false, true)`);
       await tx.$executeRawUnsafe(`insert into document_tabel_ucheta_rabochego_vremeni values
@@ -88,7 +97,11 @@ test("missing commission and sparse supplier, payroll, and VAT sources are not t
       assert.equal(acquiring.summary.commissionPct, null);
       assert.equal(acquiring.summary.commissionStatus, "unavailable");
       assert.equal(supplier.summary.stageCoveragePct, 25);
-      assert.equal(supplier.summary.weightedDeferralDays, 10);
+      assert.equal(supplier.summary.weightedDeferralDays, 3);
+      assert.equal(supplier.summary.receiptCount, 1);
+      assert.equal(supplier.summary.stagedReceiptCount, 1);
+      assert.equal(supplier.summary.receiptStageCoveragePct, 100);
+      assert.equal(supplier.summary.deferralStatus, "ready");
       assert.equal(supplier.summary.status, "experimental");
       assert.equal(sourceHealth.payroll.timesheets, 0);
       assert.equal(sourceHealth.payroll.payrollDocuments, 0);
@@ -97,6 +110,89 @@ test("missing commission and sparse supplier, payroll, and VAT sources are not t
       assert.equal(sourceHealth.vat.lineCoveragePct, 50);
       assert.equal(sourceHealth.issues.find((issue) => issue.key === "payroll")?.severity, "blocked");
       assert.equal(sourceHealth.issues.find((issue) => issue.key === "vat")?.severity, "blocked");
+    }, { timeout: 30000 });
+  } finally {
+    prisma.$queryRaw = original;
+    await prisma.$disconnect();
+  }
+});
+
+test("supplier deferral with nonpositive weights is unavailable, not a trusted zero", {
+  skip: !process.env.ANALYTICS_TEST_DATABASE_URL
+}, async () => {
+  process.env.DATABASE_URL = process.env.ANALYTICS_TEST_DATABASE_URL;
+  process.env.PGSCHEMA = "pg_temp";
+  process.env.APP_SCHEMA = "pg_temp";
+  process.env.APP_ADMIN_EMAIL ??= "admin@test.local";
+  process.env.APP_ADMIN_PASSWORD ??= "admin-test-password";
+  process.env.APP_MARKETING_EMAIL ??= "marketing@test.local";
+  process.env.APP_MARKETING_PASSWORD ??= "marketing-test-password";
+  process.env.JWT_SECRET ??= "test-jwt-secret-with-at-least-24-characters";
+  // Intentional test module-loading boundary: config must parse the isolated
+  // database/schema environment before the service is loaded.
+  const { prisma } = await import("../src/prisma.js");
+  const { config } = await import("../src/config.js");
+  const { getSupplierTermsMetrics } = await import("../src/services/management.js");
+  config.PGSCHEMA = "pg_temp";
+  config.APP_SCHEMA = "pg_temp";
+  const original = prisma.$queryRaw;
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`create temp table document_zakaz_postavschiku (
+        ref_key text, date timestamp, deletion_mark boolean, posted boolean,
+        summa_dokumenta numeric, zakryt boolean, kontragent_key text) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_zakaz_postavschiku_etapy_oplat (
+        _parent_ref_key text, summa numeric, data_platezha timestamp) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_postuplenie_tovarov (
+        ref_key text, date timestamp, deletion_mark boolean, posted boolean,
+        summa_dokumenta numeric, zakaz_postavschiku_key text) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table document_postuplenie_tovarov_etapy_oplat (
+        _parent_ref_key text, summa numeric, data_platezha timestamp,
+        otsrochka_platezha numeric) on commit drop`);
+      await tx.$executeRawUnsafe(`create temp table catalog_kontragenty (
+        ref_key text, description text) on commit drop`);
+      await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov values
+        ('receipt', '2026-08-05', false, true, 100, null)`);
+      prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
+      const params = {
+        from: new Date("2026-08-01T00:00:00Z"),
+        to: new Date("2026-09-01T00:00:00Z"),
+        limit: 20
+      };
+      const fixtures = [
+        { name: "zero weight", stages: [{ amount: 0, days: 7 }], days: null },
+        { name: "missing weight", stages: [{ amount: null, days: 7 }], days: null },
+        { name: "cancelled weights", stages: [{ amount: 100, days: 7 }, { amount: -100, days: 20 }], days: null },
+        { name: "negative weight", stages: [{ amount: -100, days: 7 }], days: null },
+        { name: "real zero deferral", stages: [{ amount: 100, days: 0 }], days: 0 },
+        { name: "positive weighted deferral", stages: [{ amount: 100, days: 5 }, { amount: 300, days: 1 }], days: 2 }
+      ];
+      for (const fixture of fixtures) {
+        await tx.$executeRawUnsafe(`delete from document_postuplenie_tovarov_etapy_oplat`);
+        for (const stage of fixture.stages) {
+          await tx.$executeRaw`
+            insert into document_postuplenie_tovarov_etapy_oplat
+            values ('receipt', ${stage.amount}, ${new Date("2026-08-12T00:00:00Z")}, ${stage.days})
+          `;
+        }
+        const result = await getSupplierTermsMetrics(params);
+        assert.equal(result.summary.receiptCount, 1, fixture.name);
+        assert.equal(result.summary.stagedReceiptCount, 1, fixture.name);
+        assert.equal(result.summary.receiptStageCoveragePct, 100, fixture.name);
+        assert.equal(result.summary.weightedDeferralDays, fixture.days, fixture.name);
+        assert.equal(
+          result.summary.deferralStatus,
+          fixture.days === null ? "unavailable" : "ready",
+          fixture.name
+        );
+      }
+      // A calculable value remains withheld when receipt coverage is sparse.
+      await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov values
+        ('unstaged', '2026-08-06', false, true, 100, null)`);
+      const partial = await getSupplierTermsMetrics(params);
+      assert.equal(partial.summary.receiptStageCoveragePct, 50);
+      assert.equal(partial.summary.weightedDeferralDays, null);
+      assert.equal(partial.summary.deferralStatus, "experimental");
     }, { timeout: 30000 });
   } finally {
     prisma.$queryRaw = original;

@@ -15,6 +15,7 @@ import { requireAuth, restrictMarketingApiSurface } from "./middleware/auth.js";
 import { nomenclatureRouter } from "./routes/nomenclature.js";
 import { reportsRouter } from "./routes/reports.js";
 import { syncRouter } from "./routes/sync.js";
+import { turnoverRouter } from "./routes/turnover.js";
 
 const app = express();
 app.use(compression({ threshold: 1024 }));
@@ -40,6 +41,7 @@ app.use("/api/auth", authRouter);
 app.use("/api", requireAuth, restrictMarketingApiSurface);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/reports", reportsRouter);
+app.use("/api/reports", turnoverRouter);
 app.use("/api/nomenclature", nomenclatureRouter);
 app.use("/api/marketing", marketingRouter);
 app.use("/api/inventory", inventoryRouter);

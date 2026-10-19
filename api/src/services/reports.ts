@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { config } from "../config.js";
 import { prisma } from "../prisma.js";
 import { canonicalItemCostsCtes } from "../lib/cost-sql.js";
+import { lossMovementsCtes } from "../lib/losses-sql.js";
 
 export type SalesPeriod = "day" | "week" | "month";
 
@@ -172,10 +173,6 @@ export async function getSalesReport(params: SalesReportParams) {
         count(*) filter (where not is_return) as order_count,
         count(*) filter (where is_return) as return_count,
         coalesce(
-          sum(gross_revenue) / nullif(count(*) filter (where not is_return), 0),
-          0
-        )::float8 as avg_check,
-        coalesce(
           sum(item_quantity) / nullif(count(*) filter (where not is_return), 0),
           0
         )::float8 as avg_items_per_check,
@@ -190,11 +187,13 @@ export async function getSalesReport(params: SalesReportParams) {
     ),
     retail_reports as (
       select
+        date_trunc(${params.period}, r.date) as bucket,
         coalesce(sum(coalesce(r.summa_dokumenta, 0) - coalesce(r.summa_vozvratov, 0)), 0)::float8
           as revenue,
         count(distinct date_trunc('day', r.date)) as report_days
       from ${qualifiedTable("document_otchet_o_roznichnyh_prodazhah")} r
       where ${retailReportFilters(params)}
+      group by grouping sets ((1), ())
     ),
     store_totals as (
       select store_key, sum(revenue)::float8 as revenue
@@ -243,14 +242,15 @@ export async function getSalesReport(params: SalesReportParams) {
     select
       'series' as result_type,
       s.bucket, s.gross_revenue, s.returns, s.revenue,
-      s.order_count, s.return_count, s.avg_check, s.avg_items_per_check,
+      s.order_count, s.return_count, null::float8 as avg_check, s.avg_items_per_check,
       s.date_from, s.date_to, s.report_count, s.covered_day_count,
       s.check_count, s.linked_check_count,
       r.revenue as retail_report_revenue, r.report_days,
       null::timestamp as sale_day, null::text as store_key,
       null::text as store_name, null::int as hour,
       null::text as item_key, null::text as item_name, null::float8 as quantity
-    from sales_series s cross join retail_reports r
+    from sales_series s
+    left join retail_reports r on r.bucket is not distinct from s.bucket
     union all
     select
       'heatmap',
@@ -305,6 +305,50 @@ export async function getSalesReport(params: SalesReportParams) {
   const reconciliationComparable =
     loadedCheckCount > 0 && coveredDays > 0 && retailReportCoveragePct >= 80;
 
+  const DAY_MS = 86_400_000;
+  /**
+   * Справочник метрик 6.2: «Средний чек = Выручка ÷ Число чеков»,
+   * «Число чеков = Чеки продажи − Чеки возврата». Выручка — официальная
+   * выручка карточки 6.1 (отчёты розницы минус возвраты). Показ подавляется,
+   * если чеки или отчёты покрывают менее 90 % периода.
+   */
+  function averageCheck(row: SeriesRow): number | null {
+    const revenue = row.retail_report_revenue;
+    const netChecks = Number(row.order_count ?? 0) - Number(row.return_count ?? 0);
+    if (revenue === null || netChecks <= 0) {
+      return null;
+    }
+    let expected = expectedDays;
+    if (row.bucket !== null) {
+      const start = params.from && params.from > row.bucket ? params.from : row.bucket;
+      const end = new Date(row.bucket);
+      if (params.period === "month") {
+        end.setUTCMonth(end.getUTCMonth() + 1);
+      } else if (params.period === "week") {
+        end.setUTCDate(end.getUTCDate() + 7);
+      } else {
+        end.setUTCDate(end.getUTCDate() + 1);
+      }
+      const windowEnd = coverageEnd < end ? coverageEnd : end;
+      expected = Math.max(0, (windowEnd.getTime() - start.getTime()) / DAY_MS);
+    }
+    if (expected === null || expected <= 0) {
+      return null;
+    }
+    const checkCoverage = Math.min(
+      100,
+      (Number(row.covered_day_count ?? 0) / expected) * 100
+    );
+    const reportCoverage = Math.min(
+      100,
+      (Number(row.report_days ?? 0) / expected) * 100
+    );
+    if (checkCoverage < 90 || reportCoverage < 90) {
+      return null;
+    }
+    return revenue / netChecks;
+  }
+
   const maxHeatRevenue = Math.max(
     ...heatmapRows.map((row) => Number(row.revenue ?? 0)),
     0
@@ -345,7 +389,7 @@ export async function getSalesReport(params: SalesReportParams) {
       revenue: Number(summaryRow?.revenue ?? 0),
       orderCount: Number(summaryRow?.order_count ?? 0),
       returnCount: Number(summaryRow?.return_count ?? 0),
-      avgCheck: Number(summaryRow?.avg_check ?? 0),
+      avgCheck: summaryRow ? averageCheck(summaryRow) : null,
       avgItemsPerCheck: Number(summaryRow?.avg_items_per_check ?? 0),
       reportCount: Number(summaryRow?.report_count ?? 0),
       coveredDays,
@@ -364,7 +408,7 @@ export async function getSalesReport(params: SalesReportParams) {
       revenue: Number(row.revenue ?? 0),
       orderCount: Number(row.order_count ?? 0),
       returnCount: Number(row.return_count ?? 0),
-      avgCheck: Number(row.avg_check ?? 0),
+      avgCheck: averageCheck(row),
       avgItemsPerCheck: Number(row.avg_items_per_check ?? 0)
     })),
     composition: compositionRows.map((row) => {
@@ -462,6 +506,7 @@ export async function getIncomeReport(params: IncomeReportParams) {
   type SeriesRow = {
     result_type: "series";
     bucket: Date | null;
+    sold_qty: number | null;
     revenue: number | null;
     cost: number | null;
     gross_profit: number | null;
@@ -539,7 +584,7 @@ export async function getIncomeReport(params: IncomeReportParams) {
       (pp.revenue - pp.cost)::float8 as gross_profit,
       case when pp.revenue > 0
         then ((pp.revenue - pp.cost) / pp.revenue * 100)::float8
-        else 0
+        else null
       end as margin_pct,
       case when pp.absolute_revenue > 0
         then ((pp.absolute_revenue - pp.unvalued_revenue) / pp.absolute_revenue * 100)::float8
@@ -559,18 +604,89 @@ export async function getIncomeReport(params: IncomeReportParams) {
     order by pp.store_group desc, pp.bucket asc nulls last, pp.magazin_key, pp.revenue desc, pp.nomenklatura_key
   `;
 
+  // Losses (handbook §1, §6.5, §7 row 3) come from their own documents and are
+  // aggregated separately, so the item-level grouping sets stay untouched.
+  const lossRows = await prisma.$queryRaw<
+    Array<{
+      kind: "total" | "bucket" | "store";
+      bucket: Date | null;
+      store_key: string | null;
+      store_description: string | null;
+      losses: number | null;
+    }>
+  >`
+    with ${lossMovementsCtes({ from: params.from, to: params.to })},
+    by_bucket as (
+      select
+        date_trunc(${params.period}, movement_date) as bucket,
+        (coalesce(sum(writeoffs), 0) - coalesce(sum(surpluses), 0))::float8 as losses
+      from loss_movements
+      group by 1
+    ),
+    by_store as (
+      select
+        store_key,
+        (coalesce(sum(writeoffs), 0) - coalesce(sum(surpluses), 0))::float8 as losses
+      from loss_movements
+      group by 1
+    ),
+    store_names as (
+      select ref_key, max(description) as description
+      from ${magazinyTable}
+      group by ref_key
+    ),
+    total as (
+      select (coalesce(sum(writeoffs), 0) - coalesce(sum(surpluses), 0))::float8 as losses
+      from loss_movements
+    )
+    select 'total'::text as kind, null::timestamp as bucket, null::text as store_key,
+      losses, null::text as store_description from total
+    union all
+    select 'bucket'::text, bucket, null::text, losses, null::text from by_bucket
+    union all
+    select 'store'::text, null::timestamp, s.store_key, s.losses, n.description
+    from by_store s
+    left join store_names n on n.ref_key = s.store_key
+  `;
+
+  const totalLosses = Number(
+    lossRows.find((row) => row.kind === "total")?.losses ?? 0
+  );
+  const lossesByBucket: Record<string, number> = {};
+  const lossesByStore: Record<string, number> = {};
+
   const seriesRows = rows.filter((row): row is SeriesRow => row.result_type === "series");
   const storeItemRows = rows.filter((row): row is StoreItemRow => row.result_type === "store_item");
 
   const summaryRow = seriesRows.find((row) => row.bucket === null);
-  const periodRows = seriesRows.filter((row) => row.bucket !== null);
+  const periodRows = new Map<string, SeriesRow | null>();
+  for (const row of seriesRows) {
+    if (row.bucket) {
+      periodRows.set(row.bucket.toISOString(), row);
+    }
+  }
 
-  // Per-store totals are exact sums of that store's item rows, and overall item
-  // totals are exact sums of an item's rows across stores, so the previous
-  // separate store- and item-total scans add nothing. Catalog descriptions are
-  // taken as the maximum across rows, matching the earlier per-store and
-  // per-item aggregation.
+  // Sales totals still come exclusively from store-item rows. Loss-only stores
+  // are seeded with zero sales, without creating artificial product rows.
+  // Catalog descriptions use the maximum across rows, matching the SQL.
   const storeRows = new Map<string, { description: string | null; soldQty: number; revenue: number; cost: number }>();
+  for (const row of lossRows) {
+    if (row.kind === "bucket" && row.bucket) {
+      const bucket = row.bucket.toISOString();
+      lossesByBucket[bucket] = Number(row.losses ?? 0);
+      if (!periodRows.has(bucket)) {
+        periodRows.set(bucket, null);
+      }
+    } else if (row.kind === "store" && row.store_key) {
+      lossesByStore[row.store_key] = Number(row.losses ?? 0);
+      storeRows.set(row.store_key, {
+        description: row.store_description,
+        soldQty: 0,
+        revenue: 0,
+        cost: 0
+      });
+    }
+  }
   const itemRows = new Map<string, { description: string | null; soldQty: number; revenue: number; cost: number }>();
   for (const row of storeItemRows) {
     const store = storeRows.get(row.magazin_key) ?? {
@@ -605,21 +721,29 @@ export async function getIncomeReport(params: IncomeReportParams) {
   const stores = [...storeRows.entries()]
     .sort((a, b) => b[1].revenue - a[1].revenue || a[0].localeCompare(b[0]))
     .map(([key, store]) => {
-      const marginPct = store.revenue > 0 ? ((store.revenue - store.cost) / store.revenue) * 100 : 0;
+      const marginPct = store.revenue > 0 ? ((store.revenue - store.cost) / store.revenue) * 100 : null;
+      const grossProfit = store.revenue - store.cost;
+      const losses = lossesByStore[key] ?? 0;
+      const grossProfitAfterLoss = grossProfit - losses;
       return {
         key,
         name: displayStoreName(store.description === null ? key : store.description, key),
+        soldQty: store.soldQty,
         revenue: store.revenue,
         cost: store.cost,
-        grossProfit: store.revenue - store.cost,
-        marginPct
+        grossProfit,
+        marginPct,
+        losses,
+        grossProfitAfterLoss,
+        marginAfterLossPct:
+          store.revenue > 0 ? (grossProfitAfterLoss / store.revenue) * 100 : null
       };
     });
 
   const items = [...itemRows.entries()]
     .sort((a, b) => b[1].revenue - a[1].revenue || a[0].localeCompare(b[0]))
     .map(([key, item]) => {
-      const marginPct = item.revenue > 0 ? ((item.revenue - item.cost) / item.revenue) * 100 : 0;
+      const marginPct = item.revenue > 0 ? ((item.revenue - item.cost) / item.revenue) * 100 : null;
       return {
         key,
         name: item.description ?? key,
@@ -631,26 +755,50 @@ export async function getIncomeReport(params: IncomeReportParams) {
       };
     });
 
+  const summaryRevenue = Number(summaryRow?.revenue ?? 0);
+  const summaryCost = Number(summaryRow?.cost ?? 0);
+  const summaryGrossProfit = summaryRevenue - summaryCost;
+  const summaryGrossProfitAfterLoss = summaryGrossProfit - totalLosses;
+
   return {
     period: params.period,
     summary: {
       dateFrom: summaryRow?.date_from?.toISOString() ?? null,
       dateTo: summaryRow?.date_to?.toISOString() ?? null,
-      revenue: Number(summaryRow?.revenue ?? 0),
-      cost: Number(summaryRow?.cost ?? 0),
-      grossProfit: Number(summaryRow?.gross_profit ?? 0),
-      marginPct: Number(summaryRow?.margin_pct ?? 0),
+      soldQty: Number(summaryRow?.sold_qty ?? 0),
+      revenue: summaryRevenue,
+      cost: summaryCost,
+      grossProfit: summaryGrossProfit,
+      marginPct: summaryRow?.margin_pct ?? null,
+      losses: totalLosses,
+      grossProfitAfterLoss: summaryGrossProfitAfterLoss,
+      marginAfterLossPct:
+        summaryRevenue > 0
+          ? (summaryGrossProfitAfterLoss / summaryRevenue) * 100
+          : null,
       costCoveragePct: Number(summaryRow?.cost_coverage_pct ?? 100),
       unvaluedRevenue: Number(summaryRow?.unvalued_revenue ?? 0)
     },
-    incomeSeries: periodRows.map((row) => ({
-      bucket: row.bucket!.toISOString(),
-      revenue: Number(row.revenue ?? 0),
-      cost: Number(row.cost ?? 0),
-      grossProfit: Number(row.gross_profit ?? 0),
-      marginPct: Number(row.margin_pct ?? 0),
-      costCoveragePct: Number(row.cost_coverage_pct ?? 100)
-    })),
+    incomeSeries: [...periodRows.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([bucket, row]) => {
+      const revenue = Number(row?.revenue ?? 0);
+      const cost = Number(row?.cost ?? 0);
+      const grossProfit = revenue - cost;
+      const losses = lossesByBucket[bucket] ?? 0;
+      const grossProfitAfterLoss = grossProfit - losses;
+      return {
+        bucket,
+        soldQty: Number(row?.sold_qty ?? 0),
+        revenue,
+        cost,
+        grossProfit,
+        marginPct: row?.margin_pct ?? null,
+        losses,
+        grossProfitAfterLoss,
+        marginAfterLossPct:
+          revenue > 0 ? (grossProfitAfterLoss / revenue) * 100 : null,
+        costCoveragePct: Number(row?.cost_coverage_pct ?? 100)
+      };
+    }),
     stores,
     items,
     storeItems: storeItemRows.map((row) => {
@@ -668,7 +816,7 @@ export async function getIncomeReport(params: IncomeReportParams) {
         revenue,
         cost,
         grossProfit: revenue - cost,
-        marginPct: revenue > 0 ? ((revenue - cost) / revenue) * 100 : 0
+        marginPct: revenue > 0 ? ((revenue - cost) / revenue) * 100 : null
       };
     })
   };

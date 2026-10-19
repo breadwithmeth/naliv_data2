@@ -1,3 +1,11 @@
+import type { TurnoverOptions, TurnoverPreview, TurnoverRequest, TurnoverRowDetail } from "../../api/src/services/turnover-types";
+export type {
+  TurnoverChange, TurnoverDailyRow, TurnoverGroup, TurnoverMode, TurnoverNorms,
+  TurnoverOption, TurnoverOptions, TurnoverPolicy, TurnoverPreview, TurnoverPreviewRow,
+  TurnoverProfile, TurnoverRecommendation, TurnoverReport, TurnoverRequest, TurnoverRisk,
+  TurnoverRow, TurnoverRowDetail, TurnoverSales, TurnoverSort, TurnoverTransfer, TurnoverWindow
+} from "../../api/src/services/turnover-types";
+
 export type User = {
   email: string;
   role: "admin" | "marketing";
@@ -236,7 +244,7 @@ export type SalesReport = {
     revenue: number;
     orderCount: number;
     returnCount: number;
-    avgCheck: number;
+    avgCheck: number | null;
     avgItemsPerCheck: number;
     reportCount: number;
     coveredDays: number;
@@ -251,7 +259,7 @@ export type SalesReport = {
     revenue: number;
     orderCount: number;
     returnCount: number;
-    avgCheck: number;
+    avgCheck: number | null;
     avgItemsPerCheck: number;
   }>;
   composition: Array<{
@@ -299,28 +307,40 @@ export type IncomeReport = {
   summary: {
     dateFrom: string | null;
     dateTo: string | null;
+    soldQty: number;
     revenue: number;
     cost: number;
     grossProfit: number;
-    marginPct: number;
+    marginPct: number | null;
+    losses: number;
+    grossProfitAfterLoss: number;
+    marginAfterLossPct: number | null;
     costCoveragePct: number;
     unvaluedRevenue: number;
   };
   incomeSeries: Array<{
     bucket: string;
+    soldQty: number;
     revenue: number;
     cost: number;
     grossProfit: number;
-    marginPct: number;
+    marginPct: number | null;
+    losses: number;
+    grossProfitAfterLoss: number;
+    marginAfterLossPct: number | null;
     costCoveragePct: number;
   }>;
   stores: Array<{
     key: string;
     name: string;
+    soldQty: number;
     revenue: number;
     cost: number;
     grossProfit: number;
-    marginPct: number;
+    marginPct: number | null;
+    losses: number;
+    grossProfitAfterLoss: number;
+    marginAfterLossPct: number | null;
   }>;
   items: Array<{
     key: string;
@@ -329,7 +349,7 @@ export type IncomeReport = {
     revenue: number;
     cost: number;
     grossProfit: number;
-    marginPct: number;
+    marginPct: number | null;
   }>;
   storeItems: Array<{
     storeKey: string;
@@ -340,7 +360,7 @@ export type IncomeReport = {
     revenue: number;
     cost: number;
     grossProfit: number;
-    marginPct: number;
+    marginPct: number | null;
   }>;
 };
 
@@ -663,7 +683,11 @@ export type SupplierTermsMetrics = {
     orderCount: number;
     stagedOrderCount: number;
     stageCoveragePct: number;
+    receiptCount: number;
+    stagedReceiptCount: number;
+    receiptStageCoveragePct: number;
     weightedDeferralDays: number | null;
+    deferralStatus: "ready" | "experimental" | "unavailable";
     status: "ready" | "experimental" | "unavailable";
     orderedAmount: number;
     stagedAmount: number;
@@ -1127,6 +1151,28 @@ function yearComparisonParams(filters: YearComparisonRequest): URLSearchParams {
   return params;
 }
 
+function turnoverParams(filters: TurnoverRequest): URLSearchParams {
+  const params = new URLSearchParams();
+  const fields = [
+    "from", "to", "comparisonFrom", "comparisonTo", "storeScope", "excludeZero", "warehouse",
+    "brand", "sku", "search", "mode", "groupBy", "horizon", "risk", "sort", "profile", "auditGroup"
+  ] as const;
+  for (const field of fields) {
+    const value = filters[field];
+    if (value !== undefined && String(value).trim() !== "") {
+      params.set(field, field === "auditGroup" ? String(value) : String(value).trim());
+    }
+  }
+  for (const store of filters.store ?? []) {
+    if (store.trim()) params.append("store", store.trim());
+  }
+  for (const category of filters.category ?? []) {
+    if (category.trim()) params.append("category", category.trim());
+  }
+  if (filters.norms) params.set("norms", JSON.stringify(filters.norms));
+  return params;
+}
+
 function downloadFilename(disposition: string | null): string {
   const extended = disposition?.match(/filename\*\s*=\s*(?:"([^"]+)"|([^;]+))/i);
   const encoded = (extended?.[1] ?? extended?.[2])?.trim().match(/^UTF-8'[^']*'(.*)$/i);
@@ -1156,8 +1202,14 @@ async function downloadWorkbook(url: string, signal?: AbortSignal) {
   });
   if (!response.ok) throw await responseError(response);
   const filename = downloadFilename(response.headers.get("Content-Disposition"));
+  const rowsHeader = Number(response.headers.get("X-Report-Rows"));
   const blob = await response.blob();
-  return { blob, filename };
+  return {
+    blob, filename,
+    rows: Number.isFinite(rowsHeader) ? rowsHeader : null,
+    cache: response.headers.get("X-Report-Cache"),
+    serverTiming: response.headers.get("Server-Timing")
+  };
 }
 
 function managementRequest<T>(
@@ -1185,6 +1237,25 @@ export const api = {
   },
   overview(signal?: AbortSignal) {
     return request<Overview>("/api/analytics/overview", { signal });
+  },
+  turnoverOptions(signal?: AbortSignal): Promise<TurnoverOptions> {
+    return request<TurnoverOptions>("/api/reports/turnover/options", { signal, cache: "no-store" });
+  },
+  turnoverReport(filters: TurnoverRequest, signal?: AbortSignal): Promise<TurnoverPreview> {
+    return request<TurnoverPreview>(`/api/reports/turnover?${turnoverParams(filters)}`, {
+      signal,
+      cache: "no-store"
+    });
+  },
+  async turnoverRow(filters: TurnoverRequest, signal?: AbortSignal): Promise<TurnoverRowDetail> {
+    if (!filters.auditGroup?.trim()) throw new Error("Для подробностей строки нужен её точный ключ.");
+    return request<TurnoverRowDetail>(`/api/reports/turnover/row?${turnoverParams(filters)}`, {
+      signal,
+      cache: "no-store"
+    });
+  },
+  turnoverWorkbook(filters: TurnoverRequest, signal?: AbortSignal) {
+    return downloadWorkbook(`/api/reports/turnover.xlsx?${turnoverParams(filters)}`, signal);
   },
   yearComparison(filters: YearComparisonRequest, signal?: AbortSignal) {
     const params = yearComparisonParams(filters);

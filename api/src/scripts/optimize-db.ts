@@ -47,6 +47,35 @@ const indexes: Array<[name: string, table: string, columns: string, predicate?: 
   ["analytics_supplier_stage_due_idx", "document_zakaz_postavschiku_etapy_oplat", "data_platezha"],
   ["analytics_purchase_order_date_idx", "document_postuplenie_tovarov", "zakaz_postavschiku_key, date",
     "deletion_mark IS NOT TRUE AND posted = TRUE", "summa_dokumenta"],
+  // Turnover keeps warehouse/characteristic dimensions and reads all historical
+  // observations. Item-first covering indexes also avoid wide source heaps.
+  ["turnover_retail_item_parent_idx", "document_otchet_o_roznichnyh_prodazhah_tovary",
+    'nomenklatura_key, "_parent_ref_key"', undefined, "sklad_key, harakteristika_key, kolichestvo, summa"],
+  ["turnover_return_item_parent_idx", "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary",
+    'nomenklatura_key, "_parent_ref_key"', undefined, "sklad_key, harakteristika_key, kolichestvo, summa"],
+  ["turnover_retail_header_date_idx", "document_otchet_o_roznichnyh_prodazhah", "date",
+    "posted = TRUE AND deletion_mark IS NOT TRUE", "ref_key, magazin_key"],
+  ["turnover_stock_item_period_idx", "accumulation_register_tovary_na_skladah_balance",
+    "nomenklatura_key, balance_period, sklad_key", undefined, "harakteristika_key, kolichestvo_balance"],
+  // A report probes ~N daily snapshots and the first positive availability.
+  ["turnover_stock_period_idx", "accumulation_register_tovary_na_skladah_balance", "balance_period"],
+  ["turnover_stock_positive_idx", "accumulation_register_tovary_na_skladah_balance",
+    "nomenklatura_key, balance_period", "kolichestvo_balance > 0", "sklad_key, harakteristika_key"],
+  // Zero/null prices are invalidation events, not absent cost history.
+  ["turnover_cost_item_store_period_idx", "information_register_sebestoimost_nomenklatury_record_type",
+    "nomenklatura_key, magazin_key, period DESC, line_number DESC",
+    "active IS NOT FALSE", "harakteristika_key, tsena"],
+  ["turnover_cost_item_parent_idx", "document_ustanovka_sebestoimosti_tovary",
+    'nomenklatura_key, "_parent_ref_key"', undefined, "harakteristika_key, tsena, _parent_line_index"],
+  ["turnover_barcode_item_parent_idx", "document_chek_kkm_tovary",
+    'nomenklatura_key, "_parent_ref_key"', "nullif(trim(shtrihkod), '') IS NOT NULL", "shtrihkod"],
+  ["turnover_check_header_ref_idx", "document_chek_kkm", "ref_key",
+    "posted = TRUE AND deletion_mark IS NOT TRUE", "date"],
+  ["turnover_order_item_parent_idx", "document_zakaz_postavschiku_tovary",
+    'nomenklatura_key, "_parent_ref_key"', undefined, "kolichestvo"],
+  ["turnover_open_order_ref_idx", "document_zakaz_postavschiku", "ref_key",
+    "posted = TRUE AND deletion_mark IS NOT TRUE AND zakryt IS NOT TRUE",
+    "date, magazin_key, sklad_key, data_postupleniya"],
   // Loss reports select headers by date before joining their imported lines.
   ["analytics_writeoff_date_idx", "document_spisanie_tovarov", "date"],
   ["analytics_writeoff_parent_idx", "document_spisanie_tovarov_tovary", '"_parent_ref_key"'],
@@ -66,6 +95,7 @@ const optionalTables: Partial<Record<string, true>> = {
 };
 
 const apply = process.argv.includes("--apply");
+const turnoverOnly = process.argv.includes("--turnover-only");
 const url = new URL(config.DATABASE_URL);
 url.searchParams.set("connection_limit", "1");
 const db = new PrismaClient({ datasources: { db: { url: url.toString() } } });
@@ -83,6 +113,7 @@ try {
     : null;
   const analyzedTables = new Set<string>();
   for (const [name, table, columns, predicate, include] of indexes) {
+    if (turnoverOnly && !name.startsWith("turnover_")) continue;
     if (availableTables && !availableTables.has(table) && optionalTables[table] === true) {
       console.log(`Skipping ${name}: optional source ${config.PGSCHEMA}.${table} is absent.`);
       continue;

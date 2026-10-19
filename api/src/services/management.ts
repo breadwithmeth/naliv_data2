@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { config } from "../config.js";
 import { canonicalItemCostsCtes } from "../lib/cost-sql.js";
+import { lossMovementsCtes } from "../lib/losses-sql.js";
 import { prisma } from "../prisma.js";
 import { applicationTable, ensureManagementSettingsTables } from "./management-settings.js";
 
@@ -42,12 +43,6 @@ function storeName(description: string | null, key: string) {
 }
 
 export async function getLossMetrics(params: ManagementMetricParams) {
-  const writeoffDocuments = qualifiedTable("document_spisanie_tovarov");
-  const writeoffLines = qualifiedTable("document_spisanie_tovarov_tovary");
-  const surplusDocuments = qualifiedTable("document_oprihodovanie_tovarov");
-  const surplusLines = qualifiedTable("document_oprihodovanie_tovarov_tovary");
-  const revisionDocuments = qualifiedTable("document_pereschet_tovarov");
-  const revisionLines = qualifiedTable("document_pereschet_tovarov_tovary");
   const salesDocuments = qualifiedTable("document_otchet_o_roznichnyh_prodazhah");
   const stores = qualifiedTable("catalog_magaziny");
 
@@ -62,46 +57,16 @@ export async function getLossMetrics(params: ManagementMetricParams) {
       loss_pct: number | null;
     }>
   >`
-    with writeoffs as (
-      select
-        coalesce(nullif(d.magazin_key, ''), 'Без магазина') as store_key,
-        sum(coalesce(l.summa, 0))::float8 as amount
-      from ${writeoffDocuments} d
-      join ${writeoffLines} l on l."_parent_ref_key" = d.ref_key
-      where ${dateFilters("d", params)}
+    with ${lossMovementsCtes({ from: params.from, to: params.to })},
+    writeoffs as (
+      select store_key, sum(writeoffs)::float8 as amount
+      from loss_movements
       group by 1
     ),
     surpluses as (
-      select
-        coalesce(nullif(d.magazin_key, ''), 'Без магазина') as store_key,
-        sum(coalesce(l.summa, 0))::float8 as amount
-      from ${surplusDocuments} d
-      join ${surplusLines} l on l."_parent_ref_key" = d.ref_key
-      where ${dateFilters("d", params)}
+      select store_key, sum(surpluses)::float8 as amount
+      from loss_movements
       group by 1
-    ),
-    latest_revision_lines as (
-      select distinct on (d.ref_key, l.nomenklatura_key)
-        coalesce(nullif(d.magazin_key, ''), 'Без магазина') as store_key,
-        d.ref_key,
-        l.nomenklatura_key,
-        (l.summa_fakt - coalesce(l.summa, 0))::float8 as difference
-      from ${revisionDocuments} d
-      join ${revisionLines} l on l."_parent_ref_key" = d.ref_key
-      where ${dateFilters("d", params)}
-        and d.uchetnye_dannye_zapolneny is true
-        and l.summa_fakt is not null
-      order by d.ref_key, l.nomenklatura_key, l.line_number desc
-    ),
-    revision_movements as (
-      select
-        store_key,
-        coalesce(sum(-difference) filter (where difference < 0), 0)::float8
-          as writeoffs,
-        coalesce(sum(difference) filter (where difference > 0), 0)::float8
-          as surpluses
-      from latest_revision_lines
-      group by store_key
     ),
     revenue as (
       select
@@ -115,7 +80,6 @@ export async function getLossMetrics(params: ManagementMetricParams) {
       select store_key from writeoffs
       union select store_key from surpluses
       union select store_key from revenue
-      union select store_key from revision_movements
     ),
     store_names as (
       select ref_key, max(description) as description
@@ -125,30 +89,26 @@ export async function getLossMetrics(params: ManagementMetricParams) {
     select
       k.store_key,
       n.description as store_name,
-      (coalesce(w.amount, 0) + coalesce(rv.writeoffs, 0))::float8 as writeoffs,
-      (coalesce(s.amount, 0) + coalesce(rv.surpluses, 0))::float8 as surpluses,
+      coalesce(w.amount, 0)::float8 as writeoffs,
+      coalesce(s.amount, 0)::float8 as surpluses,
       (
-        coalesce(w.amount, 0) + coalesce(rv.writeoffs, 0)
-        - coalesce(s.amount, 0) - coalesce(rv.surpluses, 0)
+        coalesce(w.amount, 0) - coalesce(s.amount, 0)
       )::float8 as net_losses,
       coalesce(r.amount, 0)::float8 as net_revenue,
       case when r.amount <> 0 then
         (
           (
-            coalesce(w.amount, 0) + coalesce(rv.writeoffs, 0)
-            - coalesce(s.amount, 0) - coalesce(rv.surpluses, 0)
+            coalesce(w.amount, 0) - coalesce(s.amount, 0)
           ) / r.amount * 100
         )::float8
       else null end as loss_pct
     from store_keys k
     left join writeoffs w using (store_key)
     left join surpluses s using (store_key)
-    left join revision_movements rv using (store_key)
     left join revenue r using (store_key)
     left join store_names n on n.ref_key = k.store_key
     order by abs(
-      coalesce(w.amount, 0) + coalesce(rv.writeoffs, 0)
-      - coalesce(s.amount, 0) - coalesce(rv.surpluses, 0)
+      coalesce(w.amount, 0) - coalesce(s.amount, 0)
     ) desc
   `;
 
@@ -641,6 +601,7 @@ export async function getSupplierTermsMetrics(params: ManagementMetricParams) {
   const orders = qualifiedTable("document_zakaz_postavschiku");
   const paymentStages = qualifiedTable("document_zakaz_postavschiku_etapy_oplat");
   const receipts = qualifiedTable("document_postuplenie_tovarov");
+  const receiptStages = qualifiedTable("document_postuplenie_tovarov_etapy_oplat");
   const counterparties = qualifiedTable("catalog_kontragenty");
   const requestedScheduleFrom = params.to ?? new Date();
   const scheduleFrom = new Date(
@@ -656,6 +617,8 @@ export async function getSupplierTermsMetrics(params: ManagementMetricParams) {
         order_count: bigint | number;
         staged_order_count: bigint | number;
         weighted_deferral_days: number | null;
+        receipt_count: bigint | number;
+        staged_receipt_count: bigint | number;
         ordered_amount: number | null;
         staged_amount: number | null;
         received_amount: number | null;
@@ -675,18 +638,26 @@ export async function getSupplierTermsMetrics(params: ManagementMetricParams) {
       stage_totals as (
         select
           s."_parent_ref_key" as parent_ref_key,
-          sum(coalesce(s.summa, 0))::float8 as amount,
-          sum(
-            coalesce(s.summa, 0)
-            * greatest(
-                extract(epoch from (s.data_platezha - d.date)) / 86400.0,
-                0
-              )
-          )::float8 as weighted_days
+          sum(coalesce(s.summa, 0))::float8 as amount
         from ${paymentStages} s
         join selected_orders d on d.ref_key = s."_parent_ref_key"
         where s.data_platezha is not null
         group by 1
+      ),
+      receipts_window as (
+        select d.ref_key
+        from ${receipts} d
+        where ${dateFilters("d", params)}
+      ),
+      receipt_stages as (
+        select
+          s."_parent_ref_key" as receipt_key,
+          coalesce(s.summa, 0)::float8 as amount,
+          coalesce(s.otsrochka_platezha, 0)::float8 as deferral_days
+        from ${receiptStages} s
+        join receipts_window w on w.ref_key = s."_parent_ref_key"
+        where s.data_platezha is not null
+          and s.otsrochka_platezha is not null
       ),
       receipt_totals as (
         select
@@ -704,10 +675,13 @@ export async function getSupplierTermsMetrics(params: ManagementMetricParams) {
         count(*) as order_count,
         count(st.parent_ref_key) as staged_order_count,
         case
-          when sum(st.amount) > 0
-          then sum(st.weighted_days) / sum(st.amount)
+          when (select sum(amount) from receipt_stages) > 0
+          then (select sum(amount * deferral_days) from receipt_stages)
+            / (select sum(amount) from receipt_stages)
           else null
         end::float8 as weighted_deferral_days,
+        (select count(*) from receipts_window) as receipt_count,
+        (select count(distinct receipt_key) from receipt_stages) as staged_receipt_count,
         coalesce(sum(d.ordered_amount), 0)::float8 as ordered_amount,
         coalesce(sum(st.amount), 0)::float8 as staged_amount,
         coalesce(sum(rt.amount), 0)::float8 as received_amount,
@@ -800,15 +774,33 @@ export async function getSupplierTermsMetrics(params: ManagementMetricParams) {
     0
   );
 
+  // Справочник метрик 5.5: средняя отсрочка считается по поставкам
+  // (Σ «сумма поставки × дни отсрочки» ÷ Σ сумм поставок), а не по заказам.
+  const receiptCount = Number(summaryRow?.receipt_count ?? 0);
+  const stagedReceiptCount = Number(summaryRow?.staged_receipt_count ?? 0);
+  const receiptStageCoveragePct =
+    receiptCount > 0 ? (stagedReceiptCount / receiptCount) * 100 : 0;
+  const weightedDeferralDays = summaryRow?.weighted_deferral_days ?? null;
+  const deferralStatus =
+    stagedReceiptCount === 0 || weightedDeferralDays === null
+      ? ("unavailable" as const)
+      : receiptStageCoveragePct >= 80
+        ? ("ready" as const)
+        : ("experimental" as const);
+
   return {
     summary: {
       orderCount,
       stagedOrderCount,
       stageCoveragePct,
+      receiptCount,
+      stagedReceiptCount,
+      receiptStageCoveragePct,
       weightedDeferralDays:
-        summaryRow?.weighted_deferral_days === null
-          ? null
-          : Number(summaryRow?.weighted_deferral_days ?? 0),
+        deferralStatus === "ready"
+          ? weightedDeferralDays
+          : null,
+      deferralStatus,
       status,
       orderedAmount,
       stagedAmount: Number(summaryRow?.staged_amount ?? 0),
@@ -836,9 +828,11 @@ export async function getSupplierTermsMetrics(params: ManagementMetricParams) {
       documentCount: Number(row.document_count ?? 0)
     })),
     limitation:
-      status === "ready"
-        ? "Плановые даты и суммы взяты из этапов оплаты заказов. Календарь на 8 недель включает только открытые заказы и не подтверждает факт оплаты банком."
-        : "Часть заказов не имеет этапов оплаты. Календарь на 8 недель отражает только заполненные этапы открытых заказов, не всю кредиторскую задолженность."
+      deferralStatus === "ready"
+        ? "Средняя отсрочка рассчитана по этапам оплаты поступлений товаров. Календарь на 8 недель строится по этапам открытых заказов и не подтверждает факт оплаты банком."
+        : weightedDeferralDays === null
+          ? "Средняя отсрочка недоступна: нет этапов поступлений с датой оплаты и указанной отсрочкой либо сумма этих этапов не положительна. Нулевая средняя не подставляется вместо отсутствующего расчёта. Календарь на 8 недель строится по этапам открытых заказов."
+          : "Этапы оплаты заполнены не у всех поступлений товаров: средняя отсрочка публикуется только при покрытии не ниже 80 %. Календарь на 8 недель строится по этапам открытых заказов."
   };
 }
 
@@ -1191,11 +1185,11 @@ export async function getSourceHealth(params: ManagementMetricParams) {
       {
         key: "vat",
         severity: vatStatus,
-        title: "НДС в продажах",
+        title: "Выделение НДС из записанной цены",
         detail:
           vatStatus === "ready"
-            ? `Сумма НДС заполнена в ${data.vat.populatedLineCount} из ${data.vat.salesLineCount} строк продаж (${data.vat.lineCoveragePct.toFixed(1)}%).`
-            : `Сумма НДС заполнена только в ${data.vat.populatedLineCount} из ${data.vat.salesLineCount} строк продаж (${data.vat.lineCoveragePct.toFixed(1)}%); P&L после НДС недоступен.`
+            ? `Ненулевая сумма НДС записана в ${data.vat.populatedLineCount} из ${data.vat.salesLineCount} строк (${data.vat.lineCoveragePct.toFixed(1)}%). Это покрытие отдельного поля, не проверка налоговой ставки. Записанные цены сохраняются; вычет НДС в текущем P&L не выполняется.`
+            : `Ненулевая сумма НДС записана в ${data.vat.populatedLineCount} из ${data.vat.salesLineCount} строк (${data.vat.lineCoveragePct.toFixed(1)}%). Нулевое поле не доказывает отсутствие НДС в цене: записанные цены сохраняются, а сумма для вычета в P&L из этих полей надёжно не определена.`
       }
     ]
   };

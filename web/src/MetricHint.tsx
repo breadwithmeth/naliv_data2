@@ -128,6 +128,7 @@ export function MetricHint({
           {status ? <span className={`metric-status ${status}`}>{statusLabels[status]}</span> : null}
           {coveragePct !== undefined ? <p>Покрытие данными: {coveragePct.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%</p> : null}
           {asOf ? <p>Данные на {new Date(asOf).toLocaleDateString("ru-RU")}</p> : null}
+          <p><b>Единица:</b> {definition.unit}</p>
           <div className="metric-help-section">
             <b>Расчёт</b>
             <p className="metric-formula">{definition.formula}</p>
@@ -135,6 +136,16 @@ export function MetricHint({
               <ul>{definition.howCalculated.map((step) => <li key={step}>{step}</li>)}</ul>
             ) : null}
           </div>
+          <div className="metric-help-section">
+            <b>Ноль, пропуск и недостаток данных</b>
+            <p>{definition.valueRule}</p>
+          </div>
+          {definition.differences.length > 0 ? (
+            <div className="metric-help-section">
+              <b>Отличия от справочника Naliv</b>
+              <ul>{definition.differences.map((item) => <li key={item}>{item}</li>)}</ul>
+            </div>
+          ) : null}
           {reason || definition.limitations.length > 0 || definition.exclusions.length > 0 ? (
             <div className="metric-help-section">
               <b>Важно учитывать</b>
@@ -164,12 +175,16 @@ export function MetricHint({
             <b>Основа расчёта</b>
             {definition.sources.length > 0 ? (
               <ul>{definition.sources.map((source) => (
-                <li key={`${source.system}:${source.entity}`}>{sourceLabels[source.system]}: {source.entity}</li>
+                <li key={`${source.system}:${source.entity}`}>
+                  {sourceLabels[source.system]}: {source.entity}
+                  {source.fields?.length ? <p className="metric-source-fields">Поля: {source.fields.join(", ")}</p> : null}
+                </li>
               ))}</ul>
             ) : <p>Расчётный показатель.</p>}
             <dl>
               <div><dt>Что сравниваем</dt><dd>{definition.grain}</dd></div>
               <div><dt>Период</dt><dd>{definition.periodRule}</dd></div>
+              {definition.handbook ? <div><dt>Справочник</dt><dd>{definition.handbook}</dd></div> : null}
               {definition.owner ? <div><dt>Ответственный</dt><dd>{definition.owner}</dd></div> : null}
             </dl>
           </div>

@@ -663,6 +663,16 @@ select:focus {
   margin-bottom: 16px;
 }
 
+.handbook-differences {
+  margin-bottom: 24px;
+}
+
+.metric-source-fields {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #667085;
+}
+
 .availability-summary {
   min-width: 0;
   display: grid;
@@ -1820,9 +1830,9 @@ select:focus {
 .metric-help-popover {
   position: fixed;
   z-index: 100;
-  width: min(390px, calc(100vw - 32px));
-  max-height: min(72vh, 620px);
-  max-height: min(72dvh, 620px);
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(82vh, 760px);
+  max-height: min(82dvh, 760px);
   overflow: auto;
   overscroll-behavior: contain;
   padding: 20px;
@@ -1831,7 +1841,7 @@ select:focus {
   background: #ffffff;
   box-shadow: 0 12px 32px rgb(16 24 40 / 16%);
   color: #344054;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.6;
   text-align: left;
   white-space: normal;
@@ -2482,5 +2492,684 @@ select:focus {
 
   .page-nav {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.turnover-workspace {
+  --turnover-paper: #ffffff;
+  --turnover-background: #f5f7fa;
+  --turnover-ink: #172033;
+  --turnover-muted: #667085;
+  --turnover-action: #2864d8;
+  --turnover-excel: #21815f;
+  color: var(--turnover-ink);
+  font-size: 14px;
+}
+
+.turnover-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  min-width: 0;
+}
+
+.turnover-heading > div {
+  min-width: 0;
+}
+
+.turnover-heading h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.turnover-intro {
+  max-width: 75ch;
+  margin: 8px 0 0;
+  color: var(--turnover-muted);
+  line-height: 1.6;
+}
+
+.turnover-excel-label {
+  flex: none;
+  padding-top: 4px;
+  color: var(--turnover-excel);
+  font-weight: 600;
+}
+
+.turnover-form {
+  min-width: 0;
+  border: 1px solid #dce4ef;
+  border-radius: 8px;
+  background: var(--turnover-paper);
+}
+
+.turnover-fieldset,
+.turnover-checkbox-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.turnover-fieldset > legend {
+  max-width: 100%;
+  margin-bottom: 12px;
+  padding: 0;
+  color: var(--turnover-ink);
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.turnover-report-types {
+  margin: 24px;
+}
+
+.turnover-format-types {
+  margin: 0 24px 24px;
+}
+
+.turnover-format-types .turnover-report-choice {
+  padding: 14px 16px;
+}
+
+.turnover-report-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.turnover-report-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.turnover-report-choice:has(input:checked) {
+  border-color: var(--turnover-action);
+  background: #f3f7ff;
+  box-shadow: inset 0 0 0 1px var(--turnover-action);
+}
+
+.turnover-report-choice input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 3px 0 0;
+  accent-color: var(--turnover-action);
+}
+
+.turnover-report-choice > span {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.turnover-report-choice strong {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.turnover-report-choice > span > span {
+  color: var(--turnover-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.turnover-builder-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  min-width: 0;
+  border-top: 1px solid #dce4ef;
+}
+
+.turnover-configuration {
+  display: grid;
+  align-content: start;
+  gap: 28px;
+  min-width: 0;
+  margin: 0;
+  padding: 24px;
+  border: 0;
+}
+
+.turnover-configuration > .turnover-fieldset + .turnover-fieldset {
+  padding-top: 24px;
+  border-top: 1px solid #e4e9f0;
+}
+
+.turnover-period-inputs,
+.turnover-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+  min-width: 0;
+}
+
+.turnover-period-inputs {
+  max-width: 520px;
+}
+
+.turnover-field {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.turnover-field > span {
+  overflow-wrap: anywhere;
+}
+
+.turnover-field input,
+.turnover-field select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 42px;
+  padding: 9px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: var(--turnover-ink);
+  background: var(--turnover-paper);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.turnover-field input[type="date"] {
+  font-variant-numeric: tabular-nums;
+}
+
+.turnover-field input::placeholder {
+  color: var(--turnover-muted);
+  opacity: 1;
+}
+
+.turnover-field input:disabled,
+.turnover-field select:disabled {
+  color: var(--turnover-muted);
+  background: var(--turnover-background);
+  cursor: not-allowed;
+}
+
+.turnover-report-choice:has(input:disabled),
+.turnover-checkbox-list > label:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+.turnover-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.turnover-button {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 42px;
+  max-width: 100%;
+  padding: 9px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #344054;
+  background: var(--turnover-paper);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.turnover-button svg {
+  flex: none;
+}
+
+.turnover-button:not(:disabled):hover {
+  color: #194185;
+  border-color: #9cb8e7;
+  background: #f3f7ff;
+}
+
+.turnover-preset {
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.turnover-preset[aria-pressed="true"] {
+  color: #194185;
+  border-color: var(--turnover-action);
+  background: #edf3ff;
+}
+
+.turnover-primary {
+  border-color: var(--turnover-action);
+  color: var(--turnover-paper);
+  background: var(--turnover-action);
+}
+
+.turnover-primary:not(:disabled):hover {
+  border-color: #2057c1;
+  color: var(--turnover-paper);
+  background: #2057c1;
+}
+
+.turnover-subtle {
+  border-color: transparent;
+  color: var(--turnover-action);
+  background: transparent;
+}
+
+.turnover-button:disabled {
+  border-color: #dce4ef;
+  color: var(--turnover-muted);
+  background: var(--turnover-background);
+}
+
+.turnover-period-caption {
+  margin: 16px 0 6px;
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.turnover-note {
+  max-width: 78ch;
+  margin: 0;
+  color: var(--turnover-muted);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.turnover-validation {
+  margin: 10px 0 0;
+  color: #b42318;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.turnover-multiselect,
+.turnover-selector {
+  min-width: 0;
+}
+
+.turnover-selector {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: var(--turnover-paper);
+}
+
+.turnover-selector > summary {
+  min-height: 62px;
+  padding: 10px 12px;
+  font-weight: 500;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.turnover-selector > summary::marker {
+  color: var(--turnover-action);
+}
+
+.turnover-selection-count {
+  display: block;
+  margin-top: 2px;
+  color: var(--turnover-muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.turnover-selector[open] > summary {
+  border-bottom: 1px solid #e4e9f0;
+}
+
+.turnover-selector-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.turnover-selector-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.turnover-selector-tools > .turnover-field {
+  flex: 1 1 200px;
+}
+
+.turnover-checkbox-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+  max-height: 260px;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.turnover-checkbox-list > label {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 9px 6px;
+  border-radius: 4px;
+  color: #344054;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.turnover-checkbox-list > label:has(input:checked) {
+  background: #eef4ff;
+}
+
+.turnover-checkbox-list > label > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.turnover-checkbox-list input {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: var(--turnover-action);
+}
+
+.turnover-selected {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.turnover-selected > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding-left: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: var(--turnover-background);
+  font-size: 13px;
+}
+
+.turnover-selected > li > span {
+  min-width: 0;
+  padding: 5px 0;
+  overflow-wrap: anywhere;
+}
+
+.turnover-selected button {
+  flex: none;
+  align-self: stretch;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 3px;
+  color: #344054;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.turnover-selected button:not(:disabled):hover {
+  color: #194185;
+  background: #e8effc;
+}
+
+.turnover-selected button:disabled {
+  color: var(--turnover-muted);
+}
+
+.turnover-field-hint {
+  margin-top: 10px;
+}
+
+.turnover-store-filter,
+.turnover-product-search {
+  grid-column: 1 / -1;
+}
+
+.turnover-file-summary {
+  display: grid;
+  align-content: start;
+  gap: 20px;
+  min-width: 0;
+  padding: 24px;
+  border-left: 1px solid #dce4ef;
+  border-radius: 0 0 7px;
+  background: var(--turnover-background);
+}
+
+.turnover-file-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: var(--turnover-excel);
+}
+
+.turnover-file-heading svg {
+  flex: none;
+}
+
+.turnover-file-heading h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.turnover-file-parameters {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+}
+
+.turnover-file-parameters > div {
+  min-width: 0;
+}
+
+.turnover-file-parameters dt {
+  margin-bottom: 4px;
+  color: var(--turnover-muted);
+  font-size: 12px;
+}
+
+.turnover-file-parameters dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.turnover-file-parameters .turnover-summary-report {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.turnover-summary-period {
+  font-variant-numeric: tabular-nums;
+}
+
+.turnover-summary-period > span {
+  display: block;
+  margin-top: 4px;
+  color: var(--turnover-muted);
+  font-size: 12px;
+}
+
+.turnover-file-description {
+  padding-top: 20px;
+  border-top: 1px solid #dce4ef;
+  font-size: 13px;
+}
+
+.turnover-file-description > strong {
+  color: var(--turnover-excel);
+  font-weight: 600;
+}
+
+.turnover-file-description p {
+  max-width: 75ch;
+  margin: 8px 0 0;
+  color: var(--turnover-muted);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.turnover-download-actions {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.turnover-download-actions > .turnover-button {
+  width: 100%;
+}
+
+.turnover-message {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #cfdcf1;
+  border-left: 3px solid var(--turnover-action);
+  border-radius: 6px;
+  color: #344054;
+  background: #f5f8ff;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.turnover-message p {
+  max-width: 78ch;
+  margin: 5px 0 0;
+}
+
+.turnover-message > .turnover-button {
+  margin-top: 12px;
+}
+
+.turnover-success {
+  border-color: #b7e4c7;
+  border-left-color: var(--turnover-excel);
+  color: #17623a;
+  background: #f4fbf6;
+}
+
+.turnover-error {
+  border-color: #f0cdca;
+  border-left-color: #b42318;
+  color: #912018;
+  background: #fff6f5;
+}
+
+.turnover-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 1100px) {
+  .turnover-builder-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .turnover-file-summary {
+    border-top: 1px solid #dce4ef;
+    border-left: 0;
+    border-radius: 0 0 7px 7px;
+  }
+
+  .turnover-file-parameters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .turnover-report-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .turnover-report-types {
+    margin: 16px;
+  }
+
+  .turnover-format-types {
+    margin: 0 16px 16px;
+  }
+
+  .turnover-report-choice {
+    padding: 14px;
+  }
+
+  .turnover-configuration,
+  .turnover-file-summary {
+    padding: 16px;
+  }
+
+  .turnover-period-inputs,
+  .turnover-filter-grid,
+  .turnover-checkbox-list,
+  .turnover-file-parameters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .turnover-store-filter,
+  .turnover-product-search {
+    grid-column: auto;
+  }
+
+  .turnover-selector-tools {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .turnover-selector-tools > .turnover-field {
+    flex-basis: auto;
   }
 }

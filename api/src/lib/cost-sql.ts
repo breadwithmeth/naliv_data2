@@ -14,7 +14,7 @@ function qualifiedTable(tableName: string) {
  * 1. latest live store/item record from ``СебестоимостьНоменклатуры``;
  * 2. latest store-specific ``Установка себестоимости`` line;
  * 3. latest network-level cost-setting line;
- * 4. weighted external purchase cost over the preceding 90 days.
+ * 4. weighted purchase cost over the preceding 90 days (supplier scope is not classified).
  *
  * Missing costs remain NULL. Callers expose coverage instead of replacing an
  * unknown cost with a trusted zero.

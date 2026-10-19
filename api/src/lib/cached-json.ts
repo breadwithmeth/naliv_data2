@@ -11,6 +11,20 @@ export function invalidateReports() {
   cache.clear();
 }
 
+// Binary workbooks are cached as base64 text in the same bounded LRU.
+export async function loadCachedText(
+  req: Request,
+  key: readonly unknown[],
+  load: () => Promise<string>
+) {
+  if (!req.user) throw Object.assign(new Error("Authentication required"), { statusCode: 401 });
+  refreshReportGeneration(invalidateReports);
+  return cache.get(
+    JSON.stringify([config.PGSCHEMA, config.APP_SCHEMA, req.user.role, reportGeneration.value, ...key]),
+    load
+  );
+}
+
 // Both JSON previews and downloadable reports share the same bounded snapshot.
 export async function loadCachedJson(
   req: Request,

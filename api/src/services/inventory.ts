@@ -29,24 +29,13 @@ export async function getInventoryReport(params: InventoryParams) {
   const nomenklaturaTable = qualifiedTable("catalog_nomenklatura");
   const balanceTable = qualifiedTable("accumulation_register_tovary_na_skladah_balance");
 
-  const recentFilters: Prisma.Sql[] = [Prisma.sql`sm.sale_at is not null`];
-
-  if (params.from) {
-    recentFilters.push(Prisma.sql`sm.sale_at >= ${params.from}`);
-  }
-
-  if (params.to) {
-    recentFilters.push(Prisma.sql`sm.sale_at < ${params.to}`);
-  }
-
-  const recentWhere = Prisma.join(recentFilters, " and ");
   const referenceDate = params.to ?? new Date();
-  const analysisDays = Math.max(
-    1,
-    params.from && params.to
-      ? (params.to.getTime() - params.from.getTime()) / 86_400_000
-      : 28
+  const velocityWindowDays = 28;
+  const recentFrom = new Date(
+    referenceDate.getTime() - velocityWindowDays * 86_400_000
   );
+  const recentWhere = Prisma.sql`sm.sale_at >= ${recentFrom} and sm.sale_at < ${referenceDate}`;
+  const analysisDays = velocityWindowDays;
 
   const rows = await prisma.$queryRaw<
     Array<{

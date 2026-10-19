@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { config } from "../config.js";
 import { canonicalItemCostsCtes } from "../lib/cost-sql.js";
+import { lossMovementsCtes } from "../lib/losses-sql.js";
 import {
   applicationTable,
   ensureManagementSettingsTables
@@ -37,12 +38,6 @@ export async function getStorePerformanceMetrics(params: ManagementMetricParams)
   const balances = qualifiedTable("accumulation_register_tovary_na_skladah_balance");
   const warehouses = qualifiedTable("catalog_sklady");
   const stores = qualifiedTable("catalog_magaziny");
-  const writeoffDocuments = qualifiedTable("document_spisanie_tovarov");
-  const writeoffLines = qualifiedTable("document_spisanie_tovarov_tovary");
-  const surplusDocuments = qualifiedTable("document_oprihodovanie_tovarov");
-  const surplusLines = qualifiedTable("document_oprihodovanie_tovarov_tovary");
-  const revisionDocuments = qualifiedTable("document_pereschet_tovarov");
-  const revisionLines = qualifiedTable("document_pereschet_tovarov_tovary");
 
   const asOf = params.to ?? new Date();
   const from = params.from ?? new Date(asOf.getTime() - 28 * 86_400_000);
@@ -77,6 +72,7 @@ export async function getStorePerformanceMetrics(params: ManagementMetricParams)
   >`
     with
     ${canonicalItemCostsCtes(asOf)},
+    ${lossMovementsCtes({ from, to: asOf })},
     warehouse_map as (
       select ref_key, max(nullif(magazin_key, '')) as magazin_key
       from ${warehouses}
@@ -325,51 +321,12 @@ export async function getStorePerformanceMetrics(params: ManagementMetricParams)
       where s.qty > 0
       group by s.store_key
     ),
-    latest_revision_lines as (
-      select distinct on (d.ref_key, l.nomenklatura_key)
-        coalesce(nullif(d.magazin_key, ''), 'Без магазина') as store_key,
-        d.ref_key,
-        l.nomenklatura_key,
-        (
-          l.summa_fakt
-          - coalesce(l.summa, 0)
-        )::float8 as difference
-      from ${revisionDocuments} d
-      join ${revisionLines} l on l."_parent_ref_key" = d.ref_key
-      where d.deletion_mark is not true and d.posted = true
-        and d.date >= ${from} and d.date < ${asOf}
-        and d.uchetnye_dannye_zapolneny is true
-        and l.summa_fakt is not null
-      order by d.ref_key, l.nomenklatura_key, l.line_number desc
-    ),
     loss_totals as (
       select
         store_key,
         sum(writeoffs)::float8 as writeoffs,
         sum(surpluses)::float8 as surpluses
-      from (
-        select coalesce(nullif(d.magazin_key, ''), 'Без магазина') as store_key,
-          sum(coalesce(l.summa, 0))::float8 as writeoffs, 0::float8 as surpluses
-        from ${writeoffDocuments} d
-        join ${writeoffLines} l on l."_parent_ref_key" = d.ref_key
-        where d.deletion_mark is not true and d.posted = true
-          and d.date >= ${from} and d.date < ${asOf}
-        group by 1
-        union all
-        select coalesce(nullif(d.magazin_key, ''), 'Без магазина') as store_key,
-          0::float8 as writeoffs, sum(coalesce(l.summa, 0))::float8 as surpluses
-        from ${surplusDocuments} d
-        join ${surplusLines} l on l."_parent_ref_key" = d.ref_key
-        where d.deletion_mark is not true and d.posted = true
-          and d.date >= ${from} and d.date < ${asOf}
-        group by 1
-        union all
-        select store_key,
-          sum(-difference) filter (where difference < 0)::float8 as writeoffs,
-          sum(difference) filter (where difference > 0)::float8 as surpluses
-        from latest_revision_lines
-        group by store_key
-      ) movements
+      from loss_movements
       group by store_key
     ),
     active_stores as (
