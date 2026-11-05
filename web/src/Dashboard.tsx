@@ -84,6 +84,7 @@ import {
 } from "./format";
 import { YearComparisonExport } from "./YearComparisonExport";
 import { TurnoverReport } from "./TurnoverReport";
+import { MarketingCompensation } from "./MarketingCompensation";
 
 type LoadState<T> =
   | { status: "idle"; data?: undefined; error?: undefined }
@@ -111,7 +112,7 @@ const workspaceViews: Record<AppPage, readonly WorkspaceView[]> = {
   stores: [{ key: "performance", label: "Результаты магазинов" }, { key: "losses", label: "Списания и недостачи" }, { key: "lost-sales", label: "Упущенные продажи" }, { key: "productivity", label: "Дополнительные показатели" }],
   stock: [{ key: "inventory", label: "Остатки" }, { key: "turnover", label: "Оборачиваемость" }, { key: "purchasing", label: "К закупке" }, { key: "assortment", label: "Ассортимент" }, { key: "store-stock", label: "По магазинам" }],
   finance: [{ key: "money", label: "Деньги" }, { key: "cash", label: "Кассовые операции" }, { key: "cards", label: "Оплата картой" }, { key: "profit", label: "Доходность" }, { key: "payments", label: "Плановые платежи" }, { key: "suppliers", label: "Поставщики" }, { key: "projects", label: "Развитие" }],
-  marketing: [{ key: "summary", label: "Сводка" }, { key: "promotions", label: "Акции" }, { key: "stores", label: "Магазины" }, { key: "items", label: "Товары" }],
+  marketing: [{ key: "summary", label: "Сводка" }, { key: "promotions", label: "Акции" }, { key: "stores", label: "Магазины" }, { key: "items", label: "Товары" }, { key: "compensations", label: "Компенсации" }],
   admin: [{ key: "settings", label: "Параметры расчетов" }, { key: "sync", label: "Обновление данных" }, { key: "diagnostics", label: "Диагностика" }]
 };
 
@@ -278,7 +279,7 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
           ) : currentPage === "finance" ? (
             <FinanceWorkspace dateRange={dateRange} view={currentView} />
           ) : currentPage === "marketing" ? (
-            <MarketingReports dateRange={dateRange} view={currentView} />
+            currentView === "compensations" ? <MarketingCompensation dateRange={dateRange} /> : <MarketingReports dateRange={dateRange} view={currentView} />
           ) : currentView === "settings" ? <ManagementSettingsPanel /> : currentView === "sync" ? <SyncPanel /> : (
             <>
               <p className="context-note">Служебная диагностика для администратора. Эти сведения не входят в бизнес-отчеты.</p>

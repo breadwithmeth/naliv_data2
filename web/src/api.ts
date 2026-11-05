@@ -1,3 +1,10 @@
+import type {
+  CompensationActivityOption, MarketingCompensationReport, MarketingCompensationRequest
+} from "../../api/src/services/marketing-compensation-types";
+export type {
+  CompensationActivity, CompensationActivityOption, CompensationBranch, CompensationIssue,
+  CompensationRow, CompensationTotals, MarketingCompensationReport, MarketingCompensationRequest
+} from "../../api/src/services/marketing-compensation-types";
 import type { TurnoverOptions, TurnoverPreview, TurnoverRequest, TurnoverRowDetail } from "../../api/src/services/turnover-types";
 export type {
   TurnoverChange, TurnoverDailyRow, TurnoverGroup, TurnoverMode, TurnoverNorms,
@@ -183,6 +190,9 @@ export type ReportDateRange = {
   from?: string;
   to?: string;
 };
+
+// Dashboard filters use inclusive dates; the wrappers convert the end exactly once.
+export type MarketingCompensationFilters = Required<ReportDateRange> & Pick<MarketingCompensationRequest, "activityKey">;
 
 export type ReportRequest = ReportDateRange & {
   period: SalesPeriod;
@@ -949,6 +959,13 @@ function appendReportParams(params: URLSearchParams, filters: ReportDateRange) {
   }
 }
 
+function marketingCompensationParams(filters: MarketingCompensationFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  appendReportParams(params, filters);
+  if (filters.activityKey) params.set("activityKey", filters.activityKey);
+  return params;
+}
+
 export type ManagementSettings = {
   stores: Array<{
     storeKey: string;
@@ -1306,6 +1323,15 @@ export const api = {
     const params = new URLSearchParams({ period: filters.period });
     appendReportParams(params, filters);
     return request<MarketingReport>(`/api/marketing?${params}`, { signal });
+  },
+  marketingCompensationActivities(filters: Required<ReportDateRange>, signal?: AbortSignal) {
+    return request<{ activities: CompensationActivityOption[] }>(`/api/marketing/compensations/activities?${marketingCompensationParams(filters)}`, { signal });
+  },
+  marketingCompensationReport(filters: MarketingCompensationFilters, signal?: AbortSignal) {
+    return request<MarketingCompensationReport>(`/api/marketing/compensations?${marketingCompensationParams(filters)}`, { signal });
+  },
+  marketingCompensationWorkbook(filters: MarketingCompensationFilters, signal?: AbortSignal) {
+    return downloadWorkbook(`/api/marketing/compensations.xlsx?${marketingCompensationParams(filters)}`, signal);
   },
   inventoryReport(filters: ReportRequest, signal?: AbortSignal) {
     const params = new URLSearchParams({ period: filters.period });

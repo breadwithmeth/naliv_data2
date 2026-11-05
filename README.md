@@ -547,6 +547,73 @@ skipped the table. That mode is what `api/src/scripts/check-sync-freshness.ts`
 prints, and it shares `SYNC_TABLE_GROUPS`, `SYNC_STALE_AFTER_HOURS`, and
 `collectTableFreshness` with the service.
 
+## Marketing compensations
+
+`Маркетинг → Компенсации` is a separate calculation; existing promotion
+attribution is unchanged. Choose an inclusive UI period and one activity or
+`Все активности`. The authenticated admin/marketing endpoints are:
+
+- `GET /api/marketing/compensations/activities?from=2026-09-01&to=2026-10-01`
+- `GET /api/marketing/compensations?from=2026-09-01&to=2026-10-01&activityKey=...`
+- `GET /api/marketing/compensations.xlsx` with the same filters.
+
+API periods are half-open, midnight calendar dates, at most 366 days; omit
+`activityKey` for all activities. Activity and rule end calendar days are
+included. Quantities are posted, non-deleted retail-report sales minus return
+lines within the intersection of the requested, activity and rule periods.
+Identical membership/rules do not duplicate quantity within an activity;
+separate activities remain independent, and conflicting overlapping percentages
+produce an unresolved row rather than an arbitrary rate.
+
+Items/characteristics come directly from the current
+`information_register_nomenklatura_segmenta` snapshot. Purchase price type is
+`catalog_magaziny.vid_tsen_zakupa_key`; the price is the last posted,
+non-deleted `document_ustanovka_tsen_nomenklatury` before the end of the
+requested/activity intersection, matching item, characteristic and price type.
+Narrower rule intervals limit quantity, not this price cutoff. Legacy price
+lines join through `coalesce(_parent_ref_key, ref_key)`. Conflicting latest
+prices and prices requiring an unavailable packaging conversion are not guessed.
+The stored numeric percentage is used even when an activity's name states a
+different percentage. Unit compensation is rounded half-up to two decimals,
+then multiplied by net quantity and rounded again; totals sum those line amounts.
+Negative net quantities and compensation remain negative.
+
+Only compensation amounts are totaled across products. Net quantities remain
+on item rows; kilograms, litres and pieces are not combined into a branch,
+activity or general quantity total.
+
+Missing source tables, segment/rule/branch, price, percentage or quantity prevent
+an apparently complete financial total. The known subtotal is labeled separately;
+no reports for a branch/interval are not treated as measured zero. Missing
+master barcode produces a diagnostic but does not itself invalidate money.
+The currently published 1C metadata exposes no authoritative item-card barcode
+source; receipt barcodes are deliberately not substituted. An additional 1C
+publication/source is needed to populate those barcodes.
+
+Excel has the seven report columns, branch worksheets with activity blocks,
+activity/general totals, frozen headings, text barcodes and a diagnostics sheet.
+The new synchronizer profile must complete a reference refresh before the
+membership source becomes available. No production sync or deployment is
+performed by the application build.
+
+Verification: 87 API tests passed with connection-local TEMP fixtures and
+isolated test identities (`--test-concurrency=1`, connection pool capped at 2
+to avoid exhausting the shared database). API/web builds passed; Vite reports
+a chunk-size warning. A read-only 1C segment snapshot was combined with real
+PostgreSQL source views in a temporary transaction: the September Borjomi
+activity produced 5 branches / 25 rows, with missing prices/barcodes and a
+clearly partial known subtotal, not a fabricated complete total.
+The all-activity source smoke completed 84 activities / 210 branch blocks /
+221,341 detail rows. Its streaming XLSX was written and reopened: 26 sheets,
+221,341 detail rows and 768,402 diagnostics rows, about 63.5 MB. On the local
+verification machine calculation took about 50 seconds and workbook generation
+about 82 seconds; this is a heavy export, not an instant download. The combined
+export/re-read smoke peaked at about 1,559 MiB RSS. No production capacity claim
+is implied. All-activity branch tables mount only when opened, and large
+single-activity branches start collapsed without discarding rows.
+Browser verification covered one/all selection, incomplete-source HTTP export,
+lazy detail opening/closing and table rendering at 375/768/1280 widths.
+
 ## Promotion analytics
 
 The marketing page shows which promotions actually sold, per shop and per item.
