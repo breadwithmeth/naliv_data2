@@ -4,7 +4,7 @@ import { canonicalItemCostsCtes } from "../lib/cost-sql.js";
 import { lossMovementsCtes } from "../lib/losses-sql.js";
 import {
   applicationTable,
-  ensureManagementSettingsTables
+  ensureManagementSettingsReadable
 } from "./management-settings.js";
 import { prisma } from "../prisma.js";
 import type { ManagementMetricParams } from "./management.js";
@@ -41,7 +41,7 @@ export async function getStorePerformanceMetrics(params: ManagementMetricParams)
 
   const asOf = params.to ?? new Date();
   const from = params.from ?? new Date(asOf.getTime() - 28 * 86_400_000);
-  await ensureManagementSettingsTables();
+  await ensureManagementSettingsReadable();
   const analysisDays = Math.max(
     1,
     Math.ceil((asOf.getTime() - from.getTime()) / 86_400_000)

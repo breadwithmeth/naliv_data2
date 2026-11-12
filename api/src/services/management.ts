@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { canonicalItemCostsCtes } from "../lib/cost-sql.js";
 import { lossMovementsCtes } from "../lib/losses-sql.js";
 import { prisma } from "../prisma.js";
-import { applicationTable, ensureManagementSettingsTables } from "./management-settings.js";
+import { applicationTable, ensureManagementSettingsReadable } from "./management-settings.js";
 
 export type ManagementMetricParams = {
   from?: Date;
@@ -281,7 +281,7 @@ export async function getCashArticleMetrics(params: ManagementMetricParams) {
   const articles = qualifiedTable("catalog_stati_dvizheniya_denezhnyh_sredstv");
   const outgoingTransfers = qualifiedTable("document_rashodnyy_kassovyy_order");
   const incomingTransfers = qualifiedTable("document_prihodnyy_kassovyy_order");
-  await ensureManagementSettingsTables();
+  await ensureManagementSettingsReadable();
 
   const outgoingTransferKeysQuery = Prisma.sql`
     select d.ref_key

@@ -148,7 +148,13 @@ export async function getMarketingCompensationReport(input: Params): Promise<Mar
     for (const rule of activityRules) {
       const discount = discountByKey.get(ref(rule.skidka_natsenka_key));
       if (!discount || discount.deletion_mark === true) { activity.issues.push(issue("missing_percentage", "Не найдено действующее правило скидки.")); continue; }
-      const rate = discount.sposob_predostavleniya === "Процент" ? decimal(discount.znachenie_skidki_natsenki) : null;
+      if (discount.sposob_predostavleniya !== "Процент") {
+        // Gift/bonus/coupon/price rules never yield a percentage compensation: one
+        // activity-level issue instead of a non-computable row per segment item × branch.
+        activity.issues.push(issue("missing_percentage", "Правило без процентной скидки (подарок, бонус, купон или цена): компенсация по проценту не рассчитывается, строки товаров не формируются."));
+        continue;
+      }
+      const rate = decimal(discount.znachenie_skidki_natsenki);
       if (rate === null || rate.isNegative() || rate.gt(100)) activity.issues.push(issue("missing_percentage", "Не указан корректный процент скидки в правиле 1С."));
       const segmentKey = ref(discount.segment_nomenklatury_predostavleniya_key);
       const segment = segmentByKey.get(segmentKey);

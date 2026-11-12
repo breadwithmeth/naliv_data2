@@ -119,7 +119,7 @@ function suggestFlow(name: string): "operating" | "investing" | "financing" | "i
   return null;
 }
 
-// GET may run on the verifier's read-only connection. Existing complete settings
+// Read paths may run on a read-only connection. Existing complete settings
 // must not trigger the legacy lazy DDL used by write paths and first-time setup.
 async function managementSettingsCatalogueComplete() {
   const required = [
@@ -146,8 +146,13 @@ async function managementSettingsCatalogueComplete() {
   return catalogue?.complete === true;
 }
 
-export async function getManagementSettings(asOf = new Date()) {
+/** Read paths: create the settings tables only when they are absent or incomplete. */
+export async function ensureManagementSettingsReadable() {
   if (!await managementSettingsCatalogueComplete()) await ensureManagementSettingsTables();
+}
+
+export async function getManagementSettings(asOf = new Date()) {
+  await ensureManagementSettingsReadable();
   const stores = sourceTable("catalog_magaziny");
   const reports = sourceTable("document_otchet_o_roznichnyh_prodazhah");
   const articles = sourceTable("catalog_stati_dvizheniya_denezhnyh_sredstv");

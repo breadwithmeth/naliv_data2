@@ -101,6 +101,15 @@ test("compensations preserve source rates, purchase-price cutoff, returns, indep
       assert.ok(missing.issues.some(i => i.code === 'missing_quantity'));
       assert.equal(result.activities.find(a => a.key === 'broken')!.totals.compensation, null);
       assert.equal(result.totals.compensation, null);
+      // Gift/bonus/coupon rules never yield percentage compensation: no per-item rows, one activity issue.
+      await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya values ('gift','7','Подарок','2026-09-02','2026-09-30',false,true,false)`);
+      await tx.$executeRawUnsafe(`insert into catalog_skidki_natsenki values ('gift-d','Подарок',null,'seg',false)`);
+      await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya_skidki_natsenki values ('gift',null,'gift-d','s1','2026-09-02','2026-09-30')`);
+      const gift = await getMarketingCompensationReport({ ...params, activityKey: 'gift' });
+      assert.deepEqual(gift.activities[0].branches, []);
+      assert.equal(gift.activities[0].totals.compensation, null);
+      assert.equal(gift.totals.compensation, null);
+      assert.ok(gift.activities[0].issues.some(i => i.code === 'missing_percentage'));
       const selected = await getMarketingCompensationReport({ ...params, activityKey: 'b' });
       assert.deepEqual(selected.activities.map(a => a.key), ['b']);
       assert.equal(a.branches.find(b => b.key === 's2')!.rows.find(r => r.itemKey === 'negative')!.quantity, 0);
