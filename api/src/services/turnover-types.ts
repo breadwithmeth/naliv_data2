@@ -165,6 +165,8 @@ export type TurnoverReport = {
     firstSalesDate: string | null;
     lastSalesDate: string | null;
     missingStockDates: string[];
+    /** Exclusive end the caller asked for when the analysed period was shortened to certified days. */
+    requestedTo: string | null;
     observedDays: number;
     expectedDays: number;
   };

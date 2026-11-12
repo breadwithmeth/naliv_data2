@@ -315,6 +315,27 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           await tx.$executeRawUnsafe("release savepoint certified_empty_sales");
         }
       });
+      await t.test("an open period is analysed through the last certified day and says so", async () => {
+        const ready = (through: string) => async () => ({
+          status: "ready" as const, from: "2026-06-01", toExclusive: through, completedJobs: 1, totalJobs: 1,
+          databaseBytes: 1, pauseAtBytes: 12_000_000_000, binding: "turnover-open-period",
+          sources: ["document_otchet_o_roznichnyh_prodazhah", "document_chek_kkm", "accumulation_register_tovary_na_skladah_balance"]
+            .map((table) => ({ table, status: "verified" as const, verifiedThrough: through })),
+          coverageSources: []
+        });
+        // A whole "current month" request: days after the certified end have no reports or snapshots.
+        const open = await getTurnoverReport({ ...params, to: "2026-08-31", sku: "i1" }, ready("2026-08-04"));
+        assert.equal(open.params.to, "2026-08-04");
+        assert.equal(open.coverage.requestedTo, "2026-08-31");
+        assert.notEqual(open.rows[0]!.periodSales.quantity, null);
+        assert.ok(open.warnings.some((warning) => /Период сокращён до последнего загруженного/.test(warning)));
+        // Without a ready ledger, or when nothing would remain, the request is analysed as asked.
+        const asked = await getTurnoverReport({ ...params, to: "2026-08-31", sku: "i1" });
+        assert.equal(asked.params.to, "2026-08-31");
+        assert.equal(asked.coverage.requestedTo, null);
+        const tooShort = await getTurnoverReport({ ...params, from: "2026-08-03", to: "2026-08-31", profile: "sample", sku: "i1" }, ready("2026-08-04"));
+        assert.equal(tooShort.params.to, "2026-08-31");
+      });
       await t.test("sample reports consolidate each SKU across shops and warehouses and recompute turnover", async () => {
         await tx.$executeRawUnsafe("savepoint consolidated_sample");
         try {

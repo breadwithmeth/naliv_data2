@@ -606,8 +606,34 @@ function aggregateRows(rows: TurnoverRow[], key: string, name: string, days: num
   };
 }
 
+/** Every turnover input that needs a certified day: retail sales, receipts and the daily closing stock. */
+const CERTIFIED_TURNOVER_TABLES = [
+  "document_otchet_o_roznichnyh_prodazhah", "document_chek_kkm", "accumulation_register_tovary_na_skladah_balance"
+] as const;
+
+/**
+ * Exclusive end of the contiguous history certified for every turnover input, or
+ * null without a ready ledger. Stock certified through D means closing snapshots
+ * up to Balance(D), which is exactly the snapshot an exclusive end D needs.
+ */
+export function certifiedTurnoverEnd(readiness: Awaited<ReturnType<typeof getReloadReadiness>>): string | null {
+  if (readiness.status !== "ready") return null;
+  const ends = CERTIFIED_TURNOVER_TABLES.map((table) => readiness.sources.find((source) => source.table === table)?.verifiedThrough ?? null);
+  return ends.some((end) => end === null) ? null : ends.sort()[0]!;
+}
+
 export async function getTurnoverReport(request: TurnoverRequest, reloadReader = getReloadReadiness): Promise<TurnoverReport> {
-  const params: NormalizedTurnoverRequest = turnoverQuerySchema.parse(request);
+  const readiness = await reloadReader();
+  let params: NormalizedTurnoverRequest = turnoverQuerySchema.parse(request);
+  // An open period (e.g. the whole current month) cannot have today's or future
+  // reports and closing stock: analyse the certified part and say so explicitly.
+  const certifiedEnd = certifiedTurnoverEnd(readiness);
+  let requestedTo: string | null = null;
+  if (certifiedEnd && params.to > certifiedEnd && !request.comparisonTo
+    && dayCount(params.from, certifiedEnd) >= (params.profile === "sample" ? 2 : 1)) {
+    requestedTo = params.to;
+    params = turnoverQuerySchema.parse({ ...request, to: certifiedEnd });
+  }
   const sourceTo = params.to > params.comparisonTo ? params.to : params.comparisonTo;
   let source: Sources;
   let storeIndex!: PhysicalStoreIndex;
@@ -656,7 +682,6 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     const days = receiptDays.get(store);
     if (days) days.add(date); else receiptDays.set(store, new Set([date]));
   }
-  const readiness = await reloadReader();
   const certifiedEmptyDays = new Map<string, boolean>();
   let receiptsWithoutRetailReport = false;
   const costIndex = new Map<string, CostPoint[]>();
@@ -994,6 +1019,10 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   const warningSet = new Set<string>();
   if (!atomicRows.length) warningSet.add("Фильтрам не соответствуют наблюдаемые остатки, продажи или открытые заказы; отсутствие строк не доказывает нулевые продажи до начала доступной истории.");
   if (params.auditGroup && !rows.some((row) => row.key === params.auditGroup)) warningSet.add("Строка запрошенного дневного аудита не найдена в текущем составе отчёта; сформируйте отчёт заново.");
+  if (requestedTo) {
+    const day = (value: string) => value.split("-").reverse().join(".");
+    warningSet.add(`Период сокращён до последнего загруженного и проверенного дня ${day(shiftDate(params.to, -1))}: дни ${day(params.to)}–${day(shiftDate(requestedTo, -1))} ещё не завершены или не загружены, по ним нет отчётов о продажах и снимков остатков.`);
+  }
   if (missingStockDates.length) warningSet.add(`Нет обязательных дневных снимков: ${missingStockDates.length} из ${expectedDates.length}. Средние остатки и зависимые коэффициенты недоступны, снимки не переносятся вперёд.`);
   if (!snapshots.has(params.from)) warningSet.add("Нет снимка точно на начало периода; начальные остатки неизвестны.");
   if (atomicRows.some((row) => row.periodSales.quantity === null)) warningSet.add("Не во все дни выбранного периода есть проведённый розничный отчёт магазина либо подтверждение пустого дня по отчётам и чекам; продажи соответствующих строк — н/д, а не ноль.");
@@ -1048,7 +1077,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     coverage: {
       firstStockDate: source.bounds.firstStock, lastStockDate: source.bounds.lastStock,
       firstSalesDate: source.bounds.firstSales, lastSalesDate: source.bounds.lastSales,
-      missingStockDates, observedDays, expectedDays: expectedDates.length
+      missingStockDates, observedDays, expectedDays: expectedDates.length, requestedTo
     },
     methodology: [
       "Период API [from,to), правая граница исключена; даты — сохранённые календарные даты 1С без пересчёта часового пояса. Текущий остаток означает конец выбранного периода, не сегодняшний остаток.",
