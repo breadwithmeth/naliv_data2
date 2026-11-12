@@ -39,6 +39,16 @@ export function formatBytes(value: number) {
   }).format(scaled)} ${units[index]}`;
 }
 
+const storageByteUnits = ["Б", "КБ", "МБ", "ГБ", "ТБ"] as const;
+const storageByteNumberFormat = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
+
+// Diagnostics and the 10 GB target share decimal units; leave legacy formatBytes callers unchanged.
+export function formatStorageBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 Б";
+  const index = Math.max(0, Math.min(Math.floor(Math.log10(value) / 3), storageByteUnits.length - 1));
+  return `${storageByteNumberFormat.format(value / 1000 ** index)} ${storageByteUnits[index]}`;
+}
+
 export function formatDate(value: string | null | undefined) {
   if (!value) {
     return "нет данных";

@@ -21,7 +21,7 @@ export type User = {
 export type DbTable = {
   name: string;
   kind: string;
-  estimatedRows: number;
+  estimatedRows: number | null;
   totalBytes: number;
 };
 
@@ -35,7 +35,7 @@ export type DataGroupKey =
 export type DataGroup = {
   key: DataGroupKey;
   tableCount: number;
-  estimatedRows: number;
+  estimatedRows: number | null;
   totalBytes: number;
   columnCount: number;
   numericColumnCount: number;
@@ -55,7 +55,7 @@ export type DbColumn = {
 export type Overview = {
   schema: string;
   tableCount: number;
-  estimatedRows: number;
+  estimatedRows: number | null;
   totalBytes: number;
   columnCount: number;
   numericColumnCount: number;
@@ -67,11 +67,29 @@ export type Overview = {
     name: string;
     tableCount: number;
   }>;
+  storage: {
+    databaseBytes: number;
+    sourceHeapBytes: number;
+    sourceIndexBytes: number;
+    sourceToastBytes: number;
+    otherBytes: number;
+    targetBytes: number;
+    withinTarget: boolean;
+    layoutVersion: number | null;
+    compactionActive: boolean;
+    measuredAtUtc: string;
+  };
+  provenance: {
+    available: boolean;
+    relationCount: number;
+    resourceCount: number;
+  };
 };
 
 export type TableProfile = {
   table?: DbTable;
   columns: DbColumn[];
+  sources: Array<{ sourceEntity: string; resourceTemplate: string }>;
   sampleRows: Record<string, unknown>[];
   numericSummaries: Array<{
     column: string;
@@ -166,6 +184,29 @@ export type SyncSchedulerStatus = {
   logTail: string | null;
 };
 
+export type ReloadCoverage = {
+  status: "verified" | "partial" | "unavailable";
+  requestedFrom: string;
+  requestedToExclusive: string;
+  verifiedThrough: string | null;
+  reason: "reloading" | "before_horizon" | "open_period" | null;
+};
+
+export type ReloadReadiness = {
+  status: "needs_preparation" | "reloading" | "paused_capacity" | "blocked" | "ready";
+  from: string | null;
+  toExclusive: string | null;
+  completedJobs: number;
+  totalJobs: number;
+  sources: Array<{
+    table: string;
+    status: "missing" | "empty" | "partial" | "verified" | "unavailable";
+    verifiedThrough: string | null;
+  }>;
+  databaseBytes: number;
+  pauseAtBytes: number;
+};
+
 export type SyncHealth = {
   available: boolean;
   unavailableReason: string | null;
@@ -177,6 +218,7 @@ export type SyncHealth = {
   scheduler: SyncSchedulerStatus | null;
   schedulerUnavailableReason: string | null;
   groups: Array<{ title: string; tables: SyncTableFreshness[] }>;
+  reloadReadiness: ReloadReadiness;
 };
 
 export type TimeSeriesPoint = {
@@ -234,6 +276,7 @@ export type YearComparisonPreview = {
     status: "observed" | "partial" | "empty";
     dateFrom: string | null;
     dateTo: string | null;
+    reloadCoverage: ReloadCoverage;
   }>;
   quality: Array<{
     period: "current" | "previous";
@@ -246,6 +289,7 @@ export type YearComparisonPreview = {
 };
 export type SalesReport = {
   period: SalesPeriod;
+  reloadCoverage: ReloadCoverage;
   summary: {
     dateFrom: string | null;
     dateTo: string | null;
@@ -314,6 +358,7 @@ export type SalesReport = {
 
 export type IncomeReport = {
   period: SalesPeriod;
+  reloadCoverage: ReloadCoverage;
   summary: {
     dateFrom: string | null;
     dateTo: string | null;
@@ -519,6 +564,7 @@ export type MarketingStore = {
 
 export type MarketingReport = {
   period: SalesPeriod;
+  reloadCoverage: ReloadCoverage;
   summary: {
     totalRevenue: number;
     totalReports: number;
@@ -814,6 +860,7 @@ export type StorePerformanceMetrics = {
 };
 
 export type SourceHealth = {
+  reloadReadiness: ReloadReadiness;
   checks: { count: number; selectedCount: number; selectedDays: number; dateFrom: string | null; dateTo: string | null };
   storeAreas: { total: number; filled: number };
   payroll: { timesheets: number; payrollDocuments: number };
@@ -1051,17 +1098,25 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 async function responseError(response: Response): Promise<Error> {
-  if (response.status >= 500) {
-    return new Error("Не удалось получить данные. Повторите попытку позже.");
-  }
-  let message = "Не удалось выполнить запрос";
+  let message = response.status >= 500
+    ? "Не удалось получить данные. Повторите попытку позже."
+    : "Не удалось выполнить запрос";
+  let code: "ANALYTICS_RELOAD_INCOMPLETE" | undefined;
   try {
-    const body = (await response.json()) as { error?: string };
-    message = body.error ?? message;
+    const body: unknown = await response.json();
+    if (typeof body === "object" && body !== null) {
+      if ("code" in body && body.code === "ANALYTICS_RELOAD_INCOMPLETE") {
+        code = body.code;
+      }
+      if ((response.status < 500 || code) && "error" in body &&
+          typeof body.error === "string" && body.error.trim()) {
+        message = body.error;
+      }
+    }
   } catch {
     // A non-JSON error response still has a useful HTTP status.
   }
-  return new Error(message);
+  return Object.assign(new Error(message), { statusCode: response.status }, code ? { code } : {});
 }
 
 type SettingsFlight = {

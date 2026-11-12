@@ -3,6 +3,8 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { canonicalItemCostsCtes } from "../lib/cost-sql.js";
 import { prisma } from "../prisma.js";
+import { assertReloadReady, businessToday, evaluateReloadCoverage, getReloadReadiness } from "./reload-readiness.js";
+import type { ReloadCoverage, ReloadReadiness } from "./reload-readiness.js";
 
 export const comparisonMembers = [
   "Пивной напиток", "Пиво бут", "Пиво жб", "Пиво розлив", "Разливные напитки", "Энергетический напиток"
@@ -54,6 +56,7 @@ export type ComparisonCoverage = {
   period: ComparisonPeriod; coveredDays: number; expectedDays: number; receiptCount: number;
   status: "observed" | "partial" | "empty"; dateFrom: string | null; dateTo: string | null;
   missingDays: string[];
+  reloadCoverage: ReloadCoverage;
 };
 export type ComparisonAggregate = {
   period: ComparisonPeriod; scope: "store" | "city" | "all" | "cohort"; scopeKey: string;
@@ -102,8 +105,16 @@ export type YearComparisonReport = {
 export type YearComparisonOptions = {
   presentationGroups?: boolean;
   client?: Prisma.TransactionClient;
+  reloadReader?: {
+    evaluateReloadCoverage: typeof evaluateReloadCoverage;
+    assertReloadReady: typeof assertReloadReady;
+    getReloadReadiness: () => Promise<ReloadReadiness>;
+  };
 };
-type YearComparisonPayload = Omit<YearComparisonReport, "periods" | "cohort" | "methodology">;
+type YearComparisonPayload = Omit<YearComparisonReport, "periods" | "cohort" | "methodology" | "coverage"> & {
+  coverage: Array<Omit<ComparisonCoverage, "reloadCoverage">>;
+};
+const reloadReader = { assertReloadReady, evaluateReloadCoverage, getReloadReadiness };
 
 export const comparisonMethodology = [
   "Даты запроса: [from,to), правая граница исключена. Это сохранённый календарь 1С (timestamp без часового пояса; синхронизация Asia/Qyzylorda), без переноса чеков в UTC. Интерфейс включает обе выбранные даты и передаёт to как следующий день. Предыдущее окно получается независимым сдвигом обеих API-границ на год назад; граница 29 февраля становится 28 февраля. Поэтому длины окон могут отличаться: выбор только 28.02.2024 даёт предыдущее [28.02.2023,28.02.2023), без дней; только 29.02.2024 сопоставляется с 28.02.2023. UTC используется для календарной арифметики и времени создания файла.",
@@ -118,7 +129,7 @@ export const comparisonMethodology = [
   "Физическая точка — часть адреса от г., с нормализацией регистра и пробелов, без нечеткого объединения адресов. При отсутствии распознаваемого адреса используется исходный ключ. Стоимость рассчитывается по исходному ключу магазина до объединения юридических лиц.",
   "Автоматическая сопоставимая сеть — точки с положительными продажными чеками в обоих окнах по всем товарам. Это признак активности, не доказательство даты открытия. Ручная сеть — явно выбранные ключи; разрешен пустой список. Разрешенный состав зафиксирован на листе Магазины.",
   "Чеки — DISTINCT положительные продажные документы, без возвратов. Объединенные категории/итоги считают уникальные чеки напрямую, а не складывают чеки категорий. Средние = нетто количество или сумма / положительные продажные чеки; городские и сетевые средние пересчитаны, не суммируются.",
-  "Покрытие — дни с наблюдаемыми подходящими чеками, а не доказательство полноты загрузки. Пропущенные дни, глобальная история, сверка заголовков со строками и стоимость показаны в Качество данных. Все агрегаты и метаданные прочитаны одним SQL-снимком."
+  "Покрытие наблюдения — дни с подходящими чеками, а не доказательство полноты загрузки. Отдельная сертификация reloadCoverage читается из журнала перезагрузки Чеков ККМ независимо для каждого окна: verified — все дни проверены, partial — проверена только часть, unavailable — окно недоступно для подтверждения. verifiedThrough — исключенная граница проверенного покрытия; before_horizon — история до горизонта, reloading — незавершенная загрузка, open_period — текущие/будущие незакрытые дни. Наличие чеков не повышает сертификацию. Финансовые итоги и оценка unavailable-окна недоступны (n/a), даже если часть чеков наблюдается; исходные календарные границы не обрезаются. Открытые дни могут содержать наблюдаемые суммы, но не считаются полностью проверенными. Пропущенные дни, глобальная история, сверка заголовков со строками и стоимость показаны в Качество данных. Все финансовые агрегаты и метаданные наблюдения прочитаны одним SQL-снимком; сертификация журнала показана отдельно."
 ];
 
 function table(name: string) {
@@ -151,13 +162,54 @@ function russianLower(expression: Prisma.Sql) {
     'абвгдеёжзийклмнопрстуфхцчшщъыьэюя')`;
 }
 
+/** The same certification gate is used before report reads and warm cache hits. */
+export async function certifyYearComparisonReload(
+  input: DateWindow, options: Pick<YearComparisonOptions, "reloadReader"> = {}
+): Promise<{ periods: YearComparisonReport["periods"]; coverage: Record<ComparisonPeriod, ReloadCoverage> }> {
+  const periods = {
+    current: { from: input.from, to: input.to },
+    previous: { from: previousCalendarYear(input.from), to: previousCalendarYear(input.to) }
+  };
+  const reader = options.reloadReader ?? reloadReader;
+  const [current, previous, readiness] = await Promise.all([
+    reader.evaluateReloadCoverage("receipts", {
+      from: new Date(`${periods.current.from}T00:00:00Z`), to: new Date(`${periods.current.to}T00:00:00Z`)
+    }),
+    periods.previous.from === periods.previous.to
+      ? Promise.resolve<ReloadCoverage>({
+        status: "unavailable", requestedFrom: periods.previous.from, requestedToExclusive: periods.previous.to,
+        verifiedThrough: null, reason: null
+      })
+      : reader.evaluateReloadCoverage("receipts", {
+        from: new Date(`${periods.previous.from}T00:00:00Z`), to: new Date(`${periods.previous.to}T00:00:00Z`)
+      }),
+    reader.getReloadReadiness()
+  ]);
+  if (readiness.from && readiness.toExclusive && readiness.status !== "blocked" && readiness.status !== "needs_preparation") {
+    // Guard only closed recovery days. The financial query and its cost
+    // boundaries always retain the original, independently shifted windows.
+    const guardFrom = periods.current.from > readiness.from ? periods.current.from : readiness.from;
+    const horizonTo = periods.current.to < readiness.toExclusive ? periods.current.to : readiness.toExclusive;
+    const today = businessToday();
+    const guardTo = horizonTo < today ? horizonTo : today;
+    if (guardFrom < guardTo) {
+      await reader.assertReloadReady({
+        kind: "receipts", from: new Date(`${guardFrom}T00:00:00Z`), to: new Date(`${guardTo}T00:00:00Z`)
+      });
+    }
+  } else {
+    // Missing ledger/binding evidence must fail closed, not expose raw facts.
+    await reader.assertReloadReady({
+      kind: "receipts", from: new Date(`${periods.current.from}T00:00:00Z`), to: new Date(`${periods.current.to}T00:00:00Z`)
+    });
+  }
+  return { periods, coverage: { current, previous } };
+}
+
 /** One statement keeps dates, receipts, catalogs, costing and both windows on the same snapshot. */
 export async function getYearComparison(input: YearComparisonParams, options: YearComparisonOptions = {}): Promise<YearComparisonReport> {
   const params = yearComparisonQuerySchema.parse(input);
-  const periods = {
-    current: { from: params.from, to: params.to },
-    previous: { from: previousCalendarYear(params.from), to: previousCalendarYear(params.to) }
-  };
+  const { periods, coverage: reloadCoverage } = await certifyYearComparisonReload(params, options);
   const presentationGroups = options.presentationGroups === true;
   const taxonomySource = Prisma.raw(presentationGroups ? "presentation_taxonomy" : "item_taxonomy");
   const presentationTaxonomyCtes = presentationGroups ? Prisma.sql`
@@ -486,6 +538,18 @@ export async function getYearComparison(input: YearComparisonParams, options: Ye
   }
   return {
     ...report, periods,
+    coverage: report.coverage.map((coverage) => ({
+      ...coverage, reloadCoverage: reloadCoverage[coverage.period]
+    })),
+    aggregates: report.aggregates.filter((value) => reloadCoverage[value.period].status !== "unavailable"),
+    dataQuality: {
+      ...report.dataQuality,
+      periods: report.dataQuality.periods.map((value) => reloadCoverage[value.period].status !== "unavailable" ? value : {
+        ...value, headerRevenue: null, lineRevenue: null, difference: null,
+        valuedCost: null, unvaluedRevenue: null, estimatedGrossIncome: null
+      }),
+      valuation: report.dataQuality.valuation.filter((value) => reloadCoverage[value.period].status !== "unavailable")
+    },
     cohort: {
       mode: params.cohort,
       selectedStoreKeys: params.cohort === "custom" ? params.comparableStore : report.stores.filter((store) => store.comparableByActivity).map((store) => store.key)

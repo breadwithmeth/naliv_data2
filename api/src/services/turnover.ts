@@ -9,6 +9,7 @@ import {
 import {
   buildPhysicalStoreIndex, isUsableWarehouse, type PhysicalStore, type PhysicalStoreIndex, type StoreDirectoryEntry
 } from "./turnover-stores.js";
+import { evaluateCoverage, getReloadReadiness } from "./reload-readiness.js";
 import type {
   TurnoverDailyRow, TurnoverNorms, TurnoverOption, TurnoverPolicy, TurnoverReport,
   TurnoverOptions, TurnoverRequest, TurnoverRow, TurnoverRowDetail, TurnoverSales, TurnoverWindow
@@ -128,7 +129,7 @@ type Sources = {
   stock: StockFact[]; sales: SaleFact[]; costs: CostFact[]; orders: OrderFact[]; receipts: ReceiptFact[];
   lastSales: [store: string, sku: string, date: string | null][];
   firstStock: [store: string, sku: string, date: string][];
-  salesDays: [store: string, date: string][]; barcodes: [sku: string, codes: string[]][];
+  salesDays: [store: string, date: string][]; receiptDays: [store: string, date: string][]; barcodes: [sku: string, codes: string[]][];
   bounds: { firstStock: string | null; lastStock: string | null; firstSales: string | null; lastSales: string | null };
 };
 function table(name: string) { return Prisma.raw(`"${config.PGSCHEMA.replaceAll('"', '""')}"."${name}"`); }
@@ -333,6 +334,14 @@ async function loadSources(params: NormalizedTurnoverRequest, searchKeys: string
       where nullif(nullif(r.magazin_key, ''), ${EMPTY_GUID}) is null
         and ${scopeWarehouse(Prisma.sql`l.sklad_key`)} and ${storeCondition(movementStore)}
     ),
+    receipt_days as (
+      select distinct coalesce(nullif(nullif(d.magazin_key, ''), ${EMPTY_GUID}), ${UNKNOWN}) as store_key,
+        d.date::date as day
+      from ${table("document_chek_kkm")} d
+      where d.posted = true and d.deletion_mark is not true
+        and d.date >= ${salesFrom}::timestamp and d.date < ${sourceTo}::timestamp
+        and ${storeCondition(Prisma.sql`coalesce(nullif(nullif(d.magazin_key, ''), ${EMPTY_GUID}), ${UNKNOWN})`)}
+    ),
     movements as materialized (
       select r.date::date as day, ${movementStore} as store_key, l.nomenklatura_key as sku,
         coalesce(nullif(nullif(l.harakteristika_key, ''), ${EMPTY_GUID}), '') as characteristic,
@@ -442,6 +451,7 @@ async function loadSources(params: NormalizedTurnoverRequest, searchKeys: string
       'lastSales', coalesce((select jsonb_agg(jsonb_build_array(store_key, sku, to_char(day, 'YYYY-MM-DD'))) from last_sales), '[]'::jsonb),
       'firstStock', coalesce((select jsonb_agg(jsonb_build_array(store_key, sku, to_char(day, 'YYYY-MM-DD'))) from first_stock), '[]'::jsonb),
       'salesDays', coalesce((select jsonb_agg(jsonb_build_array(store_key, to_char(day, 'YYYY-MM-DD'))) from sales_coverage), '[]'::jsonb),
+      'receiptDays', coalesce((select jsonb_agg(jsonb_build_array(store_key, to_char(day, 'YYYY-MM-DD'))) from receipt_days), '[]'::jsonb),
       'barcodes', coalesce((select jsonb_agg(jsonb_build_array(sku, codes)) from recorded_barcodes), '[]'::jsonb),
       'bounds', jsonb_build_object(
         'firstStock', (select to_char(min(balance_period)::date - 1, 'YYYY-MM-DD') from ${balances}),
@@ -596,7 +606,7 @@ function aggregateRows(rows: TurnoverRow[], key: string, name: string, days: num
   };
 }
 
-export async function getTurnoverReport(request: TurnoverRequest): Promise<TurnoverReport> {
+export async function getTurnoverReport(request: TurnoverRequest, reloadReader = getReloadReadiness): Promise<TurnoverReport> {
   const params: NormalizedTurnoverRequest = turnoverQuerySchema.parse(request);
   const sourceTo = params.to > params.comparisonTo ? params.to : params.comparisonTo;
   let source: Sources;
@@ -640,6 +650,15 @@ export async function getTurnoverReport(request: TurnoverRequest): Promise<Turno
     const days = salesDays.get(store);
     if (days) days.add(date); else salesDays.set(store, new Set([date]));
   }
+  const receiptDays = new Map<string, Set<string>>();
+  for (const [sourceStore, date] of source.receiptDays) {
+    const store = storeIndex.bySource.get(sourceStore) ?? sourceStore;
+    const days = receiptDays.get(store);
+    if (days) days.add(date); else receiptDays.set(store, new Set([date]));
+  }
+  const readiness = await reloadReader();
+  const certifiedEmptyDays = new Map<string, boolean>();
+  let receiptsWithoutRetailReport = false;
   const costIndex = new Map<string, CostPoint[]>();
   for (const [priority, store, sku, characteristic, at, price] of source.costs) {
     const key = `${priority}\u0000${store}\u0000${sku}\u0000${characteristic}`;
@@ -781,9 +800,25 @@ export async function getTurnoverReport(request: TurnoverRequest): Promise<Turno
   const stockAt = (pair: Pair, date: string): StockValue => snapshots.has(date)
     ? pair.stock.get(date) ?? { quantity: 0, cost: params.mode === "quantity" ? null : 0 }
     : { quantity: null, cost: null };
-  const salesAt = (pair: Pair, date: string): DailyFact => salesDays.get(pair.store)?.has(date)
-    ? pair.sales.get(date) ?? { quantity: 0, cost: 0, revenue: 0, positive: false }
-    : { quantity: null, cost: null, revenue: null, positive: false };
+  const salesAt = (pair: Pair, date: string): DailyFact => {
+    if (!salesDays.get(pair.store)?.has(date)) {
+      // A closed-source zero needs both complete sources: a receipt without a
+      // retail report may belong to an unclosed shift and is never a zero sale.
+      if (receiptDays.get(pair.store)?.has(date)) receiptsWithoutRetailReport = true;
+      else {
+        let certified = certifiedEmptyDays.get(date);
+        if (certified === undefined) {
+          const window = { from: new Date(date), to: new Date(shiftDate(date, 1)) };
+          certified = evaluateCoverage(readiness, "retail", window).status === "verified"
+            && evaluateCoverage(readiness, "receipts", window).status === "verified";
+          certifiedEmptyDays.set(date, certified);
+        }
+        if (certified) return { quantity: 0, cost: 0, revenue: 0, positive: false };
+      }
+      return { quantity: null, cost: null, revenue: null, positive: false };
+    }
+    return pair.sales.get(date) ?? { quantity: 0, cost: 0, revenue: 0, positive: false };
+  };
   const rangeSales = (pair: Pair, from: string, to: string, denominator: number): TurnoverSales => {
     let quantity: number | null = 0, cost: number | null = 0, revenue: number | null = 0;
     for (const date of calendar(from, to)) {
@@ -961,8 +996,9 @@ export async function getTurnoverReport(request: TurnoverRequest): Promise<Turno
   if (params.auditGroup && !rows.some((row) => row.key === params.auditGroup)) warningSet.add("Строка запрошенного дневного аудита не найдена в текущем составе отчёта; сформируйте отчёт заново.");
   if (missingStockDates.length) warningSet.add(`Нет обязательных дневных снимков: ${missingStockDates.length} из ${expectedDates.length}. Средние остатки и зависимые коэффициенты недоступны, снимки не переносятся вперёд.`);
   if (!snapshots.has(params.from)) warningSet.add("Нет снимка точно на начало периода; начальные остатки неизвестны.");
-  if (atomicRows.some((row) => row.periodSales.quantity === null)) warningSet.add("Не во все дни выбранного периода есть проведённый розничный отчёт магазина; продажи соответствующих строк — н/д, а не ноль.");
+  if (atomicRows.some((row) => row.periodSales.quantity === null)) warningSet.add("Не во все дни выбранного периода есть проведённый розничный отчёт магазина либо подтверждение пустого дня по отчётам и чекам; продажи соответствующих строк — н/д, а не ноль.");
   if (atomicRows.some((row) => row.windows.some((window) => window.sales.quantity === null || window.previousSales.quantity === null))) warningSet.add("Часть окон 7/14/30 дней не покрыта историей розничных отчётов; сравнение этих окон недоступно.");
+  if (receiptsWithoutRetailReport) warningSet.add("В части дней есть проведённые чеки, но нет розничного отчёта магазина (возможна незакрытая смена); продажи этих дней неизвестны, не заменены нулём и не смешаны с чеками.");
   if (atomicRows.some((row) => row.periodSales.cost === null || row.averageCost === null)) warningSet.add("Часть денежных показателей недоступна из-за пропусков снимков или учётных цен. Нулевая, отрицательная или пустая цена не считается бесплатным товаром и не заменяется более старой ценой.");
   if (!source.brands.length || selectedPairs.some((pair) => !pair.brand)) warningSet.add("Справочник брендов не заполнен или привязки отсутствуют. Бренд по названию товара не угадывается.");
   if (selectedPairs.some((pair) => pair.unit.startsWith("Единица не указана"))) warningSet.add("У части SKU нет подтверждённой базовой единицы. Такие SKU не суммируются между собой и не участвуют в перемещениях.");
@@ -1018,6 +1054,7 @@ export async function getTurnoverReport(request: TurnoverRequest): Promise<Turno
       "Период API [from,to), правая граница исключена; даты — сохранённые календарные даты 1С без пересчёта часового пояса. Текущий остаток означает конец выбранного периода, не сегодняшний остаток.",
       "Снимок на следующую полночь — конец предыдущего рабочего дня. Начало периода — точный снимок from; конец — точный снимок to. Средняя хронологическая берётся по N дневным закрытиям: (первое/2 + внутренние + последнее/2)/(N−1); при N=1 используется единственное закрытие. Один пропуск делает среднее неизвестным. SKU, отсутствующий в существующем сетевом снимке, имеет нулевой остаток.",
       "Продажи и возвраты — строки проведённых неудалённых отчётов о розничных продажах. Возвраты уменьшают количество и розничную сумму один раз, независимо от записанного знака. Перемещения, списания и корректировки не считаются продажами, но уже отражены в остатках.",
+      "День без розничного отчёта считается нулевым только при проверенной полной загрузке розничных отчётов и чеков за этот день и отсутствии проведённых чеков физического магазина. Чеки при отсутствии отчёта могут означать незакрытую смену: такой день остаётся н/д. Непроверенные, текущие и будущие дни не превращаются в нули.",
       "Среднедневные продажи за произвольный период делятся на max(1,N−1). Оперативные окна делятся на настоящие 7/14/30 календарных дней; предыдущее окно той же длины непосредственно предшествует текущему. Процент при нулевой/отрицательной базе не рассчитывается.",
       "Учётная стоимость: исторический активный регистр точного магазина/SKU/характеристики → документ установки этого магазина → явно общий документ без магазина. Цена выбирается отдельно для каждой даты; другие магазины, будущие цены и закупочные оценки не используются. Последняя неположительная/пустая цена означает отсутствие стоимости, а не возврат к более старой цене.",
       "Для дневных продаж применяется последняя цена не позже начала дня; внутридневная более поздняя цена не попадает в ранние продажи. Для закрытия применяется последняя цена строго до следующей полуночи. Количество × цена — сопоставимая оценка по учётной цене, не фактическая стоимость партий. Выручка показана отдельно в исходных суммах 1С, с содержащимся в них НДС.",
@@ -1083,7 +1120,7 @@ export async function getTurnoverOptions(): Promise<TurnoverOptions> {
   };
 }
 
-export async function getTurnoverRow(request: TurnoverRequest): Promise<TurnoverRowDetail> {
+export async function getTurnoverRow(request: TurnoverRequest, reloadReader = getReloadReadiness): Promise<TurnoverRowDetail> {
   const params = turnoverQuerySchema.parse(request);
   if (!params.auditGroup) throw Object.assign(new Error("Укажите строку отчёта"), { statusCode: 400 });
   let requestedStores = new Set(params.store);
@@ -1105,7 +1142,7 @@ export async function getTurnoverRow(request: TurnoverRequest): Promise<Turnover
     // seeds unobserved shops, so consolidated details retain the original scope.
     if (params.profile !== "sample") scoped = { ...params, sku };
   }
-  const report = await getTurnoverReport(scoped);
+  const report = await getTurnoverReport(scoped, reloadReader);
   const row = report.rows.find(candidate => candidate.key === params.auditGroup);
   if (!row) throw Object.assign(new Error("Строка не найдена. Сформируйте отчёт заново."), { statusCode: 404 });
   return { row, generatedAt: report.generatedAt };

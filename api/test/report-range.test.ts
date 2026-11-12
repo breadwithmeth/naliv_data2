@@ -25,3 +25,7 @@ test("explicit bounds are honoured as given, never widened or capped", () => {
   assert.deepEqual(resolveReportRange({ from }), { from });
   assert.deepEqual(resolveReportRange({ to }), { to });
 });
+
+test("reversed report bounds are rejected before readiness evaluation", () => {
+  assert.throws(() => resolveReportRange({ from: new Date("2026-06-03"), to: new Date("2026-06-01") }), { statusCode: 400 });
+});

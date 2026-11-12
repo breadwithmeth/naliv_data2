@@ -25,6 +25,9 @@ export function currentMonthRange(now: Date = new Date()): { from: Date; to: Dat
 // A request without a range means "the current month". Scanning every year used
 // to be the default and is still reachable by passing an explicit range.
 export function resolveReportRange<T extends ReportRangeFields>(query: T): T {
+  if (query.from && query.to && query.from >= query.to) {
+    throw Object.assign(new Error("Некорректный период отчёта"), { statusCode: 400 });
+  }
   if (query.from || query.to) {
     return query;
   }

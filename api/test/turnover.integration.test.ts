@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { verifyReloadConsumer } from "./reload-consumer-fixture.js";
 import { chronologicalAverage, evaluateTurnoverRisks, planTurnoverTransfers, salesChange, turnoverRatios } from "../src/services/turnover-domain.js";
 import type { TurnoverNorms, TurnoverRow } from "../src/services/turnover-types.js";
 
@@ -141,10 +142,13 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
   const { config } = await import("../src/config.js");
   const { getTurnoverOptions, getTurnoverReport, getTurnoverRow, turnoverQuerySchema } = await import("../src/services/turnover.js");
   const originalQuery = prisma.$queryRaw;
+  const originalUnsafeQuery = prisma.$queryRawUnsafe;
   const originalSchema = config.PGSCHEMA;
   config.PGSCHEMA = "pg_temp";
   try {
     await prisma.$transaction(async (tx) => {
+      const [target] = await tx.$queryRaw<Array<{ name: string }>>`select current_database() as name`;
+      assert.equal(target.name, "nalivdata", "Temporary turnover fixtures are authorized only in nalivdata");
       const definitions = [
         "catalog_magaziny (ref_key text, description text, deletion_mark boolean default false)",
         "catalog_sklady (ref_key text, description text, magazin_key text, deletion_mark boolean default false)",
@@ -163,7 +167,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
         "document_zakaz_postavschiku_tovary (\"_parent_ref_key\" text, nomenklatura_key text, kolichestvo numeric)",
         "document_postuplenie_tovarov (ref_key text, date timestamp, deletion_mark boolean, posted boolean, zakaz_postavschiku_key text)",
         "document_postuplenie_tovarov_tovary (\"_parent_ref_key\" text, nomenklatura_key text, kolichestvo numeric)",
-        "document_chek_kkm (ref_key text, date timestamp, deletion_mark boolean, posted boolean)",
+        "document_chek_kkm (ref_key text, date timestamp, deletion_mark boolean, posted boolean, magazin_key text)",
         "document_chek_kkm_tovary (\"_parent_ref_key\" text, nomenklatura_key text, shtrihkod text)"
       ];
       for (const definition of definitions) await tx.$executeRawUnsafe(`create temp table ${definition} on commit drop`);
@@ -212,9 +216,10 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
         ('r1','2026-08-02',false,true,'o1'), ('future-receipt','2026-08-05',false,true,'o1')`);
       await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov_tovary values
         ('r1','i1',3), ('future-receipt','i1',7)`);
-      await tx.$executeRawUnsafe("insert into document_chek_kkm values ('c1','2026-08-01',false,true)");
+      await tx.$executeRawUnsafe("insert into document_chek_kkm values ('c1','2026-08-01',false,true,'s1')");
       await tx.$executeRawUnsafe("insert into document_chek_kkm_tovary values ('c1','i1','460123')");
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
+      prisma.$queryRawUnsafe = tx.$queryRawUnsafe.bind(tx) as typeof prisma.$queryRawUnsafe;
       const params = { from: "2026-08-01", to: "2026-08-04", store: ["s1"] };
       const report = await getTurnoverReport(params);
       const item = report.rows.find((row) => row.sku === "i1")!;
@@ -261,6 +266,55 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       assert.equal(turnoverQuerySchema.safeParse({ ...params, comparisonFrom: "2026-08-02", comparisonTo: "2026-08-05" }).success, false);
       assert.equal(turnoverQuerySchema.safeParse({ ...params, comparisonFrom: "2026-07-20", comparisonTo: "2026-07-22" }).success, false);
       assert.equal(turnoverQuerySchema.safeParse({ ...params, norms: "not-json" }).success, false);
+      await t.test("certified empty retail and receipt days are zero without hiding an unclosed shift", async () => {
+        await tx.$executeRawUnsafe("savepoint certified_empty_sales");
+        try {
+          await tx.$executeRawUnsafe(`delete from document_otchet_o_roznichnyh_prodazhah
+            where date='2026-08-02'`);
+          await tx.$executeRawUnsafe(`insert into document_chek_kkm values
+            ('unclosed-shift','2026-08-02',false,true,'s2')`);
+          const certified = {
+            status: "reloading" as const, from: "2026-06-01", toExclusive: "2026-08-04",
+            completedJobs: 1, totalJobs: 2, sources: [], databaseBytes: 1, pauseAtBytes: 9_000_000_000,
+            binding: "turnover-fixture",
+            coverageSources: (["retail", "receipts"] as const).map((key) => ({
+              source: { key, entity: key === "retail" ? "Document_ОтчетОРозничныхПродажах" : "Document_ЧекККМ",
+                kind: "dated" as const, tables: [key === "retail" ? "document_otchet_o_roznichnyh_prodazhah" : "document_chek_kkm"],
+                floor: "2026-06-01", required: true },
+              intervals: [{ from: "2026-06-01", to: "2026-08-04" }]
+            }))
+          };
+          const reader = async () => certified;
+          const known = await getTurnoverReport({ ...params, sku: "i1" }, reader);
+          const row = known.rows[0]!;
+          assert.equal(row.periodSales.quantity, 0, "2 sold, certified empty day, then return of 2");
+          assert.equal(row.periodSales.revenue, 0);
+          assert.equal(row.averageQty, 11);
+          assert.equal(row.turnoverQty, 0);
+          const detail = await getTurnoverRow({ ...params, auditGroup: row.key }, reader);
+          assert.deepEqual(detail.row.daily.map((day) => day.salesQty), [2, 0, -2]);
+          assert.equal(detail.row.windows.find((window) => window.days === 7)!.sales.quantity, 0);
+          assert.equal(detail.row.windows.find((window) => window.days === 14)!.sales.quantity, 0);
+          assert.equal(detail.row.windows.find((window) => window.days === 30)!.sales.quantity, 0);
+          const network = await getTurnoverReport({ ...params, store: [], sku: "i1" }, reader);
+          assert.equal(network.rows.find((value) => value.storeKey === "key:s1")!.periodSales.quantity, 0);
+          assert.equal(network.rows.find((value) => value.storeKey === "key:s2")!.periodSales.quantity, null);
+          assert.ok(network.warnings.some((warning) => /чеки.*нет.*розничного отчёта/i.test(warning)));
+          const sample = await getTurnoverReport({ ...params, profile: "sample", sku: "i1" }, reader);
+          assert.equal(sample.rows[0]!.periodSales.quantity, 0);
+          for (const kind of ["retail", "receipts"]) {
+            const incomplete = async () => ({
+              ...certified, coverageSources: certified.coverageSources.map((source) => source.source.key === kind
+                ? { ...source, intervals: [{ from: "2026-06-01", to: "2026-08-02" }] } : source)
+            });
+            const unknown = await getTurnoverReport({ ...params, sku: "i1" }, incomplete);
+            assert.equal(unknown.rows[0]!.periodSales.quantity, null, `Missing ${kind} certification is not zero`);
+          }
+        } finally {
+          await tx.$executeRawUnsafe("rollback to savepoint certified_empty_sales");
+          await tx.$executeRawUnsafe("release savepoint certified_empty_sales");
+        }
+      });
       await t.test("sample reports consolidate each SKU across shops and warehouses and recompute turnover", async () => {
         await tx.$executeRawUnsafe("savepoint consolidated_sample");
         try {
@@ -593,7 +647,12 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
     }, { timeout: 30_000 });
   } finally {
     prisma.$queryRaw = originalQuery;
+    prisma.$queryRawUnsafe = originalUnsafeQuery;
     config.PGSCHEMA = originalSchema;
     await prisma.$disconnect();
   }
+});
+
+test("reload readiness temporary global gate refuses cached turnover workbook", { skip: !process.env.ANALYTICS_TEST_DATABASE_URL }, async () => {
+  await verifyReloadConsumer("/turnover", "all");
 });

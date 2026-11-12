@@ -47,7 +47,7 @@ const readerGuide = [
   ["Как выбирается цена стоимости", "Для каждого периода отдельно, строго до его правой границы: 1) последний активный регистр магазина; 2) последний документ стоимости магазина; 3) последняя цена товара из документов по всей сети без ограничения магазина; 4) взвешенная закупочная цена за предыдущие 90 дней. Это порядок приоритета, не выбор самого нового источника среди всех четырех."],
   ["Оценочная стоимость", "Нетто количество товара исходного магазина умножается на выбранную цену; затем результаты суммируются. Возвраты уменьшают стоимость. В запасном закупочном расчете цена = сумма (сумма строки − НДС строки) / сумма количества. НДС из розничной выручки при расчете ВД не вычитается."],
   ["Коды цены на листе «Оценка стоимости»", "live-store-register — регистр магазина; store-cost-document — документ магазина; global-cost-document — документы по всей сети; purchase-90d — взвешенная закупка за 90 дней; unavailable — подходящей цены нет. current означает текущий период, previous — предыдущий."],
-  ["Качество данных: покрытие", "«Дней с чеками» показывает дни с наблюдаемыми документами; полный календарь дней не доказывает полноту загрузки. «Документов чеков» включает продажи и возвраты всех товаров и поэтому отличается от M/N на категорийных листах."],
+  ["Качество данных: покрытие и сертификация", "«Дней с чеками» — наблюдение документов, не доказательство полноты загрузки. «Сертификация загрузки» независимо для каждого периода: verified — все дни проверены журналом; partial — проверена часть; unavailable — подтвержденного окна нет, финансовые итоги n/a. «Проверено до» — исключенная граница. before_horizon — до горизонта; reloading — загрузка не завершена; open_period — текущие/будущие дни не закрыты. Их наблюдаемые суммы не считаются полностью проверенными. «Документов чеков» включает продажи и возвраты всех товаров, а не только M/N категорийных листов."],
   ["Качество данных: сверка сумм", "«Строки минус заголовки» = нетто сумма товарных строк − нетто сумма заголовков документов. Расхождение показано отдельно; оно не распределяется по товарам. «ВД всего периода» относится ко всем товарам, а не только к объединенной категории."],
   ["Качество данных: неизвестная стоимость", "Абсолютное количество суммирует модули исходных количеств, не погашая продажи возвратами. Неоцененное количество входит в него. Доля оцененного количества = 1 − неоцененное / абсолютное. «Известная часть стоимости» не является полной стоимостью при наличии пробелов."],
   ["Где искать первоисточник числа", "«Магазины» связывает физическую точку с исходными ключами; «Классификация» связывает товар с категорией; «Оценка стоимости» хранит период, исходный магазин, товар, количество, сумму, цену и источник цены. Длинные ключи — идентификаторы, не суммы и не ошибки."],
@@ -142,6 +142,7 @@ export async function writeYearComparisonWorkbook(report: YearComparisonReport, 
       aggregateIndex.get(JSON.stringify([period, scope, scopeKey, kind, group]));
     const cities = [...new Set(report.stores.map((store) => store.city))].sort((a, b) => a.localeCompare(b, "ru"));
     const selected = new Set(report.cohort.selectedStoreKeys);
+    const coverageByPeriod = Object.fromEntries(report.coverage.map((value) => [value.period, value]));
     const previousLabel = `[${report.periods.previous.from}, ${report.periods.previous.to})`;
     const currentLabel = `[${report.periods.current.from}, ${report.periods.current.to})`;
 
@@ -289,6 +290,13 @@ export async function writeYearComparisonWorkbook(report: YearComparisonReport, 
     methodology.addRow(["Снимок UTC", report.generatedAt]);
     methodology.addRow(["Текущий расчет стоимости до", report.periods.current.to]);
     methodology.addRow(["Предыдущий расчет стоимости до", report.periods.previous.to]);
+    for (const [period, label] of [["current", "Текущий"], ["previous", "Предыдущий"]] as const) {
+      const certification = coverageByPeriod[period].reloadCoverage;
+      const row = methodology.addRow([`Сертификация: ${label}`,
+        `${certification.status}; запрос [${certification.requestedFrom}, ${certification.requestedToExclusive}); проверено до (исключая): ${certification.verifiedThrough ?? unavailable}; причина: ${certification.reason ?? unavailable}`]);
+      row.height = 45;
+      row.getCell(2).alignment = { wrapText: true, vertical: "middle" };
+    }
     methodology.addRow([]);
     const guideHeader = methodology.addRow(["Как читать отчет: оформление, показатели и источники"]);
     methodology.mergeCells(guideHeader.number, 1, guideHeader.number, 2);
@@ -301,12 +309,19 @@ export async function writeYearComparisonWorkbook(report: YearComparisonReport, 
     methodology.commit();
 
     const quality = worksheet(workbook, "Качество данных", [53, 38, 38], 2);
-    quality.addRow(["Наблюдаемое покрытие и сверка", currentLabel, previousLabel]);
+    quality.addRow(["Наблюдение, сертификация и сверка", currentLabel, previousLabel]);
     quality.addRow(["Показатель", "Текущий период", "Предыдущий период"]);
     header(quality.getRow(1));
     header(quality.getRow(2));
-    const coverageByPeriod = Object.fromEntries(report.coverage.map((value) => [value.period, value]));
     const qualityByPeriod = Object.fromEntries(report.dataQuality.periods.map((value) => [value.period, value]));
+    for (const [label, key] of [
+      ["Сертификация загрузки", "status"], ["Сертифицированный запрос от", "requestedFrom"],
+      ["Сертифицированный запрос до (исключая)", "requestedToExclusive"],
+      ["Проверено до (исключая)", "verifiedThrough"], ["Причина сертификации", "reason"]
+    ] as const) {
+      quality.addRow([label, coverageByPeriod.current.reloadCoverage[key] ?? unavailable,
+        coverageByPeriod.previous.reloadCoverage[key] ?? unavailable]);
+    }
     for (const [label, key] of [["Дней с чеками", "coveredDays"], ["Ожидается календарных дней", "expectedDays"], ["Документов чеков", "receiptCount"], ["Статус наблюдения", "status"], ["Первая наблюдаемая дата", "dateFrom"], ["Последняя наблюдаемая дата", "dateTo"]] as const) {
       quality.addRow([label, coverageByPeriod.current[key] ?? unavailable, coverageByPeriod.previous[key] ?? unavailable]);
     }
@@ -329,7 +344,7 @@ export async function writeYearComparisonWorkbook(report: YearComparisonReport, 
     quality.addRow([]);
     quality.addRow(["Глобальная история подходящих чеков", report.dataQuality.global.dateFrom ?? unavailable, report.dataQuality.global.dateTo ?? unavailable]);
     quality.addRow(["Глобально дней с подходящими чеками", report.dataQuality.global.coveredDays]);
-    quality.addRow(["Важно", "Наблюдение активности не доказывает полноту загрузки"]);
+    quality.addRow(["Важно", "Чеки подтверждают наблюдение активности; только журнал подтверждает сертификацию. Проверенная история с открытыми днями — partial/open_period; полностью открытое окно не подтверждено."]);
     quality.addRow([]);
     const missingHeader = quality.addRow(["Даты без наблюдаемых чеков", "Текущий период", "Предыдущий период"]);
     header(missingHeader);

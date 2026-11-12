@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { verifyReloadConsumer } from "./reload-consumer-fixture.js";
 
 test("operational metrics use snapshots, monetary stockouts, and open orders", {
   skip: !process.env.ANALYTICS_TEST_DATABASE_URL
@@ -85,7 +86,9 @@ test("operational metrics use snapshots, monetary stockouts, and open orders", {
         balance_period timestamp, kassa_kkm_key text, summa_balance numeric) on commit drop`);
       await tx.$executeRawUnsafe(`create temp table accumulation_register_raschety_s_postavschikami_balance (
         balance_period timestamp, magazin_key text, summa_balance numeric,
-        k_oplate_balance numeric, k_postupleniyu_balance numeric) on commit drop`);
+        k_oplate_balance numeric, k_postupleniyu_balance numeric,
+        postavschik_key text, dokument_rascheta_type text,
+        dokument_rascheta text) on commit drop`);
 
       await tx.$executeRawUnsafe(`insert into catalog_magaziny values ('s1', 'Усолка')`);
       await tx.$executeRawUnsafe(`insert into catalog_sklady values ('w1', 's1')`);
@@ -127,7 +130,8 @@ test("operational metrics use snapshots, monetary stockouts, and open orders", {
       await tx.$executeRawUnsafe(`insert into accumulation_register_denezhnye_sredstva_kkm_balance values
         ('2026-08-03', 'k1', 20)`);
       await tx.$executeRawUnsafe(`insert into accumulation_register_raschety_s_postavschikami_balance values
-        ('2026-08-03', 's1', -30, -40, 10)`);
+        ('2026-08-03', 's1', 7, -20, 5, 'sup1', 'Document_Receipt', 'r1'),
+        ('2026-08-03', 's1', 7, -20, 5, 'sup1', 'Document_Receipt', 'r1')`);
 
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
       const params = {
@@ -145,6 +149,9 @@ test("operational metrics use snapshots, monetary stockouts, and open orders", {
       assert.equal(money.summary.totalCash, 30);
       assert.equal(money.summary.bankBalance, null);
       assert.equal(money.summary.supplierPayableRaw, -40);
+      // Equal resources at one approved natural key are still two stored facts.
+      assert.equal(money.summary.supplierSumRaw, 14);
+      assert.equal(money.stores.find((store) => store.storeKey === "s1")?.supplierSumRaw, 14);
       assert.equal(money.summary.supplierBalanceStatus, "experimental");
       assert.equal(money.summary.uncollectedCashDays, 2);
       assert.equal(money.summary.cashSalesCoveragePct, 100);
@@ -186,4 +193,8 @@ test("operational metrics use snapshots, monetary stockouts, and open orders", {
     prisma.$queryRaw = original;
     await prisma.$disconnect();
   }
+});
+
+test("reload readiness temporary global gate refuses cached operational demand", { skip: !process.env.ANALYTICS_TEST_DATABASE_URL }, async () => {
+  await verifyReloadConsumer("/lost-sales", "all");
 });

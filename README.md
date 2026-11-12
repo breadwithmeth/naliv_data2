@@ -325,11 +325,12 @@ Admin API: `GET /api/reports/turnover/options` — физические мага
 остатки и продажи равны нулю за весь период. Границы API — `[from,to)`, максимум 366 дней;
 UI показывает включительную конечную дату. Все маршруты требуют admin.
 
-Для новой установки подготовьте покрывающие индексы без изменения исходных записей:
+Для компактной схемы v1 подготовьте индексы без изменения исходных записей:
 `npm run db:optimize -- --turnover-only` показывает DDL,
-`npm run db:optimize -- --turnover-only --apply` применяет только индексы отчёта через
-`CREATE INDEX CONCURRENTLY` и обновляет статистику. При отсутствии данных отчёт
-показывает ошибку; при недоступности PostgreSQL — сообщение и действие повторной загрузки.
+`npm run db:optimize -- --turnover-only --apply` применяет канонические индексы
+отчёта через `CREATE INDEX CONCURRENTLY`. Старую заполненную схему сначала
+нужно мигрировать; во время уплотнения применение индексов запрещено.
+При отсутствии данных отчёт показывает ошибку; при недоступности PostgreSQL — сообщение и действие повторной загрузки.
 
 ### Измерения на полном ассортименте
 
@@ -514,6 +515,22 @@ hosted separately.
 
 ## Loading data from 1C
 
+The supported PostgreSQL store is the compact analytics contract v1, not a
+complete 1C mirror. Unrelated tables/fields are intentionally unavailable in
+the generic browser; business history, formulas, original text references,
+legacy parent joins and missing-data semantics are unchanged. Do not deploy the
+new worker until the matching backup-protected migration has activated.
+
+Administration distinguishes **Схема аналитики** (existing `totalBytes`) from
+**Вся база** (`pg_database_size`, target exactly 10,000,000,000 bytes). The
+heap/index/TOAST/other breakdown avoids double-counting TOAST indexes. Unknown
+row estimates display **Нет оценки**, never an invented zero. A missing layout
+marker is legacy/unknown; `ddl_frozen` displays **Идёт уплотнение базы**, not a
+claim that all sources are current. Size warnings do not block report reads.
+Transport provenance is relation-level `ops.analytics_sources`; `_loaded_at`
+is the last retained content change, not the last fetch.
+
+
 Run the PostgreSQL exporter from `naliv_data1`. Its default and
 `--all-documents` modes exclude individual receipts unless the explicit
 compatibility flag is supplied. Detailed commands are in
@@ -546,6 +563,37 @@ differs, so an old timestamp means 1C had no new data, not that the export
 skipped the table. That mode is what `api/src/scripts/check-sync-freshness.ts`
 prints, and it shares `SYNC_TABLE_GROUPS`, `SYNC_STALE_AFTER_HOURS`, and
 `collectTableFreshness` with the service.
+
+### Post-cleanup reload readiness
+
+`api/src/services/reload-readiness.ts` reads the small reload ledger written by
+`naliv_data1` (`ops.analytics_storage_layout`, `ops.analytics_reload_plans`,
+`ops.analytics_reload_jobs`), never fact counts, behind a single-flight cache of
+at most one second. `GET /api/sync/health` and `GET /api/management/source-health`
+add `reloadReadiness` outside their longer report caches:
+
+```json
+{"status":"needs_preparation|reloading|paused_capacity|blocked|ready","from":"2026-06-01","toExclusive":"2026-11-12",
+ "completedJobs":0,"totalJobs":0,"sources":[{"table":"document_chek_kkm","status":"missing|empty|partial|verified|unavailable","verifiedThrough":"2026-06-02"}],
+ "databaseBytes":5269157555,"pauseAtBytes":12000000000}
+```
+
+`ready` requires the layout-bound plan, a verified canary and exact equality
+between the manifest's required recovery jobs and verified ledger rows; missing,
+mismatched or unreadable metadata is `blocked`, never ready. `verifiedThrough` is
+the first uncertified day from the source floor. Until the five recovered sources
+are ready, inventory, nomenclature, all turnover endpoints, compensation
+activities/JSON/XLSX, presentation XLSX, store-stock, store-performance,
+lost-sales and purchasing return HTTP 503 with `Cache-Control: no-store` and
+`{"error":"…","code":"ANALYTICS_RELOAD_INCOMPLETE"}`. Sales and year comparison
+are certified per completed day against receipts, income and marketing against
+retail reports; a window that also contains the current open day keeps its query
+and adds root `reloadCoverage` with `status:"partial",reason:"open_period"`. Year
+comparison certifies the current and previous periods independently in JSON and
+XLSX; an uncovered period keeps its n/a values with `unavailable` certification.
+Settings, losses, acquiring, cash articles, supplier terms and money position
+stay readable. Readiness is checked again before any warm cache hit, and cache
+keys bind the plan, revision and status.
 
 ## Marketing compensations
 
@@ -677,11 +725,12 @@ machine; run it where OData is available.
 
 ## Performance tuning
 
-Install the analytics indexes once for each populated database:
+Maintain query indexes only after compact layout activation:
 
 ```powershell
 npm run db:optimize                  # print the SQL without changing the database
 npm run db:optimize -- --apply       # build indexes concurrently, then ANALYZE
+npm run db:optimize -- --json        # schema-independent manifest; no DB connection
 ```
 
 For a production installation with only compiled files, use
@@ -691,11 +740,27 @@ It uses a dedicated single-connection pool and builds one index at a time outsid
 a transaction. Normal reads and writes can continue during index creation.
 An interrupted concurrent build may leave an invalid index; the script reports
 that condition rather than silently treating the invalid index as installed.
+The maintenance-only optimizer reads the canonical ingestion contract from the
+sibling checkout, `--contract PATH`, or `ANALYTICS_STORAGE_CONTRACT`. A compiled-only
+maintenance deployment must mount that same JSON explicitly; ordinary API
+startup/build does not require the sibling repository.
 
-The exporter creates partial unique indexes for upserts. Those do not cover
-analytics joins on `_parent_ref_key`; full reference-key indexes also allow
-joins without assuming every source key is nonempty. Date and balance-period
-indexes support bounded reports. These indexes persist across normal exports.
+The canonical ingestion identities are full reference uniqueness, canonical
+child parent/line expressions and complete NULL-safe register dimensions.
+Query indexes remain separately owned; stock uses the canonical item/period/
+warehouse/characteristic identity plus one period query index. Full and
+turnover-only optimizer modes converge without recreating retired aliases.
+Apply refuses legacy/frozen layouts and invalid indexes. Same-name definition
+changes build/validate a deterministic replacement before retiring the captured
+old definition; unrelated unique indexes are not cleanup targets.
+The base compact manifest contains 29 query definitions and 11 captured
+retirement definitions. `analytics_warehouse_ref_idx` and
+`analytics_supplier_order_ref_idx` are retired only after their respective full,
+valid canonical `UNIQUE(ref_key)` ingest indexes are present. Absent aliases are
+no-ops; changed definitions or foreign ownership refuse retirement.
+Further INCLUDE removal requires measured clone bytes, unchanged HTTP/XLSX
+semantics, the existing `max(25%, 500 ms)` performance allowance and no increased
+query-plan temp-block spill. Without that evidence, keep the payloads.
 Sales filters receipts before sharing their lines across series, heatmap, and
 composition in one query; income shares selected retail-report lines in one
 query. Source health aggregates only selected parents' goods lines. Marketing
@@ -728,6 +793,63 @@ authentication. Administration overview loads only on administration navigation.
 Concurrent settings subscribers share a request with independent cancellation,
 not a completed-result browser cache. API/static responses use compression;
 content-hashed assets are immutable for one year, while HTML revalidates.
+
+### Storage parity and operational acceptance
+
+`api/src/scripts/verify-storage-parity.ts capture|compare` exercises existing
+admin HTTP routes and compares JSON plus semantic XLSX cells using ExcelJS.
+Run the old/new API against the same frozen restored `_storage_rehearsal`
+clone, with `REPORT_CACHE_TTL_SECONDS=0`, pool at most 2 and environment-held
+admin credentials. `VERIFY_DATABASE_URL` and the uncached, admin-only
+`/api/analytics/storage-identity` challenge bind both SQL and HTTP to the
+clone's exact database/schema name and OID. Backport this diagnostics-only
+identity endpoint into the old baseline release before capture; do not change
+its business services. Compare additionally requires the new API's exact
+activated contract/migration/plan marker. Missing endpoint or mismatch refuses
+proof generation. Keep artifact paths absolute, outside both repositories,
+with owner-only access; login tokens/cookies are never saved.
+
+```text
+node --import tsx api/src/scripts/verify-storage-parity.ts capture --storage-plan STORAGE_PLAN --base-url http://127.0.0.1:4317 --output BASELINE
+node --import tsx api/src/scripts/verify-storage-parity.ts compare --storage-plan STORAGE_PLAN --base-url http://127.0.0.1:4317 --baseline BASELINE --output PARITY_REPORT
+```
+
+After a post-cleanup reload, a separate read-only matrix certifies the live
+database instead of a clone (never a physical rehearsal proof):
+
+```text
+node --import tsx api/src/scripts/verify-storage-parity.ts readiness --base-url http://127.0.0.1:4317 --reload-plan RELOAD_PLAN --output READINESS_REPORT
+```
+
+It emits `kind:"post-cleanup-readiness"` with the challenged target identity,
+contract/manifest/plan binding, exercised routes, skipped-case reasons, database
+bytes and median-of-three warmed timings. Run it against an API started with
+`REPORT_CACHE_TTL_SECONDS=0`, pool limit 2 and a read-only `DATABASE_URL`.
+
+The fixed half-open windows are September 2025, September 2026 and the
+2024-02-28–2024-03-02 leap boundary. Item/activity/store selections and actual
+turnover `auditGroup` keys are frozen from published API responses, never
+invented or selected by widening periods.
+The leap-boundary clone must contain deterministic populated item/store/activity
+fixtures with every quantity/money and summary/full drill-down. Missing
+historical September data still compares its unavailable diagnostics; it is
+never replaced with another period. Capture and compare validate the entire
+route/workbook matrix against frozen selections and reject shortened or
+duplicate baselines.
+Integers, keys, nulls, arrays, coverage and quality diagnostics compare exactly; finite fractional serialization
+tolerance is at most 1e-6. Only generated timestamps are ignored, including their
+explicit workbook cells. Workbook ZIP dates/styles are not business values.
+Three warmed uncached samples must stay within `max(25%, 500 ms)` regression.
+Clock-sensitive capture/compare requires the same UTC day (or a consistently
+frozen-clock clone), not suppression of changed business fields.
+
+Database activation separately freezes and proves every retained row/value/null.
+The Python migration's final `verify` also requires successful deterministic
+PostgreSQL replay and physical rewrite results. No isolated clone/test DSN,
+backup/PITR proof, matching repack privileges/tools or verified server disk
+headroom means **no destructive production migration**. Introspect Prisma only
+from the verified compact clone; never use `db push`/reset on production.
+
 
 Independent report queries use the database pool concurrently. The default
 pool size is `DB_CONNECTION_LIMIT=5`; increase it only when PostgreSQL has spare
@@ -877,8 +999,8 @@ Display rounding: `formatMoney`/`formatNumber` show whole ₸/integers;
 decimal columns choose their own precision; compact numbers retain at most one
 decimal. Calculations and API values are not rounded to those displayed digits,
 so a sum of visible rounded cells can differ from the displayed rounded total.
-Storage sizes use powers of 1024, not 1000; PostgreSQL estimated row counts are
-estimates, not exact `COUNT(*)`.
+Storage diagnostics use decimal GB (1 GB = 1,000,000,000 bytes), matching the
+10,000,000,000-byte target; PostgreSQL row counts are estimates, not exact `COUNT(*)`.
 
 Read-only inventory-event investigation for `[2026-06-01,2026-10-09)` found 50
 posted recounts with bases; 45 share an inventory-order base with an adjustment.

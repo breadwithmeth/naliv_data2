@@ -19,6 +19,6 @@ nomenclatureRouter.get(
   "/",
   asyncHandler(async (req, res) => {
     const query = resolveReportRange(querySchema.parse(req.query));
-    await sendCachedJson(req, res, ["getNomenclatureReport", query], () => getNomenclatureReport(query));
+    await sendCachedJson(req, res, ["getNomenclatureReport", query], () => getNomenclatureReport(query), { kind: "all" });
   })
 );

@@ -19,6 +19,6 @@ inventoryRouter.get(
   "/",
   asyncHandler(async (req, res) => {
     const query = resolveReportRange(querySchema.parse(req.query));
-    await sendCachedJson(req, res, ["getInventoryReport", query], () => getInventoryReport(query));
+    await sendCachedJson(req, res, ["getInventoryReport", query], () => getInventoryReport(query), { kind: "all" });
   })
 );

@@ -16,6 +16,7 @@ import { nomenclatureRouter } from "./routes/nomenclature.js";
 import { reportsRouter } from "./routes/reports.js";
 import { syncRouter } from "./routes/sync.js";
 import { turnoverRouter } from "./routes/turnover.js";
+import { sendReloadIncompleteError } from "./lib/http.js";
 
 const app = express();
 app.use(compression({ threshold: 1024 }));
@@ -83,6 +84,7 @@ app.use(
       next(error);
       return;
     }
+    if (sendReloadIncompleteError(error, res)) return;
     if (error instanceof ZodError) {
       res.status(400).json({ error: "Некорректный запрос", details: error.flatten() });
       return;

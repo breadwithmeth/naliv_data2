@@ -20,7 +20,7 @@ import {
   Table2,
   TrendingUp
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
   Bar,
@@ -53,6 +53,8 @@ import type {
   NomenclatureReport,
   Overview,
   PurchasingRecommendations,
+  ReloadCoverage,
+  ReloadReadiness,
   ReportDateRange,
   SalesPeriod,
   SalesReport,
@@ -71,7 +73,7 @@ import type {
 import { MetricLabel } from "./MetricHint";
 import { metricDefinitions, type MetricId, type MetricStatus } from "./metric-definitions";
 import {
-  formatBytes,
+  formatStorageBytes,
   formatCell,
   formatCompact,
   formatDate,
@@ -168,6 +170,8 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
   const [dateRange, setDateRange] = useState<DateRangeValue>(currentMonthRange);
   const [overviewState, setOverviewState] = useState<LoadState<Overview>>({ status: "idle" });
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
+  const [overviewRevision, setOverviewRevision] = useState(0);
+  const [tableNotice, setTableNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const pageHeading = useRef<HTMLHeadingElement>(null);
   const currentPage: AppPage = user.role === "marketing" ? "marketing" : location.page;
@@ -179,6 +183,15 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
     const term = search.trim().toLowerCase();
     return term ? tables.filter((table) => table.name.toLowerCase().includes(term)) : tables;
   }, [overview?.tables, search]);
+  const handleTableRemoved = useCallback(() => {
+    setSelectedTable(null);
+    setTableNotice("Таблица больше недоступна.");
+    setOverviewRevision((revision) => revision + 1);
+  }, []);
+  const selectTable = (tableName: string) => {
+    setTableNotice(null);
+    setSelectedTable(tableName);
+  };
 
   const navigate = (page: AppPage, view = selectedViews[page]) => {
     if (user.role === "marketing" && page !== "marketing") return;
@@ -209,7 +222,10 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
     const controller = new AbortController();
     setOverviewState((previous) => ({ status: "loading", data: previous.data }));
     api.overview(controller.signal).then((data) => {
-      if (!controller.signal.aborted) setOverviewState({ status: "success", data });
+      if (!controller.signal.aborted) {
+        setOverviewState({ status: "success", data });
+        setSelectedTable((previous) => previous && data.tables.some((table) => table.name === previous) ? previous : null);
+      }
     }).catch((caught) => {
       if (!controller.signal.aborted) setOverviewState((previous) => ({
         status: "error", data: previous.data,
@@ -217,7 +233,7 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
       }));
     });
     return () => controller.abort();
-  }, [currentPage, currentView, user.role]);
+  }, [currentPage, currentView, user.role, overviewRevision]);
 
   async function logout() {
     await api.logout().catch(() => undefined);
@@ -287,36 +303,50 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
               {overviewState.status === "loading" ? <FullScreenState title="Загружаем диагностику" compact /> : null}
               {overviewState.status === "error" ? <div className="empty-state" role="alert">{overviewState.error}</div> : null}
               {overview ? <>
-                <section className="metric-grid" aria-label="Диагностика хранилища">
+                <section className="metric-grid storage-metrics" aria-label="Диагностика хранилища">
                   <MetricCard icon={<Database size={18} />} metricId="admin.tables" label="Таблиц" value={formatNumber(overview.tableCount)} />
-                  <MetricCard icon={<BarChart3 size={18} />} metricId="admin.rows" label="Строк, оценка" value={formatCompact(overview.estimatedRows)} />
+                  <MetricCard icon={<BarChart3 size={18} />} metricId="admin.rows" label="Строк, оценка" value={overview.estimatedRows === null ? "Нет оценки" : formatCompact(overview.estimatedRows)} />
                   <MetricCard icon={<Table2 size={18} />} metricId="admin.columns" label="Колонок" value={formatNumber(overview.columnCount)} />
-                  <MetricCard icon={<Database size={18} />} metricId="admin.size" label="Размер" value={formatBytes(overview.totalBytes)} />
+                  <MetricCard icon={<Database size={18} />} metricId="admin.size" label="Схема аналитики" value={formatStorageBytes(overview.totalBytes)} />
+                  <MetricCard icon={<Database size={18} />} metricId="admin.database-size" label="Вся база" value={formatStorageBytes(overview.storage.databaseBytes)} detail={<>Цель: не более 10 ГБ · {overview.storage.withinTarget ? "В пределах цели" : "Цель превышена"}</>} />
                 </section>
-                <DataCatalogOverview overview={overview} onSelectTable={setSelectedTable} />
+                <p className="context-note" role="status">
+                  {overview.storage.compactionActive ? "Идёт уплотнение базы. " : ""}
+                  {overview.storage.layoutVersion === null ? "Версия хранилища неизвестна: маркер компактной схемы отсутствует." : `Версия хранилища: ${overview.storage.layoutVersion}.`}
+                  {" "}Размер не подтверждает полноту источников; доступность отчётов зависит от проверенного покрытия источников.
+                </p>
+                <DataCatalogOverview overview={overview} onSelectTable={selectTable} />
                 <details className="report-disclosure">
                   <summary>Выбрать таблицу для проверки</summary>
                   <div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Найти таблицу" aria-label="Найти таблицу" /></div>
                   <nav className="table-nav" aria-label="Диагностические таблицы">
-                    {filteredTables.map((table) => <button type="button" key={table.name} className={selectedTable === table.name ? "active" : ""} onClick={() => setSelectedTable(table.name)}><Table2 size={15} /><span>{table.name}</span><small>{formatBytes(table.totalBytes)}</small></button>)}
+                    {filteredTables.map((table) => <button type="button" key={table.name} className={selectedTable === table.name ? "active" : ""} onClick={() => selectTable(table.name)}><Table2 size={15} /><span>{table.name}</span><small>{formatStorageBytes(table.totalBytes)}</small></button>)}
                   </nav>
                 </details>
                 <details className="report-disclosure">
                   <summary>Объем хранения</summary>
+                  <dl className="storage-breakdown">
+                    <div><dt>Данные схемы (heap)</dt><dd>{formatStorageBytes(overview.storage.sourceHeapBytes)}</dd></div>
+                    <div><dt>Индексы схемы</dt><dd>{formatStorageBytes(overview.storage.sourceIndexBytes)}</dd></div>
+                    <div><dt>TOAST схемы</dt><dd>{formatStorageBytes(overview.storage.sourceToastBytes)}</dd></div>
+                    <div><dt>Прочее в базе</dt><dd>{formatStorageBytes(overview.storage.otherBytes)}</dd></div>
+                  </dl>
+                  <p className="context-note">Вся база: {formatNumber(overview.storage.databaseBytes)} байт. Цель: {formatNumber(overview.storage.targetBytes)} байт (10 ГБ, десятичные). Измерено: {formatDateTime(overview.storage.measuredAtUtc)}. TOAST включает собственные индексы и не считается повторно. pg_wal, резервные копии и свободное место выделенного тома в размер базы не входят.</p>
                   <div className="chart-wrap">
                     <ResponsiveContainer width="100%" height={260}>
                       <BarChart data={overview.largestTables}>
                         <CartesianGrid vertical={false} strokeDasharray="3 3" />
                         <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-20} textAnchor="end" height={82} />
-                        <YAxis tickFormatter={formatBytes} width={72} />
-                        <Tooltip formatter={(value) => formatBytes(Number(value))} labelStyle={{ color: "#172033" }} />
+                        <YAxis tickFormatter={formatStorageBytes} width={72} />
+                        <Tooltip formatter={(value) => formatStorageBytes(Number(value))} labelStyle={{ color: "#172033" }} />
                         <Bar dataKey="totalBytes" fill="#2864d8" radius={[4, 4, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
-                  <p className="context-note">Ось X — 12 крупнейших таблиц/представлений схемы raw_1c, отсортированных по занятому объёму. Ось Y — pg_total_relation_size в байтах: сама таблица, индексы и дополнительное хранилище TOAST. Подписи округлены в КБ/МБ/ГБ для чтения; наведите курсор для значения. Это размер хранения, не выручка или число строк. Оценка строк рядом берётся из PostgreSQL n_live_tup, а не из точного COUNT(*) и может отставать до обновления статистики.</p>
+                  <p className="context-note">Ось X — 12 крупнейших таблиц/представлений схемы {overview.schema}, отсортированных по занятому объёму. Ось Y — pg_total_relation_size в байтах: таблица, индексы и TOAST. Подписи округлены в десятичных единицах: 1 КБ = 1000 байт, 1 МБ = 1 000 000 байт, 1 ГБ = 1 000 000 000 байт; цель всей базы проверяется по исходным байтам. Это размер хранения, не выручка или число строк. Оценка строк берётся из неотрицательного pg_class.reltuples, при его отсутствии — только из положительного n_live_tup. Без пригодной статистики показано «Нет оценки», не ноль.</p>
                 </details>
-                {selectedTable ? <TableDetail key={selectedTable} tableName={selectedTable} /> : null}
+                {tableNotice ? <p className="context-note" role="status">{tableNotice}</p> : null}
+                {selectedTable ? <TableDetail key={selectedTable} tableName={selectedTable} onTableRemoved={handleTableRemoved} /> : null}
               </> : null}
             </>
           )}
@@ -381,7 +411,7 @@ const dataGroupCopy: Record<
   documents: {
     title: "Документы 1С",
     description:
-      "Заказы, поступления, списания, кассовые ордера, перемещения, установки цен и себестоимости, инвентаризация.",
+      "Поддерживаемые аналитикой заказы поставщикам, поступления, списания, кассовые ордера, установки цен и себестоимости, инвентаризация.",
     reportUse:
       "Операционные отчеты по движениям, суммам документов, активности магазинов и проведенным операциям."
   },
@@ -395,7 +425,7 @@ const dataGroupCopy: Record<
   catalogs: {
     title: "Справочники",
     description:
-      "Номенклатура, магазины, склады, скидки, наценки, информационные и дисконтные карты.",
+      "Номенклатура, магазины, склады, скидки, наценки, информационные карты и другие справочники аналитического контракта.",
     reportUse:
       "Расшифровка ссылок 1С, группировки по товарам, магазинам, складам и маркетинговым признакам."
   },
@@ -408,7 +438,7 @@ const dataGroupCopy: Record<
   },
   other: {
     title: "Прочие таблицы",
-    description: "Дополнительные сущности OData, которые не попали в основные группы raw_1c.",
+    description: "Регистры и другие аналитические сущности вне основных групп.",
     reportUse: "Профилирование, контроль полноты загрузки и дополнительные аналитические срезы."
   }
 };
@@ -425,16 +455,16 @@ function DataCatalogOverview({
   );
 
   return (
-    <section className="data-catalog" aria-label="Описание данных raw_1c">
+    <section className="data-catalog" aria-label={`Описание данных ${overview.schema}`}>
       <div className="section-heading">
         <div>
-          <h2>Состав данных raw_1c</h2>
-          <span>группы таблиц, доступные для построения отчетов</span>
+          <h2>Состав данных {overview.schema}</h2>
+          <span>доступные аналитические таблицы; не полное зеркало 1С</span>
         </div>
       </div>
       <details className="report-disclosure">
         <summary>Что означают числовые сведения о составе базы</summary>
-        <p className="context-note">Группы формируются по имени и структуре таблиц схемы raw_1c. «Таблиц» — число объектов группы; «Строк» — сумма PostgreSQL n_live_tup по объектам, оценка статистики, а не точный COUNT. «Колонок» — сумма столбцов; «числовых» и «дат» — столбцы с соответствующим SQL-типом, не заполненные записи. Число рядом со служебным полем (_loaded_at, ref_key, _parent_ref_key и др.) — количество таблиц, где найдена такая колонка, не число строк с заполненным значением. Карточка показывает состав хранилища, а не готовность бизнес-метрики или число реальных операций.</p>
+        <p className="context-note">Группы формируются по имени и структуре живых таблиц схемы {overview.schema}. «Таблиц» — число объектов; «Строк» — сумма пригодных оценок PostgreSQL, не точный COUNT. Предпочитается неотрицательное reltuples; нулевой сброшенный n_live_tup не доказывает пустую таблицу. Если у любого объекта нет оценки, итог группы/схемы — «Нет оценки». «Колонок», «числовых» и «дат» — числа SQL-столбцов, не заполненных записей. Число рядом со служебным полем — количество таблиц с такой колонкой. _loaded_at означает последнее изменение содержимого, не успешное чтение источника. Происхождение хранится на уровне ресурса в ops.analytics_sources, не в URL каждой строки. Состав хранилища не подтверждает готовность бизнес-метрики или полноту источников.</p>
       </details>
 
       <div className="data-group-grid">
@@ -451,7 +481,7 @@ function DataCatalogOverview({
                   <h3>{copy.title}</h3>
                   <span>
                     {formatNumber(group.tableCount)} таблиц ·{" "}
-                    {formatCompact(group.estimatedRows)} строк
+                    {group.estimatedRows === null ? "Нет оценки строк" : `${formatCompact(group.estimatedRows)} строк`}
                   </span>
                 </div>
               </div>
@@ -493,6 +523,12 @@ function DataCatalogOverview({
           </div>
         </div>
       ) : null}
+      <p className="context-note">
+        {overview.provenance.available
+          ? `Каталог происхождения ops.analytics_sources: ${formatNumber(overview.provenance.relationCount)} таблиц, ${formatNumber(overview.provenance.resourceCount)} ресурсов.`
+          : "Каталог происхождения ops.analytics_sources недоступен; происхождение не подтверждено."}
+        {" "}Ссылки документов, родительские поля и номера строк остаются в данных для детализации.
+      </p>
     </section>
   );
 }
@@ -1038,6 +1074,35 @@ function ManagementDashboard({ dateRange, panel }: { dateRange: DateRangeValue; 
   useEffect(() => {
     const controller = new AbortController();
     const filters = { ...dateRange, limit: 20 };
+    if (panel === "sources") {
+      let pending = false;
+      const refresh = () => {
+        if (pending || controller.signal.aborted) return;
+        pending = true;
+        api.sourceHealth(filters, controller.signal)
+          .then((data) => {
+            if (!controller.signal.aborted) setSourceHealth({ status: "success", data });
+          })
+          .catch((caught) => {
+            if (!controller.signal.aborted) {
+              setSourceHealth((previous) => ({
+                status: "error",
+                data: previous.data,
+                error: caught instanceof Error ? caught.message : "Не удалось проверить обновление данных"
+              }));
+            }
+          })
+          .finally(() => { pending = false; });
+      };
+      setSourceHealth({ status: "loading" });
+      refresh();
+      const interval = window.setInterval(refresh, 30_000);
+      return () => {
+        window.clearInterval(interval);
+        controller.abort();
+      };
+    }
+
     const load = <T,>(
       request: Promise<T>,
       setter: React.Dispatch<React.SetStateAction<LoadState<T>>>,
@@ -1063,7 +1128,6 @@ function ManagementDashboard({ dateRange, panel }: { dateRange: DateRangeValue; 
     if (panel === "suppliers") load(api.supplierTermsMetrics(filters, controller.signal), setSupplierTerms, "Не удалось загрузить платежи поставщикам");
     if (panel === "store-stock") load(api.storeStockMetrics(filters, controller.signal), setStoreStock, "Не удалось загрузить запасы магазинов");
     if (panel === "purchasing") load(api.purchasingRecommendations(filters, controller.signal), setPurchasing, "Не удалось сформировать рекомендации к заказу");
-    if (panel === "sources") load(api.sourceHealth(filters, controller.signal), setSourceHealth, "Не удалось проверить обновление данных");
 
     return () => controller.abort();
   }, [dateRange.from, dateRange.to, panel]);
@@ -1320,6 +1384,30 @@ const flowTypeLabels: Record<NonNullable<ManagementSettings["cashArticles"][numb
   internal: "Внутреннее перемещение"
 };
 
+const reloadReadinessStatusLabels: Record<ReloadReadiness["status"], string> = {
+  needs_preparation: "нужна подготовка",
+  reloading: "выполняется",
+  paused_capacity: "пауза по объёму базы",
+  blocked: "заблокирована",
+  ready: "завершена"
+};
+
+function reloadReadinessLabel(readiness: ReloadReadiness) {
+  let verifiedThrough: string | null = null;
+  for (const source of readiness.sources) {
+    // Undated references/snapshots have no day boundary; the global status
+    // still accounts for their required jobs.
+    if (source.status === "unavailable" || source.verifiedThrough === null) continue;
+    if (verifiedThrough === null || source.verifiedThrough < verifiedThrough) {
+      verifiedThrough = source.verifiedThrough;
+    }
+  }
+  const boundary = verifiedThrough
+    ? `источники по датам проверены до ${formatDate(verifiedThrough)} (не включительно)`
+    : "проверенная граница недоступна";
+  return `Перезагрузка: ${reloadReadinessStatusLabels[readiness.status]} · задания ${formatNumber(readiness.completedJobs)}/${formatNumber(readiness.totalJobs)} · ${boundary}`;
+}
+
 function SourceHealthPanel({ state }: { state: LoadState<SourceHealth> }) {
   return (
     <section className="reports-section">
@@ -1331,6 +1419,7 @@ function SourceHealthPanel({ state }: { state: LoadState<SourceHealth> }) {
       {state.status === "error" ? <div className="empty-state">{state.error}</div> : null}
       {state.data ? (
         <>
+          <p className="metric-note" role="status">{reloadReadinessLabel(state.data.reloadReadiness)}</p>
           <div className="source-health-grid">
             {state.data.issues.map((issue) => (
               <article className={`source-health-card ${issue.severity}`} key={issue.key}>
@@ -2013,6 +2102,22 @@ function ReportFilterBar({ dateRange, onDateRangeChange }: {
   );
 }
 
+function ReloadCoverageNotice({ coverage }: { coverage: ReloadCoverage }) {
+  if (coverage.status !== "partial" || coverage.reason !== "open_period") return null;
+  let loadedThrough: string | null = null;
+  if (coverage.verifiedThrough) {
+    const lastDay = new Date(coverage.verifiedThrough);
+    lastDay.setUTCDate(lastDay.getUTCDate() - 1);
+    loadedThrough = lastDay.toLocaleDateString("ru-RU", { timeZone: "UTC" });
+  }
+  return (
+    <p className="metric-note warning" role="note">
+      {loadedThrough ? `Данные загружены по ${loadedThrough};` : "Проверенная дата загрузки недоступна;"}
+      {" "}текущий период не завершён. Итоги предварительные.
+    </p>
+  );
+}
+
 function SalesReports({ dateRange, view }: { dateRange: DateRangeValue; view: string }) {
   const [period, setPeriod] = useState<SalesPeriod>("day");
   const [reportState, setReportState] = useState<LoadState<SalesReport>>({
@@ -2070,15 +2175,17 @@ function SalesReportBody({ report, period, view }: { report: SalesReport; period
   const heatmapWeekdays = useMemo(() => getHeatmapWeekdays(report.heatmap.days), [report.heatmap.days]);
   const activeWeekday = heatmapWeekdays.find((weekday) => weekday.value === selectedWeekday) ?? heatmapWeekdays[0] ?? null;
   const unavailable = report.summary.dateFrom === null;
+  const checkStatus = report.reloadCoverage.status === "verified" ? report.summary.checkStatus : "partial";
 
   return <>
+    <ReloadCoverageNotice coverage={report.reloadCoverage} />
     {view === "summary" ? <section className="metric-grid report-metric-grid six-metrics" aria-label="Основные показатели продаж">
-      <MetricCard icon={<TrendingUp size={18} />} metricId="sales.check-net" label="Выручка после возвратов" value={unavailable ? null : formatMoney(report.summary.revenue)} status={report.summary.checkStatus} coveragePct={report.summary.checkCoveragePct ?? undefined} />
-      <MetricCard icon={<Receipt size={18} />} metricId="sales.check-gross" label="Продажи до возвратов" value={unavailable ? null : formatMoney(report.summary.grossRevenue)} status={report.summary.checkStatus} coveragePct={report.summary.checkCoveragePct ?? undefined} />
-      <MetricCard icon={<RotateCcw size={18} />} metricId="sales.check-returns" label="Возвраты" value={unavailable ? null : formatMoney(report.summary.returns)} status={report.summary.checkStatus} detail={`${formatNumber(report.summary.returnCount)} возвратных чеков`} />
-      <MetricCard icon={<ShoppingCart size={18} />} metricId="sales.net-checks" label="Чистое число чеков" value={unavailable ? null : formatNumber(report.summary.orderCount - report.summary.returnCount)} status={report.summary.checkStatus} coveragePct={report.summary.checkCoveragePct ?? undefined} detail={`${formatNumber(report.summary.orderCount)} продаж · ${formatNumber(report.summary.returnCount)} возвратов`} />
-      <MetricCard icon={<CalendarDays size={18} />} metricId="sales.avg-check" value={unavailable || report.summary.avgCheck === null ? null : formatMoney(report.summary.avgCheck)} status={report.summary.checkStatus} coveragePct={report.summary.checkCoveragePct ?? undefined} />
-      <MetricCard icon={<Package size={18} />} metricId="sales.avg-items-per-check" label="Количество на чек" value={unavailable ? null : formatDecimal(report.summary.avgItemsPerCheck, 2)} status={report.summary.checkStatus} />
+      <MetricCard icon={<TrendingUp size={18} />} metricId="sales.check-net" label="Выручка после возвратов" value={unavailable ? null : formatMoney(report.summary.revenue)} status={checkStatus} coveragePct={report.summary.checkCoveragePct ?? undefined} />
+      <MetricCard icon={<Receipt size={18} />} metricId="sales.check-gross" label="Продажи до возвратов" value={unavailable ? null : formatMoney(report.summary.grossRevenue)} status={checkStatus} coveragePct={report.summary.checkCoveragePct ?? undefined} />
+      <MetricCard icon={<RotateCcw size={18} />} metricId="sales.check-returns" label="Возвраты" value={unavailable ? null : formatMoney(report.summary.returns)} status={checkStatus} detail={`${formatNumber(report.summary.returnCount)} возвратных чеков`} />
+      <MetricCard icon={<ShoppingCart size={18} />} metricId="sales.net-checks" label="Чистое число чеков" value={unavailable ? null : formatNumber(report.summary.orderCount - report.summary.returnCount)} status={checkStatus} coveragePct={report.summary.checkCoveragePct ?? undefined} detail={`${formatNumber(report.summary.orderCount)} продаж · ${formatNumber(report.summary.returnCount)} возвратов`} />
+      <MetricCard icon={<CalendarDays size={18} />} metricId="sales.avg-check" value={unavailable || report.summary.avgCheck === null ? null : formatMoney(report.summary.avgCheck)} status={checkStatus} coveragePct={report.summary.checkCoveragePct ?? undefined} />
+      <MetricCard icon={<Package size={18} />} metricId="sales.avg-items-per-check" label="Количество на чек" value={unavailable ? null : formatDecimal(report.summary.avgItemsPerCheck, 2)} status={checkStatus} />
     </section> : null}
     {unavailable ? <p className="availability-summary">За выбранный период нет загруженных чеков. Это не означает нулевые продажи.</p> : report.summary.checkStatus === "partial" ? <p className="metric-note warning">
       Есть чеки за {formatNumber(report.summary.coveredDays)} из {formatDecimal(report.summary.expectedDays ?? 0)} прошедших дней периода. Показатели рассчитаны по доступным данным и могут быть неполными.
@@ -2456,6 +2563,7 @@ function IncomeReportBody({
   const selectedStoreGroup = storeItemGroups.find(([key]) => key === selectedStore) ?? storeItemGroups[0];
   // An empty retail-report window means the figures are unknown, not zero.
   const noSalesRows = report.summary.dateFrom === null;
+  const incompleteReload = report.reloadCoverage.status !== "verified";
 
   return (
     <>
@@ -2469,6 +2577,7 @@ function IncomeReportBody({
           </select>
         </label>
       </div>
+      <ReloadCoverageNotice coverage={report.reloadCoverage} />
       {noSalesRows ? (
         <div className="metric-note warning">
           В выбранном интервале нет строк отчётов розницы: выручка, стоимость проданного и прибыльность неизвестны, а не равны нулю. Потери из отдельных документов показываются независимо. Периоды дат в ответе относятся только к найденным строкам продаж; отсутствие строк не доказывает отсутствие фактических продаж при неполной загрузке отчётов.
@@ -2481,24 +2590,27 @@ function IncomeReportBody({
           icon={<Receipt size={18} />}
           metricId="income.revenue"
           label="Чистая выручка"
+          status={incompleteReload ? "partial" : undefined}
           value={noSalesRows ? null : formatMoney(report.summary.revenue)}
         />
         <MetricCard
           icon={<ShoppingCart size={18} />}
           metricId="income.cost"
           label="Оценочная стоимость проданного"
+          status={incompleteReload ? "partial" : undefined}
           value={noSalesRows ? null : formatMoney(report.summary.cost)}
         />
         <MetricCard
           icon={<Package size={18} />}
           metricId="income.losses"
           label="Потери: списания и недостачи − излишки"
+          status={incompleteReload ? "partial" : undefined}
           value={formatMoney(report.summary.losses)}
         />
         <MetricCard
           icon={<TrendingUp size={18} />}
           metricId="income.profit-after-loss"
-          status={noSalesRows ? "partial" : report.summary.unvaluedRevenue > 0 ? "partial" : "ready"}
+          status={noSalesRows || incompleteReload || report.summary.unvaluedRevenue > 0 ? "partial" : "ready"}
           coveragePct={report.summary.costCoveragePct}
           label="Валовая прибыль после потерь"
           value={noSalesRows ? null : formatMoney(report.summary.grossProfitAfterLoss)}
@@ -2506,7 +2618,7 @@ function IncomeReportBody({
         <MetricCard
           icon={<BarChart3 size={18} />}
           metricId="income.margin-after-loss"
-          status={noSalesRows ? "unavailable" : report.summary.unvaluedRevenue > 0 ? "partial" : "ready"}
+          status={noSalesRows ? "unavailable" : incompleteReload || report.summary.unvaluedRevenue > 0 ? "partial" : "ready"}
           label="Маржа после потерь"
           value={noSalesRows || report.summary.marginAfterLossPct === null ? null : `${formatDecimal(report.summary.marginAfterLossPct, 1)}%`}
         />
@@ -2514,6 +2626,7 @@ function IncomeReportBody({
           icon={<ShieldCheck size={18} />}
           metricId="income.cost-coverage"
           label="Покрытие себестоимости"
+          status={incompleteReload ? "partial" : undefined}
           value={noSalesRows ? null : `${formatDecimal(report.summary.costCoveragePct, 1)}%`}
           detail={noSalesRows ? undefined : `Без оценки цены: ${formatMoney(report.summary.unvaluedRevenue)}`}
         />
@@ -2958,6 +3071,7 @@ function MarketingReportBody({ report, view }: { report: MarketingReport; view: 
 
   return (
     <>
+      <ReloadCoverageNotice coverage={report.reloadCoverage} />
       {view === "summary" ? <>
       <section className="metric-grid report-metric-grid six-metrics" aria-label="Метрики маркетинга">
         <MetricCard
@@ -4175,7 +4289,7 @@ function ExpandableTable<T extends { key: string }>({
   );
 }
 
-function TableDetail({ tableName }: { tableName: string }) {
+function TableDetail({ tableName, onTableRemoved }: { tableName: string; onTableRemoved: () => void }) {
   const [profileState, setProfileState] = useState<LoadState<TableProfile>>({
     status: "loading"
   });
@@ -4184,9 +4298,11 @@ function TableDetail({ tableName }: { tableName: string }) {
   const [series, setSeries] = useState<LoadState<TimeSeriesPoint[]>>({
     status: "idle"
   });
+  const profileReloaded = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
+    profileReloaded.current = false;
     setProfileState({ status: "loading" });
     setSeries({ status: "idle" });
     api
@@ -4200,13 +4316,17 @@ function TableDetail({ tableName }: { tableName: string }) {
       })
       .catch((caught) => {
         if (controller.signal.aborted) return;
+        if (caught instanceof Error && "statusCode" in caught && caught.statusCode === 404) {
+          onTableRemoved();
+          return;
+        }
         setProfileState({
           status: "error",
           error: caught instanceof Error ? caught.message : "Не удалось загрузить таблицу"
         });
       });
     return () => controller.abort();
-  }, [tableName]);
+  }, [tableName, onTableRemoved]);
 
   useEffect(() => {
     if (!dateColumn) {
@@ -4215,27 +4335,57 @@ function TableDetail({ tableName }: { tableName: string }) {
 
     const controller = new AbortController();
     setSeries({ status: "loading" });
-    api
-      .timeSeries(tableName, dateColumn, metricColumn || undefined, controller.signal)
-      .then((points) => {
+    async function loadSeries() {
+      try {
+        let points: TimeSeriesPoint[];
+        try {
+          points = await api.timeSeries(tableName, dateColumn, metricColumn || undefined, controller.signal);
+        } catch (caught) {
+          if (controller.signal.aborted) return;
+          if (!(caught instanceof Error) || !("statusCode" in caught) || caught.statusCode !== 400 || profileReloaded.current) {
+            throw caught;
+          }
+          // One recovery per selected table. A repeated 400 is a visible error, not a retry loop.
+          profileReloaded.current = true;
+          const refreshed = await api.table(tableName, controller.signal);
+          if (controller.signal.aborted) return;
+          const nextDate = refreshed.columns.some((column) => column.name === dateColumn && column.isTemporal)
+            ? dateColumn : refreshed.columns.find((column) => column.isTemporal)?.name ?? "";
+          const nextMetric = refreshed.columns.some((column) => column.name === metricColumn && column.isNumeric)
+            ? metricColumn : "";
+          setProfileState({ status: "success", data: refreshed });
+          setDateColumn(nextDate);
+          setMetricColumn(nextMetric);
+          // Changed controls start one new effect and abort this request on cleanup.
+          if (nextDate !== dateColumn || nextMetric !== metricColumn) {
+            setSeries({ status: "idle" });
+            return;
+          }
+          points = await api.timeSeries(tableName, nextDate, nextMetric || undefined, controller.signal);
+        }
         if (!controller.signal.aborted) setSeries({ status: "success", data: points });
-      })
-      .catch((caught) => {
+      } catch (caught) {
         if (controller.signal.aborted) return;
+        if (caught instanceof Error && "statusCode" in caught && caught.statusCode === 404) {
+          onTableRemoved();
+          return;
+        }
         setSeries({
           status: "error",
           error: caught instanceof Error ? caught.message : "Не удалось построить график"
         });
-      });
+      }
+    }
+    void loadSeries();
     return () => controller.abort();
-  }, [dateColumn, metricColumn, tableName]);
+  }, [dateColumn, metricColumn, tableName, onTableRemoved]);
 
   if (profileState.status === "loading") {
     return <div className="empty-state">Загружаем таблицу {tableName}</div>;
   }
 
   if (profileState.status === "error") {
-    return <div className="empty-state">{profileState.error}</div>;
+    return <div className="empty-state" role="alert">{profileState.error}</div>;
   }
 
   if (profileState.status !== "success") {
@@ -4253,8 +4403,8 @@ function TableDetail({ tableName }: { tableName: string }) {
         <div>
           <h2>{tableName}</h2>
           <span>
-            {formatCompact(profile.table?.estimatedRows ?? 0)} строк ·{" "}
-            {formatBytes(profile.table?.totalBytes ?? 0)}
+            {profile.table?.estimatedRows == null ? "Нет оценки строк" : `${formatCompact(profile.table.estimatedRows)} строк`} ·{" "}
+            {formatStorageBytes(profile.table?.totalBytes ?? 0)}
           </span>
         </div>
         <div className="column-count">{profile.columns.length} колонок</div>
@@ -4263,9 +4413,17 @@ function TableDetail({ tableName }: { tableName: string }) {
         <summary>Как читать диагностический график и числа таблицы</summary>
         <div className="stack-list">
           <p>График — техническая агрегация сырой таблицы без бизнес-фильтров проведения, возвратов, ИП или выбранного общего периода. Ось X = date_trunc('day', выбранное поле даты); записи без даты исключены. Ось Y = COUNT(*) строк в дате либо SUM выбранной числовой колонки. SUM пропускает SQL NULL; пустой результат суммы API превращает в 0. Показаны последние 90 дат, для которых есть строки, в хронологическом порядке — это не обязательно 90 календарных дней и не дневная выручка.</p>
-          <p>«Строк, оценка» = статистика PostgreSQL n_live_tup, не точный COUNT. «Размер» = таблица + индексы + TOAST в байтах, отформатированных в КБ/МБ/ГБ. Колонки/числовые/даты — число найденных столбцов соответствующего типа в information_schema. Минимальная/максимальная дата — MIN/MAX непустых значений по всей сырой таблице. avg числовой колонки = сумма всех ненулевых по NULL значений ÷ количество таких значений (нулевые числа включаются); без заполненных значений показывается NULL. Разные колонки могут иметь разные знаменатели.</p>
+          <p>«Строк, оценка» — неотрицательное pg_class.reltuples, при его отсутствии — только положительное n_live_tup, не точный COUNT. Без пригодной статистики показано «Нет оценки». «Размер» = таблица + индексы + TOAST в байтах; КБ/МБ/ГБ — десятичные единицы по 1000. Колонки/числовые/даты — число найденных столбцов соответствующего типа. Минимальная/максимальная дата — MIN/MAX непустых значений по всей таблице. avg = сумма всех не-NULL значений ÷ их количество (нулевые числа включаются); без заполненных значений показывается NULL. _loaded_at — последнее изменение содержимого, не последняя успешная загрузка. Разные колонки могут иметь разные знаменатели.</p>
           <p>Популярное значение = GROUP BY выбранной текстовой/логической колонки и COUNT(*), без строк SQL NULL; выводятся восемь самых частых значений в каждой из доступных целевых колонок. «Пример строк» — LIMIT 25 без сортировки, только первые восемь отображаемых колонок: это произвольная диагностическая выборка, не последние или наиболее важные операции. Поля заголовков/товарных строк не суммируйте между таблицами — это разные уровни детализации.</p>
         </div>
+      </details>
+      <details className="report-disclosure">
+        <summary>Происхождение данных</summary>
+        {profile.sources.length > 0 ? <dl className="stack-list">
+          {profile.sources.map((source) => <div className="source-resource" key={`${source.sourceEntity}:${source.resourceTemplate}`}>
+            <dt>{source.sourceEntity}</dt><dd>{source.resourceTemplate}</dd>
+          </div>)}
+        </dl> : <p className="context-note">Источник не зарегистрирован в ops.analytics_sources или каталог недоступен. Повторяющиеся URL не хранятся в строках компактной схемы.</p>}
       </details>
 
       <div className="detail-grid">
@@ -4275,6 +4433,7 @@ function TableDetail({ tableName }: { tableName: string }) {
             <div className="controls">
               <select
                 value={dateColumn}
+                aria-label="Поле даты для диагностического графика"
                 onChange={(event) => setDateColumn(event.target.value)}
                 disabled={dateColumns.length === 0}
               >
@@ -4290,6 +4449,7 @@ function TableDetail({ tableName }: { tableName: string }) {
               </select>
               <select
                 value={metricColumn}
+                aria-label="Числовое поле для диагностического графика"
                 onChange={(event) => setMetricColumn(event.target.value)}
                 disabled={numericColumns.length === 0}
               >
@@ -4682,29 +4842,35 @@ function SyncPanel() {
 
   useEffect(() => {
     const controller = new AbortController();
-    setState({ status: "loading" });
-    api
-      .syncHealth(controller.signal)
-      .then((health) => {
-        if (!controller.signal.aborted) {
-          setState({ status: "success", data: health });
-        }
-      })
-      .catch((caught) => {
-        if (controller.signal.aborted) {
-          return;
-        }
-
-        setState({
-          status: "error",
-          error:
-            caught instanceof Error
-              ? caught.message
-              : "Не удалось загрузить состояние синхронизации"
-        });
-      });
-
-    return () => controller.abort();
+    let pending = false;
+    const refresh = () => {
+      if (pending || controller.signal.aborted) return;
+      pending = true;
+      api.syncHealth(controller.signal)
+        .then((health) => {
+          if (!controller.signal.aborted) {
+            setState({ status: "success", data: health });
+          }
+        })
+        .catch((caught) => {
+          if (controller.signal.aborted) return;
+          setState((previous) => ({
+            status: "error",
+            data: previous.data,
+            error:
+              caught instanceof Error
+                ? caught.message
+                : "Не удалось загрузить состояние синхронизации"
+          }));
+        })
+        .finally(() => { pending = false; });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 30_000);
+    return () => {
+      window.clearInterval(interval);
+      controller.abort();
+    };
   }, []);
 
   const health = state.data;
@@ -4729,12 +4895,13 @@ function SyncPanel() {
           </span>
         ) : null}
       </div>
+      {health ? <p className="panel-note" role="status">{reloadReadinessLabel(health.reloadReadiness)}</p> : null}
       <details className="report-disclosure">
         <summary>Как читать даты, порции и свежесть синхронизации</summary>
         <div className="stack-list">
           <p>Запуски/порции — записи ops.sync_runs, а решения и heartbeat — ops.sync_scheduler; они независимы от дат продажи в 1С. Длительность взята из duration_seconds и отображается в секундах/минутах/часах. «Прочитано/записано» — счётчики операции экспорта, не уникальные документы или продажи; повторная загрузка может снова записать существующие строки. Порции — завершённые части / плановые части; код выхода 0 означает успешное завершение процесса, не полную готовность всех финансовых источников.</p>
           <p>Диапазон загрузки и границы порций полуоткрытые [начало, конец): дата конца не включается. Checkpoint до/после — контрольные границы продвижения планировщика, не последняя реальная продажа и не доказательство загрузки чеков/балансов, которые могли не входить в профиль запуска. Месяц глубокой перепроверки — дополнительная повторно прочитанная история, а не отдельная новая выручка.</p>
-          <p>В таблице свежести «Строк» = точный COUNT(*) всей таблицы; «Изменений» = COUNT(DISTINCT _loaded_at), число разных меток загрузки, не число обновлённых товаров. Последнее изменение = MAX(_loaded_at), время записанной загрузки UTC; давность = (текущее время − эта метка) ÷ 3600 секунд, округлённая до десятых часа. Отметка «без изменений больше двух суток» включается строго после 48 часов; она не доказывает, что документы 1С в это время менялись.</p>
+          <p>В таблице свежести «Строк» = точный COUNT(*) всей таблицы; «Изменений» = COUNT(DISTINCT _loaded_at), число разных меток последнего изменения содержимого, не число обновлённых товаров или успешных чтений 1С. Последнее изменение = MAX(_loaded_at), время изменения сохранённых строк UTC; давность = (текущее время − эта метка) ÷ 3600 секунд, округлённая до десятых часа. Отметка «без изменений больше двух суток» включается строго после 48 часов; она не доказывает ни изменения документов 1С, ни пропуск синхронизации.</p>
           <p>Давность последнего запуска считается от started_at, а не от завершения. Heartbeat считают пропавшим, когда с updatedAtUtc прошло больше max(3 × heartbeatSeconds, 180 секунд). Окно обслуживания и следующий запуск читаются из настроек планировщика с указанной часовой зоной; кулдаун — часы запрета повторного обхода окна. Число строк лога — строки текста, не ошибки; детали статуса и команды помогают выяснить, какие источники действительно входили в конкретный запуск.</p>
         </div>
       </details>
@@ -4954,9 +5121,9 @@ function SyncPanel() {
           ) : null}
 
           <p className="panel-note">
-            «Изменений» — сколько раз содержимое таблицы менялось: <code>_loaded_at</code>
-            {" "}обновляется только при изменении строк, поэтому давняя дата означает отсутствие
-            новых данных в 1C, а не пропуск экспорта. Конец диапазона не включается.
+            «Изменений» — число разных сохранённых меток <code>_loaded_at</code>, не число запусков.
+            {" "}Метка обновляется только при изменении содержимого строк; давняя дата сама по себе
+            не подтверждает ни отсутствие новых данных в 1С, ни пропуск экспорта. Конец диапазона не включается.
             Сборка экспортёра: {latest.sync_source_sha256
               ? latest.sync_source_sha256.slice(0, 12)
               : "—"}

@@ -736,6 +736,33 @@ select:focus {
   --metric-columns: 3;
 }
 
+.metric-grid.storage-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+}
+
+.storage-breakdown {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 16px;
+}
+
+.storage-breakdown > div,
+.source-resource {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.storage-breakdown dt {
+  color: #526076;
+  font-size: 14px;
+}
+
+.storage-breakdown dd,
+.source-resource dd {
+  margin: 6px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
 .metric-card,
 .panel,
 .chart-band {
@@ -823,6 +850,17 @@ select:focus {
   background: #ffffff;
 }
 
+.data-group-card > *,
+.data-group-title > div:last-child {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.data-group-card p,
+.data-group-title > div:last-child {
+  overflow-wrap: anywhere;
+}
+
 .data-group-title {
   display: flex;
   align-items: flex-start;
@@ -860,12 +898,15 @@ select:focus {
 }
 
 .table-chip-list {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
 .table-chip-list button {
+  min-width: 0;
   max-width: 100%;
   min-height: 28px;
   border: 1px solid #d0d5dd;

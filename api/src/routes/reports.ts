@@ -5,7 +5,7 @@ import { asyncHandler } from "../lib/http.js";
 import { reportRangeFields, resolveReportRange } from "../lib/report-range.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { getSalesReport, getIncomeReport } from "../services/reports.js";
-import { getYearComparison, yearComparisonQuerySchema } from "../services/year-comparison.js";
+import { certifyYearComparisonReload, getYearComparison, yearComparisonQuerySchema } from "../services/year-comparison.js";
 import type { YearComparisonReport } from "../services/year-comparison.js";
 import { writeYearComparisonWorkbook } from "../services/year-comparison-workbook.js";
 import { getPresentationReport, presentationReportQuerySchema } from "../services/presentation-report.js";
@@ -26,7 +26,7 @@ reportsRouter.get(
   "/sales",
   asyncHandler(async (req, res) => {
     const query = resolveReportRange(querySchema.parse(req.query));
-    await sendCachedJson(req, res, ["getSalesReport", query], () => getSalesReport(query));
+    await sendCachedJson(req, res, ["getSalesReport", query], () => getSalesReport(query), { kind: "receipts", from: query.from, to: query.to });
   })
 );
 
@@ -34,7 +34,7 @@ reportsRouter.get(
   "/income",
   asyncHandler(async (req, res) => {
     const query = resolveReportRange(querySchema.parse(req.query));
-    await sendCachedJson(req, res, ["getIncomeReport", query], () => getIncomeReport(query));
+    await sendCachedJson(req, res, ["getIncomeReport", query], () => getIncomeReport(query), { kind: "retail", from: query.from, to: query.to });
   })
 );
 
@@ -43,7 +43,7 @@ reportsRouter.get(
   asyncHandler(async (req, res) => {
     const start = performance.now();
     const query = yearComparisonQuerySchema.parse(req.query);
-    const snapshot = await loadCachedJson(req, ["getYearComparison", query], () => getYearComparison(query));
+    const snapshot = await loadCachedJson(req, ["getYearComparison", query], () => getYearComparison(query), async () => { await certifyYearComparisonReload(query); });
     const report = JSON.parse(snapshot.value) as YearComparisonReport;
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Report-Cache", snapshot.status);
@@ -57,7 +57,7 @@ reportsRouter.get(
   "/year-comparison.xlsx",
   asyncHandler(async (req, res) => {
     const query = yearComparisonQuerySchema.parse(req.query);
-    const snapshot = await loadCachedJson(req, ["getYearComparison", query], () => getYearComparison(query));
+    const snapshot = await loadCachedJson(req, ["getYearComparison", query], () => getYearComparison(query), async () => { await certifyYearComparisonReload(query); });
     const report = JSON.parse(snapshot.value) as YearComparisonReport;
     const filename = `year-comparison_${query.from}_${query.to}.xlsx`;
     res.setHeader("Cache-Control", "no-store");
@@ -72,7 +72,7 @@ reportsRouter.get(
   "/presentation.xlsx",
   asyncHandler(async (req, res) => {
     const query = presentationReportQuerySchema.parse(req.query);
-    const snapshot = await loadCachedJson(req, ["getPresentationReport", query], () => getPresentationReport(query));
+    const snapshot = await loadCachedJson(req, ["getPresentationReport", query], () => getPresentationReport(query), { kind: "all" });
     const report = JSON.parse(snapshot.value) as PresentationReport;
     const filename = `presentation-report_${query.from}_${query.to}_${query.monthFrom}_${query.monthTo}.xlsx`;
     res.setHeader("Cache-Control", "no-store");

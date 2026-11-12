@@ -26,16 +26,16 @@ turnoverRouter.get("/turnover", asyncHandler(async (req, res) => {
         primaryAction: row.recommendations[0]?.action ?? null
       }))
     };
-  });
+  }, { kind: "all" });
 }));
 
 turnoverRouter.get("/turnover/options", asyncHandler(async (req, res) => {
-  await sendCachedJson(req, res, ["getTurnoverOptions"], () => getTurnoverOptions());
+  await sendCachedJson(req, res, ["getTurnoverOptions"], () => getTurnoverOptions(), { kind: "all" });
 }));
 
 turnoverRouter.get("/turnover/row", asyncHandler(async (req, res) => {
   const query = turnoverQuerySchema.parse(req.query);
-  await sendCachedJson(req, res, ["getTurnoverRow", query], () => getTurnoverRow(query));
+  await sendCachedJson(req, res, ["getTurnoverRow", query], () => getTurnoverRow(query), { kind: "all" });
 }));
 
 turnoverRouter.get("/turnover.xlsx", asyncHandler(async (req, res) => {
@@ -66,7 +66,7 @@ turnoverRouter.get("/turnover.xlsx", asyncHandler(async (req, res) => {
       rows: report.summary.rowCount,
       generatedAt: report.generatedAt
     });
-  });
+  }, { kind: "all" });
   const payload = JSON.parse(snapshot.value) as { base64: string; rows: number; generatedAt: string };
   const buffer = Buffer.from(payload.base64, "base64");
   const filename = `turnover_${query.from}_${query.to}.xlsx`;

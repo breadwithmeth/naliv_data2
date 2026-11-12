@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { z } from "zod";
-import { invalidateReports, sendCachedJson } from "../lib/cached-json.js";
+import { invalidateReports, loadCachedJson, sendCachedJson } from "../lib/cached-json.js";
 import { asyncHandler } from "../lib/http.js";
 import { reportRangeFields, resolveReportRange } from "../lib/report-range.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { getReloadReadiness } from "../services/reload-readiness.js";
 import {
   getAcquiringMetrics,
   getCashArticleMetrics,
@@ -116,9 +117,7 @@ managementRouter.get(
   "/store-stock",
   asyncHandler(async (req, res) => {
     const query = resolveReportRange(querySchema.parse(req.query));
-    await sendCachedJson(req, res, ["getStoreStockMetrics", query], () =>
-      getStoreStockMetrics(query)
-    );
+    await sendCachedJson(req, res, ["getStoreStockMetrics", query], () => getStoreStockMetrics(query), { kind: "all" });
   })
 );
 
@@ -126,9 +125,7 @@ managementRouter.get(
   "/store-performance",
   asyncHandler(async (req, res) => {
     const query = resolveReportRange(querySchema.parse(req.query));
-    await sendCachedJson(req, res, ["getStorePerformanceMetrics", query], () =>
-      getStorePerformanceMetrics(query)
-    );
+    await sendCachedJson(req, res, ["getStorePerformanceMetrics", query], () => getStorePerformanceMetrics(query), { kind: "all" });
   })
 );
 
@@ -146,9 +143,7 @@ managementRouter.get(
   "/lost-sales",
   asyncHandler(async (req, res) => {
     const query = resolveReportRange(querySchema.parse(req.query));
-    await sendCachedJson(req, res, ["getLostSalesMetrics", query], () =>
-      getLostSalesMetrics(query)
-    );
+    await sendCachedJson(req, res, ["getLostSalesMetrics", query], () => getLostSalesMetrics(query), { kind: "all" });
   })
 );
 
@@ -156,9 +151,7 @@ managementRouter.get(
   "/purchasing",
   asyncHandler(async (req, res) => {
     const query = resolveReportRange(querySchema.parse(req.query));
-    await sendCachedJson(req, res, ["getPurchasingRecommendations", query], () =>
-      getPurchasingRecommendations(query)
-    );
+    await sendCachedJson(req, res, ["getPurchasingRecommendations", query], () => getPurchasingRecommendations(query), { kind: "all" });
   })
 );
 
@@ -166,7 +159,11 @@ managementRouter.get(
   "/source-health",
   asyncHandler(async (req, res) => {
     const query = resolveReportRange(querySchema.parse(req.query));
-    await sendCachedJson(req, res, ["getSourceHealth", query], () => getSourceHealth(query));
+    const snapshot = await loadCachedJson(req, ["getSourceHealth", query], () => getSourceHealth(query));
+    const reloadReadiness = await getReloadReadiness();
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Report-Cache", snapshot.status);
+    res.json({ ...JSON.parse(snapshot.value), reloadReadiness });
   })
 );
 

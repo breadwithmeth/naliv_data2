@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { verifyReloadConsumer } from "./reload-consumer-fixture.js";
 
 // Opt-in: fixtures exist only in connection-local TEMP tables and roll away at
 // disconnect. No source tables, records, or persistent schemas are modified.
@@ -626,4 +627,8 @@ test("inventory preserves its key set and uses auditable cost sources", {
     prisma.$queryRaw = original;
     await prisma.$disconnect();
   }
+});
+
+test("reload readiness temporary receipts coverage refuses cached reports", { skip: !process.env.ANALYTICS_TEST_DATABASE_URL }, async () => {
+  await verifyReloadConsumer("/sales", "receipts");
 });

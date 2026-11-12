@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "./api";
-import type { ReportDateRange, YearComparisonPreview, YearComparisonRequest } from "./api";
+import type { ReloadCoverage, ReportDateRange, YearComparisonPreview, YearComparisonRequest } from "./api";
 import { formatDecimal, formatNumber } from "./format";
 
 type InclusiveRange = Required<Pick<ReportDateRange, "from" | "to">>;
@@ -55,6 +55,21 @@ function defaultAdditionalRange(range: InclusiveRange): InclusiveRange {
 
 function calendarDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`).toLocaleDateString("ru-RU", { timeZone: "UTC" });
+}
+
+function reloadCoverageLabel(coverage: ReloadCoverage) {
+  if (coverage.status === "verified") return "Дни периода проверены по журналу перезагрузки.";
+  if (coverage.reason === "open_period") {
+    if (coverage.status === "partial" && coverage.verifiedThrough) {
+      const lastDay = new Date(coverage.verifiedThrough);
+      lastDay.setUTCDate(lastDay.getUTCDate() - 1);
+      return `Данные загружены по ${calendarDate(lastDay.toISOString().slice(0, 10))}; текущий период не завершён. Итоги предварительные.`;
+    }
+    return "Текущий период не завершён; проверенных данных за период пока нет.";
+  }
+  return coverage.status === "unavailable"
+    ? "Проверенная загрузка периода недоступна; показатели и сравнения — n/a."
+    : "Загрузка периода проверена частично. Итоги предварительные.";
 }
 
 function comparisonPeriodLabel(period: YearComparisonPreview["periods"]["current"]) {
@@ -289,7 +304,13 @@ export function YearComparisonExport({ dateRange, children }: { dateRange: Inclu
               </dl>
             ))}
           </div>
-          <div className={`metric-note${preview.coverage.some((coverage) => coverage.status !== "observed") ? " warning" : ""}`} role="note">
+          <div className={`metric-note${preview.coverage.some((coverage) => coverage.status !== "observed" || coverage.reloadCoverage.status !== "verified") ? " warning" : ""}`} role="note">
+            {preview.coverage.map((coverage) => (
+              <p key={coverage.period}>
+                <strong>{coverage.period === "current" ? "Выбранный период: " : "Сопоставленный период прошлого года: "}</strong>
+                {reloadCoverageLabel(coverage.reloadCoverage)}
+              </p>
+            ))}
             {preview.coverage.some((coverage) => coverage.period === "previous" && coverage.status === "empty") ? (
               <strong>Нет подходящих чеков за предыдущий период. Скачать отчёт можно; недоступная база, изменения и LFL будут n/a, а не нулями. </strong>
             ) : preview.coverage.some((coverage) => coverage.status !== "observed") ? (

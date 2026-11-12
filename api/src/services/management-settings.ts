@@ -119,8 +119,35 @@ function suggestFlow(name: string): "operating" | "investing" | "financing" | "i
   return null;
 }
 
+// GET may run on the verifier's read-only connection. Existing complete settings
+// must not trigger the legacy lazy DDL used by write paths and first-time setup.
+async function managementSettingsCatalogueComplete() {
+  const required = [
+    { table_name: "naliv_store_settings", columns: ["store_key", "active", "display_name", "updated_at"] },
+    { table_name: "naliv_metric_settings", columns: ["metric_id", "normal_text", "critical_text", "cadence", "owner_name", "updated_at"] },
+    { table_name: "naliv_cash_article_settings", columns: ["article_key", "flow_type", "approved", "updated_at"] },
+    { table_name: "naliv_obligations", columns: ["id", "kind", "name", "amount", "due_date", "frequency", "active", "updated_at"] },
+    { table_name: "naliv_projects", columns: ["id", "name", "budget", "actual", "start_date", "status", "updated_at"] }
+  ];
+  const [catalogue] = await prisma.$queryRaw<Array<{ complete: boolean }>>`
+    select not exists (
+      select 1 from jsonb_to_recordset(${JSON.stringify(required)}::jsonb) as required(table_name text, columns jsonb)
+      where to_regclass(format('%I.%I', ${config.APP_SCHEMA}, required.table_name)) is null
+        or exists (
+          select 1 from jsonb_array_elements_text(required.columns) as required_column(name)
+          where not exists (
+            select 1 from information_schema.columns c
+            where c.table_schema = (select nspname from pg_namespace where oid = to_regnamespace(${config.APP_SCHEMA}))
+              and c.table_name = required.table_name and c.column_name = required_column.name
+          )
+        )
+    ) as complete
+  `;
+  return catalogue?.complete === true;
+}
+
 export async function getManagementSettings(asOf = new Date()) {
-  await ensureManagementSettingsTables();
+  if (!await managementSettingsCatalogueComplete()) await ensureManagementSettingsTables();
   const stores = sourceTable("catalog_magaziny");
   const reports = sourceTable("document_otchet_o_roznichnyh_prodazhah");
   const articles = sourceTable("catalog_stati_dvizheniya_denezhnyh_sredstv");

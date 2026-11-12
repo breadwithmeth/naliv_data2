@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { verifyReloadConsumer } from "./reload-consumer-fixture.js";
 
 // Real PostgreSQL TEMP fixtures only: source records are never changed.
 test("compensations preserve source rates, purchase-price cutoff, returns, independent activities and incomplete totals", {
@@ -157,4 +158,8 @@ test("compensations preserve source rates, purchase-price cutoff, returns, indep
       assert.ok(unsynced.issues.some(i => i.code === 'missing_source'));
     }, { timeout: 60000 });
   } finally { prisma.$queryRaw = original; await prisma.$disconnect(); }
+});
+
+test("reload readiness temporary global gate refuses cached compensation workbook", { skip: !process.env.ANALYTICS_TEST_DATABASE_URL }, async () => {
+  await verifyReloadConsumer("/compensations", "all");
 });
