@@ -3873,3 +3873,25 @@ select:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+.turnover-workspace .turnover-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.turnover-workspace .turnover-check input[type="checkbox"] {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--turnover-action);
+}
+
+.turnover-workspace .turnover-check > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

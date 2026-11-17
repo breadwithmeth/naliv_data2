@@ -6,7 +6,7 @@ import type {
   ReportDateRange, TurnoverOption, TurnoverOptions, TurnoverPreview, TurnoverPreviewRow, TurnoverRequest
 } from "./api";
 import { formatDecimal, formatNumber } from "./format";
-import { turnoverCoefficientBand } from "../../api/src/services/turnover-domain";
+import { completeTurnoverReport, turnoverCoefficientBand } from "../../api/src/services/turnover-domain";
 
 const DAY_MS = 86_400_000;
 const MODE_LABELS: Record<"quantity" | "money", string> = {
@@ -26,7 +26,7 @@ type PeriodPreset = typeof PERIOD_PRESETS[number]["key"];
 const EMPTY_OPTIONS: TurnoverOption[] = [];
 type Filters = {
   store: string[]; warehouse: string; category: string[]; brand: string; search: string;
-  mode: SampleMode; format: ReportFormat; includeNonRetail: boolean; excludeZero: boolean;
+  mode: SampleMode; format: ReportFormat; includeNonRetail: boolean; excludeZero: boolean; includeIncomplete: boolean;
 };
 type PreparedRequest = { valid: true; request: TurnoverRequest } | { valid: false; error: string };
 type DownloadState = {
@@ -112,6 +112,7 @@ function prepareRequest(range: InclusiveDateRange, filters: Filters): PreparedRe
       mode: filters.mode, profile: detail ? "full" : "sample", groupBy: "sku",
       storeScope: filters.includeNonRetail ? "all" : "retail",
       ...(filters.excludeZero ? { excludeZero: true } : {}),
+      includeIncomplete: filters.includeIncomplete,
       ...(filters.store.length ? { store: [...filters.store].sort() } : {}),
       ...(filters.warehouse ? { warehouse: filters.warehouse } : {}),
       ...(filters.category.length ? { category: [...filters.category].sort() } : {}),
@@ -171,10 +172,10 @@ function CheckboxSelect({ label, values, options, allLabel, searchLabel, clearLa
     </details>
   </div>;
 }
-function PreviewNumber({ value }: { value: number | null }) {
+function PreviewNumber({ value, omitUnavailable = false }: { value: number | null; omitUnavailable?: boolean }) {
   return value !== null && Number.isFinite(value)
     ? <>{formatDecimal(value, 2)}</>
-    : <span aria-label="Показатель не рассчитан" title="Показатель не рассчитан"><span aria-hidden="true">—</span><span className="turnover-visually-hidden">Показатель не рассчитан</span></span>;
+    : omitUnavailable ? null : <span aria-label="Показатель не рассчитан" title="Показатель не рассчитан"><span aria-hidden="true">—</span><span className="turnover-visually-hidden">Показатель не рассчитан</span></span>;
 }
 
 function previewDate(value: string, exclusive = false): string {
@@ -182,53 +183,53 @@ function previewDate(value: string, exclusive = false): string {
   return number === null ? value : new Date(number - (exclusive ? DAY_MS : 0)).toISOString().slice(0, 10).split("-").reverse().join(".");
 }
 
-function CoefficientCell({ value }: { value: number | null }) {
+function CoefficientCell({ value, omitUnavailable = false }: { value: number | null; omitUnavailable?: boolean }) {
   const band = turnoverCoefficientBand(value);
   return <td className={`turnover-numeric${band ? ` turnover-coefficient-${band}` : ""}`}>
-    <PreviewNumber value={value} />{band ? <span className="turnover-visually-hidden"> — {COEFFICIENT_LABELS[band]}</span> : null}
+    <PreviewNumber value={value} omitUnavailable={omitUnavailable} />{band ? <span className="turnover-visually-hidden"> — {COEFFICIENT_LABELS[band]}</span> : null}
   </td>;
 }
 
-function PreviewMetricCells({ metrics, quantity, money, detailed }: {
-  metrics: PreviewMetrics; quantity: boolean; money: boolean; detailed: boolean;
+function PreviewMetricCells({ metrics, quantity, money, detailed, omitUnavailable = false }: {
+  metrics: PreviewMetrics; quantity: boolean; money: boolean; detailed: boolean; omitUnavailable?: boolean;
 }) {
   return <>
     {quantity ? <>
-      <td className="turnover-numeric"><PreviewNumber value={metrics.periodSales.quantity} /></td>
-      <td className="turnover-numeric"><PreviewNumber value={metrics.closingQty} /></td>
-      <CoefficientCell value={metrics.turnoverQty} />
-      <td className="turnover-numeric"><PreviewNumber value={metrics.turnoverQtyDays} /></td>
+      <td className="turnover-numeric"><PreviewNumber value={metrics.periodSales.quantity} omitUnavailable={omitUnavailable} /></td>
+      <td className="turnover-numeric"><PreviewNumber value={metrics.closingQty} omitUnavailable={omitUnavailable} /></td>
+      <CoefficientCell value={metrics.turnoverQty} omitUnavailable={omitUnavailable} />
+      <td className="turnover-numeric"><PreviewNumber value={metrics.turnoverQtyDays} omitUnavailable={omitUnavailable} /></td>
       {detailed ? <>
-        <td className="turnover-numeric"><PreviewNumber value={metrics.openingQty} /></td>
-        <td className="turnover-numeric"><PreviewNumber value={metrics.averageQty} /></td>
+        <td className="turnover-numeric"><PreviewNumber value={metrics.openingQty} omitUnavailable={omitUnavailable} /></td>
+        <td className="turnover-numeric"><PreviewNumber value={metrics.averageQty} omitUnavailable={omitUnavailable} /></td>
       </> : null}
     </> : null}
     {money ? <>
-      <td className="turnover-numeric"><PreviewNumber value={metrics.periodSales.cost} /></td>
-      <td className="turnover-numeric"><PreviewNumber value={metrics.closingCost} /></td>
-      <CoefficientCell value={metrics.turnoverCost} />
-      <td className="turnover-numeric"><PreviewNumber value={metrics.turnoverCostDays} /></td>
+      <td className="turnover-numeric"><PreviewNumber value={metrics.periodSales.cost} omitUnavailable={omitUnavailable} /></td>
+      <td className="turnover-numeric"><PreviewNumber value={metrics.closingCost} omitUnavailable={omitUnavailable} /></td>
+      <CoefficientCell value={metrics.turnoverCost} omitUnavailable={omitUnavailable} />
+      <td className="turnover-numeric"><PreviewNumber value={metrics.turnoverCostDays} omitUnavailable={omitUnavailable} /></td>
       {detailed ? <>
-        <td className="turnover-numeric"><PreviewNumber value={metrics.openingCost} /></td>
-        <td className="turnover-numeric"><PreviewNumber value={metrics.averageCost} /></td>
-        <td className="turnover-numeric"><PreviewNumber value={metrics.periodSales.revenue} /></td>
+        <td className="turnover-numeric"><PreviewNumber value={metrics.openingCost} omitUnavailable={omitUnavailable} /></td>
+        <td className="turnover-numeric"><PreviewNumber value={metrics.averageCost} omitUnavailable={omitUnavailable} /></td>
+        <td className="turnover-numeric"><PreviewNumber value={metrics.periodSales.revenue} omitUnavailable={omitUnavailable} /></td>
       </> : null}
     </> : null}
   </>;
 }
 
-function PreviewTotal({ total, money = false }: { total: TurnoverPreview["totals"]["overall"]; money?: boolean }) {
+function PreviewTotal({ total, money = false, omitUnavailable = false }: { total: TurnoverPreview["totals"]["overall"]; money?: boolean; omitUnavailable?: boolean }) {
   const coefficient = money ? total.turnoverCost : total.turnoverQty;
   const band = turnoverCoefficientBand(coefficient);
   return <div className="turnover-total-block">
     <h4>{money ? "По себестоимости, ₸" : `Количество · ${total.unit ?? "Единица не указана"}`}</h4>
     <dl className="turnover-total-metrics">
-      <div><dt>{money ? "Продажи по себестоимости, ₸" : "Продажи с учётом возвратов"}</dt><dd><PreviewNumber value={money ? total.periodSales.cost : total.periodSales.quantity} /></dd></div>
-      <div><dt>{money ? "Остаток на конец, ₸" : "Остаток на конец"}</dt><dd><PreviewNumber value={money ? total.closingCost : total.closingQty} /></dd></div>
+      <div><dt>{money ? "Продажи по себестоимости, ₸" : "Продажи с учётом возвратов"}</dt><dd><PreviewNumber value={money ? total.periodSales.cost : total.periodSales.quantity} omitUnavailable={omitUnavailable} /></dd></div>
+      <div><dt>{money ? "Остаток на конец, ₸" : "Остаток на конец"}</dt><dd><PreviewNumber value={money ? total.closingCost : total.closingQty} omitUnavailable={omitUnavailable} /></dd></div>
       <div><dt>Оборотов за период</dt><dd className={band ? `turnover-coefficient-${band}` : undefined}>
-        <PreviewNumber value={coefficient} />{band ? <span className="turnover-visually-hidden"> — {COEFFICIENT_LABELS[band]}</span> : null}
+        <PreviewNumber value={coefficient} omitUnavailable={omitUnavailable} />{band ? <span className="turnover-visually-hidden"> — {COEFFICIENT_LABELS[band]}</span> : null}
       </dd></div>
-      <div><dt>Дней на оборот</dt><dd><PreviewNumber value={money ? total.turnoverCostDays : total.turnoverQtyDays} /></dd></div>
+      <div><dt>Дней на оборот</dt><dd><PreviewNumber value={money ? total.turnoverCostDays : total.turnoverQtyDays} omitUnavailable={omitUnavailable} /></dd></div>
     </dl>
   </div>;
 }
@@ -236,6 +237,9 @@ function PreviewTotal({ total, money = false }: { total: TurnoverPreview["totals
 export function TurnoverPreviewTable({ report, page, onPageChange, detailed = false }: {
   report: TurnoverPreview; page: number; onPageChange: (page: number) => void; detailed?: boolean;
 }) {
+  report = completeTurnoverReport(report);
+  const includeIncomplete = Boolean(report.params.includeIncomplete);
+  const excludedIncompleteRows = report.excludedIncompleteRows ?? 0;
   const headingId = useId();
   const noteId = useId();
   const quantity = report.params.mode !== "money";
@@ -251,8 +255,8 @@ export function TurnoverPreviewTable({ report, page, onPageChange, detailed = fa
   const footer = (label: string, total: TurnoverPreview["totals"]["overall"], key: string, overall = false) =>
     <tr key={key} className={overall ? "turnover-overall-total" : "turnover-unit-total"}>
       <th scope="row" colSpan={identityColumns - Number(quantity)}>{label}</th>
-      {quantity ? <td>{total.unit ?? "Единица не указана"}</td> : null}
-      <PreviewMetricCells metrics={total} quantity={quantity} money={money} detailed={detailed} />
+      {quantity ? <td>{total.unit ?? (includeIncomplete ? "Единица не указана" : "")}</td> : null}
+      <PreviewMetricCells metrics={total} quantity={quantity} money={money} detailed={detailed} omitUnavailable={!includeIncomplete} />
     </tr>;
   return <section className="turnover-preview-results" aria-labelledby={headingId}>
     <div className="turnover-preview-heading">
@@ -262,21 +266,26 @@ export function TurnoverPreviewTable({ report, page, onPageChange, detailed = fa
     {report.coverage.requestedTo ? <p className="turnover-message">
       Период сокращён до последнего проверенного дня. Запрошено по {previewDate(report.coverage.requestedTo, true)} включительно; фактический период: {period}.
     </p> : null}
+    {!includeIncomplete ? <p className="turnover-message" role="status">
+      По строкам с полным расчётом. Исключено строк без полного расчёта: {formatNumber(excludedIncompleteRows)}. Итоги относятся только к включённым строкам, не ко всей исходной выборке.
+    </p> : null}
     {report.rows.length ? <div className="turnover-result-summary" aria-label="Итог по всему отбору">
       <p className="turnover-note">По всему отбору, не только этой странице.</p>
       {quantity ? report.totals.overall.unit !== null
-        ? <PreviewTotal total={report.totals.overall} />
+        ? <PreviewTotal total={report.totals.overall} omitUnavailable={!includeIncomplete} />
         : <>
           <p className="turnover-note">Общий итог количества не рассчитан.{!report.totals.byUnit.length ? " Единица не указана." : " Подытоги по известным единицам:"}</p>
-          {report.totals.byUnit.map((total) => <PreviewTotal key={total.unitKey} total={total} />)}
+          {report.totals.byUnit.map((total) => <PreviewTotal key={total.unitKey} total={total} omitUnavailable={!includeIncomplete} />)}
         </> : null}
-      {money ? <PreviewTotal total={report.totals.overall} money /> : null}
+      {money ? <PreviewTotal total={report.totals.overall} money omitUnavailable={!includeIncomplete} /> : null}
     </div> : null}
     {report.warnings.length ? <details className="turnover-message turnover-preview-warnings">
       <summary>Подробности проверки ({formatNumber(report.warnings.length)})</summary>
       <ul>{report.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
     </details> : null}
-    <p className="turnover-note" id={noteId}>—: показатель не рассчитан. Ограничения данных — в подробностях.</p>
+    <p className="turnover-note" id={noteId}>{includeIncomplete
+      ? "—: показатель не рассчитан. Ограничения данных — в подробностях."
+      : "Недоступные дополнительные итоги не показаны и не заменены нулями. Ограничения данных — в подробностях."}</p>
     <div className="turnover-preview-scroll" role="region" aria-label="Таблица оборачиваемости" tabIndex={0} aria-describedby={noteId}>
       <table className={`turnover-preview-table${detailed ? " turnover-preview-detailed" : " turnover-preview-compact"}`}>
         <caption>Оборачиваемость за {period} · строк: {formatNumber(report.rows.length)}</caption>
@@ -313,7 +322,9 @@ export function TurnoverPreviewTable({ report, page, onPageChange, detailed = fa
             {quantity ? <td>{row.unit || "Единица не указана"}</td> : null}
             <PreviewMetricCells metrics={row} quantity={quantity} money={money} detailed={detailed} />
           </tr>) : <tr><td colSpan={columnCount} className="turnover-preview-empty">
-            По выбранным условиям товаров нет. Измените отбор и нажмите «Показать отчёт».
+            {excludedIncompleteRows > 0 && !includeIncomplete
+              ? "Все строки по выбранным условиям исключены: нет полного расчёта. Отметьте «Включить строки без полного расчёта» и нажмите «Показать отчёт»."
+              : "По выбранным условиям товаров нет. Измените отбор и нажмите «Показать отчёт»."}
           </td></tr>}
         </tbody>
         {report.rows.length ? <tfoot>
@@ -353,7 +364,7 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   const previewId = useId();
   const [filters, setFilters] = useState<Filters>({
     store: [], warehouse: "", category: [], brand: "", search: "",
-    mode: "quantity", format: "sample", includeNonRetail: false, excludeZero: false
+    mode: "quantity", format: "sample", includeNonRetail: false, excludeZero: false, includeIncomplete: false
   });
   const [options, setOptions] = useState<TurnoverOptions | null>(null);
   const [optionsError, setOptionsError] = useState<string | null>(null);
@@ -548,6 +559,11 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
           </div>
           <label className="turnover-field turnover-product-search"><span>Товар</span><input type="search" value={filters.search} onChange={(event) => update("search", event.target.value)} placeholder="Название, артикул, код или SKU" /></label>
         </div>
+        <label className="turnover-check">
+          <input type="checkbox" checked={filters.includeIncomplete} onChange={(event) => update("includeIncomplete", event.target.checked)} />
+          <span>Включить строки без полного расчёта</span>
+        </label>
+        <p className="turnover-note">Один отбор для сайта и Excel. Отсутствие артикула или штрихкода не исключает товар.</p>
 
         <details className="turnover-advanced">
           <summary>Дополнительные настройки{advancedCount ? ` (${advancedCount})` : ""}</summary>
@@ -578,7 +594,7 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
               <input type="checkbox" checked={filters.excludeZero} onChange={(event) => update("excludeZero", event.target.checked)} />
               <span>Исключить нулевые товары</span>
             </label>
-            <p className="turnover-note">Только если остаток и продажи равны нулю каждый день периода. Запас без продаж остаётся в отчёте.</p>
+            <p className="turnover-note">Только если остаток и продажи равны нулю каждый день периода. Чтобы увидеть запас без рассчитанных дней оборота, включите строки без полного расчёта.</p>
           </div>
         </details>
 
@@ -615,6 +631,7 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
       <summary>Как считается</summary>
       <p className="turnover-note">Оборотов за период = продажи с учётом возвратов / средний запас. Дней на оборот = календарные дни периода / число оборотов. Денежные показатели рассчитываются по себестоимости; розничная выручка доступна только в подробных столбцах и не используется как числитель.</p>
       <p className="turnover-note">Если выбранный период выходит за пределы доступных данных, фактические даты будут указаны в результате. «Последние 30 дней» — по вчерашний день.</p>
+      <p className="turnover-note">По умолчанию включаются только строки с рассчитанными остатками, продажами и коэффициентами выбранного режима; в количестве нужна подтверждённая единица, в деньгах — себестоимость и розничная выручка. Нулевой спрос с нерассчитанными днями оборота доступен через переключатель.</p>
     </details>
     {currentPreview ? <div className="turnover-preview" id={previewId} aria-busy={previewing}>
       {currentPreview.status === "loading" ? <div className="turnover-message">

@@ -3,6 +3,7 @@ import type { Writable } from "node:stream";
 import type { TurnoverMode, TurnoverReport, TurnoverRow, TurnoverTotal, TurnoverTotals } from "./turnover-types.js";
 import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
 import { writeTurnoverSummarySheet } from "./turnover-summary-workbook.js";
+import { completeTurnoverReport } from "./turnover-domain.js";
 
 const MAIN_UNITS = "рассчет оборачиваемости";
 const MAIN_MONEY = "рассчет оборачиваемости ";
@@ -37,7 +38,7 @@ function setFullPageSetup(sheet: ExcelJS.Worksheet) {
 
 type RowLabel = { row: TurnoverRow; label: string };
 type SampleMode = Exclude<TurnoverMode, "both">;
-type SampleOptions = { mode: SampleMode; salesSheet: string; mainSheet: string; activeCell: string; autoFilter: boolean };
+type SampleOptions = { mode: SampleMode; salesSheet: string; mainSheet: string; activeCell: string; autoFilter: boolean; includeIncomplete?: boolean };
 type CellFormula = { formula: string; result?: unknown };
 type StreamingSheet = ExcelJS.Worksheet & { commit(): void };
 
@@ -108,6 +109,8 @@ function mainHeaders(days: string[]): string[] {
 
 function mainCellValues(entry: { label: string; row: Pick<TurnoverRow, "daily" | "averageQty" | "averageCost" | "periodSales" | "turnoverQty" | "turnoverCost" | "turnoverQtyDays" | "turnoverCostDays"> }, days: string[], options: SampleOptions, salesRows: number, footerSalesRow?: number): unknown[] {
   const row = entry.row;
+  const unavailable = options.includeIncomplete ? "n/a" : null;
+  const unavailableFormula = options.includeIncomplete ? '"n/a"' : '""';
   const values: unknown[] = [entry.label];
   const daily = row.daily;
   const dailyValue = (index: number) => {
@@ -147,12 +150,12 @@ function mainCellValues(entry: { label: string; row: Pick<TurnoverRow, "daily" |
     values.push({ formula: `${terms.map((column) => `${column}{r}`).join("+")}`, result: average * (days.length - 1) });
     values.push({ formula: `${sumColumn}{r}/(${days.length}-1)`, result: average });
   } else {
-    values.push("n/a", "n/a");
+    values.push(unavailable, unavailable);
   }
   if (numeric(turnover)) values.push({ formula: footerSalesRow === undefined
     ? `${salesColumn}{r}/${averageColumn}{r}`
-    : `IF(AND(ISNUMBER(${salesColumn}{r}),ISNUMBER(${averageColumn}{r}),${salesColumn}{r}>=0,${averageColumn}{r}>0),${salesColumn}{r}/${averageColumn}{r},"n/a")`, result: turnover });
-  else values.push("n/a");
+    : `IF(AND(ISNUMBER(${salesColumn}{r}),ISNUMBER(${averageColumn}{r}),${salesColumn}{r}>=0,${averageColumn}{r}>0),${salesColumn}{r}/${averageColumn}{r},${unavailableFormula})`, result: turnover });
+  else values.push(unavailable);
   values.push(days.length);
   if (numeric(sales)) {
     const column = options.mode === "quantity" ? "B" : "C";
@@ -163,11 +166,11 @@ function mainCellValues(entry: { label: string; row: Pick<TurnoverRow, "daily" |
         : `'${options.salesSheet}'!${column}${footerSalesRow}`,
       result: sales
     });
-  } else values.push("n/a");
+  } else values.push(unavailable);
   if (numeric(turnoverDays)) values.push({ formula: footerSalesRow === undefined
     ? `${daysColumn}{r}/${coefficientColumn}{r}`
-    : `IF(AND(ISNUMBER(${coefficientColumn}{r}),${coefficientColumn}{r}>0),${daysColumn}{r}/${coefficientColumn}{r},"n/a")`, result: turnoverDays });
-  else values.push("n/a");
+    : `IF(AND(ISNUMBER(${coefficientColumn}{r}),${coefficientColumn}{r}>0),${daysColumn}{r}/${coefficientColumn}{r},${unavailableFormula})`, result: turnoverDays });
+  else values.push(unavailable);
   return values;
 }
 
@@ -219,7 +222,7 @@ function createMainSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter, entries: 
     const rowNumber = entries.length + 2 + index;
     const salesRow = entries.length + (options.mode === "quantity" ? 2 : 1) + index;
     const values = mainCellValues({ label, row: total }, days, options, entries.length, salesRow)
-      .map(value => value === null ? "n/a" : replaceRowReference(value, rowNumber));
+      .map(value => value === null && options.includeIncomplete ? "n/a" : replaceRowReference(value, rowNumber));
     const row = sheet.addRow(values);
     row.eachCell(cell => {
       cell.font = { name: "Calibri", size: 11, bold: true };
@@ -248,21 +251,22 @@ function createSalesSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter, entries:
   }
   if (options.mode === "quantity") sheet.addRow([]).commit();
   const salesEntries = [...entries].sort((left, right) => left.label.localeCompare(right.label, "ru"));
+  const unavailable = options.includeIncomplete ? "n/a" : null;
   for (const { row, label } of salesEntries) {
     const quantity = row.periodSales.quantity;
     const cost = row.periodSales.cost;
     if (options.mode === "quantity") {
-      sheet.addRow([label, numeric(quantity) ? quantity : "n/a"]).commit();
+      sheet.addRow([label, numeric(quantity) ? quantity : unavailable]).commit();
     } else {
-      sheet.addRow([label, numeric(quantity) ? quantity : "n/a", numeric(cost) ? cost : "n/a"]).commit();
+      sheet.addRow([label, numeric(quantity) ? quantity : unavailable, numeric(cost) ? cost : unavailable]).commit();
     }
   }
   for (const { label, total } of [
     ...totals.byUnit.map(total => ({ label: `ИТОГО · ${total.unit ?? total.unitKey}`, total })),
     { label: "ИТОГО", total: totals.overall }
   ]) {
-    const values: Array<string | number> = [label, total.periodSales.quantity ?? "n/a"];
-    if (options.mode === "money") values.push(total.periodSales.cost ?? "n/a");
+    const values: Array<string | number | null> = [label, numeric(total.periodSales.quantity) ? total.periodSales.quantity : unavailable];
+    if (options.mode === "money") values.push(numeric(total.periodSales.cost) ? total.periodSales.cost : unavailable);
     const row = sheet.addRow(values);
     row.font = { name: "Calibri", size: 11, bold: true };
     row.eachCell(cell => { cell.border = { top: { style: "thin", color: { argb: "FF9CA3AF" } } }; });
@@ -273,6 +277,7 @@ function createSalesSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter, entries:
 }
 
 export async function writeTurnoverSampleWorkbook(report: TurnoverReport, output: Writable): Promise<void> {
+  report = completeTurnoverReport(report);
   if (output.destroyed) throw new Error("Excel download was closed");
   if (report.params.groupBy !== "sku") throw new Error("Сводный отчёт формируется по товарам (SKU)");
   const days = dateRange(report.params.from, report.params.to);
@@ -289,20 +294,20 @@ export async function writeTurnoverSampleWorkbook(report: TurnoverReport, output
     const mode = report.params.mode ?? "both";
     if (mode === "quantity" || mode === "both") {
       createMainSheet(workbook, entries, days, {
-        mode: "quantity", mainSheet: MAIN_UNITS, salesSheet: SALES_UNITS, activeCell: "AI2", autoFilter: false
+        mode: "quantity", mainSheet: MAIN_UNITS, salesSheet: SALES_UNITS, activeCell: "AI2", autoFilter: false, includeIncomplete: report.params.includeIncomplete
       }, report.totals);
       createSalesSheet(workbook, entries, {
-        mode: "quantity", mainSheet: MAIN_UNITS, salesSheet: SALES_UNITS, activeCell: "AI2", autoFilter: false
+        mode: "quantity", mainSheet: MAIN_UNITS, salesSheet: SALES_UNITS, activeCell: "AI2", autoFilter: false, includeIncomplete: report.params.includeIncomplete
       }, report.totals);
     }
     if (mode === "money" || mode === "both") {
       createMainSheet(workbook, entries, days, {
         mode: "money", mainSheet: mode === "both" ? MAIN_BOTH_MONEY : MAIN_MONEY,
-        salesSheet: mode === "both" ? SALES_BOTH_MONEY : SALES_MONEY, activeCell: "AK13", autoFilter: true
+        salesSheet: mode === "both" ? SALES_BOTH_MONEY : SALES_MONEY, activeCell: "AK13", autoFilter: true, includeIncomplete: report.params.includeIncomplete
       }, report.totals);
       createSalesSheet(workbook, entries, {
         mode: "money", mainSheet: mode === "both" ? MAIN_BOTH_MONEY : MAIN_MONEY,
-        salesSheet: mode === "both" ? SALES_BOTH_MONEY : SALES_MONEY, activeCell: "AK13", autoFilter: true
+        salesSheet: mode === "both" ? SALES_BOTH_MONEY : SALES_MONEY, activeCell: "AK13", autoFilter: true, includeIncomplete: report.params.includeIncomplete
       }, report.totals);
     }
     await workbook.commit();

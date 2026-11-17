@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { prisma } from "../prisma.js";
 import type { CompensationActivity, CompensationActivityOption, CompensationBranch, CompensationIssue, CompensationRow, CompensationTotals, MarketingCompensationReport } from "./marketing-compensation-types.js";
 import { getReloadReadiness, type ReloadReadinessState } from "./reload-readiness.js";
+import { projectCompensationReport } from "./marketing-compensation-presentation.js";
 
 const ZERO = "00000000-0000-0000-0000-000000000000";
 const DAY = 86_400_000;
@@ -25,10 +26,11 @@ function table(name: string) {
 }
 const dateField = z.coerce.date().refine(d => d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0, "Укажите календарную дату");
 export const compensationQuerySchema = z.object({
-  from: dateField, to: dateField, activityKey: z.string().trim().min(1).max(100).optional()
+  from: dateField, to: dateField, activityKey: z.string().trim().min(1).max(100).optional(),
+  includeIncomplete: z.preprocess(value => value === "true" ? true : value === "false" ? false : value, z.boolean().default(false))
 }).refine(q => q.from < q.to, "Конец периода должен быть позже начала")
   .refine(q => q.to.getTime() - q.from.getTime() <= 366 * DAY, "Период не должен превышать 366 дней");
-type Params = { from: Date; to: Date; activityKey?: string };
+type Params = { from: Date; to: Date; activityKey?: string; includeIncomplete?: boolean };
 type Json = Record<string, unknown>;
 const ref = (v: unknown): string | null => typeof v === "string" && v && v !== ZERO ? v : null;
 const text = (v: unknown): string | null => typeof v === "string" && v.trim() ? v.trim() : null;
@@ -102,7 +104,7 @@ export async function getMarketingCompensationReport(
   const params = compensationQuerySchema.parse(input);
   const [available, readiness] = await Promise.all([availableSources(), reloadReader()]);
   const report: MarketingCompensationReport = {
-    from: iso(params.from), to: iso(params.to), activityKey: params.activityKey ?? null,
+    from: iso(params.from), to: iso(params.to), activityKey: params.activityKey ?? null, includeIncomplete: params.includeIncomplete,
     activities: [], totals: totals([]), issues: []
   };
   for (const name of Object.values(names)) if (!available.has(name)) {
@@ -114,7 +116,7 @@ export async function getMarketingCompensationReport(
   if (required.some(n => !available.has(n))) {
     report.activities = options.map(a => ({ ...a, from: report.from, to: report.to, branches: [], totals: totals([], true), issues: [issue("missing_source", "Расчёт недоступен: состав активности или сегмента не загружен.")] }));
     report.totals = totals([], true);
-    return report;
+    return projectCompensationReport(report);
   }
   const load = async (name: string, columns: string) => (await prisma.$queryRaw<Array<{ data: Json }>>`
     select to_jsonb(t) as data from (select ${Prisma.raw(columns)} from ${table(name)}) t
@@ -360,5 +362,5 @@ export async function getMarketingCompensationReport(
     a.totals = totals(a.branches.flatMap(b => b.rows), a.issues.some(i => i.code !== "missing_percentage") || a.branches.some(b => b.totals.compensation === null));
   }
   report.totals = totals(report.activities.flatMap(a => a.branches.flatMap(b => b.rows)), report.issues.length > 0 || report.activities.some(a => a.totals.compensation === null));
-  return report;
+  return projectCompensationReport(report);
 }

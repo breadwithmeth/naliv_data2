@@ -4,6 +4,7 @@ import { PassThrough, Writable } from "node:stream";
 import { buffer } from "node:stream/consumers";
 import ExcelJS from "exceljs";
 import { writeMarketingCompensationWorkbook } from "../src/services/marketing-compensation-workbook.js";
+import { projectCompensationReport } from "../src/services/marketing-compensation-presentation.js";
 import type {
   CompensationRow, CompensationTotals, MarketingCompensationReport
 } from "../src/services/marketing-compensation-types.js";
@@ -129,6 +130,7 @@ test("compensation XLSX counts sales 200 and return-only -80 once and uses repor
 
 test("compensation XLSX preserves unknown totals and real zeros without partial-sum substitution", async () => {
   const report = fixture();
+  report.includeIncomplete = true;
   const branch = report.activities[0].branches[0];
   branch.rows.push(item({
     itemKey: "missing", name: "Недостающие данные", barcode: null, price: null, discountPct: null,
@@ -141,7 +143,8 @@ test("compensation XLSX preserves unknown totals and real zeros without partial-
   const workbook = await load(report);
   const sheet = workbook.getWorksheet("Детализация")!;
   const missing = rows(sheet).find(row => row.getCell(2).value === "Недостающие данные")!;
-  for (const column of [1, 3, 4, 5, 6, 7]) unavailable(missing.getCell(column));
+  assert.equal(missing.getCell(1).value, null);
+  for (const column of [3, 4, 5, 6, 7]) unavailable(missing.getCell(column));
   const zero = rows(sheet).find(row => row.getCell(2).value === "Нулевые данные")!;
   assert.deepEqual(values(zero).slice(2), [0, 0, 0, 0, 0]);
   const summary = workbook.getWorksheet("Компенсации")!;
@@ -153,6 +156,7 @@ test("compensation XLSX preserves unknown totals and real zeros without partial-
 
 test("compensation XLSX keeps known store subtotals separate from an unknown report-wide total", async () => {
   const report = fixture();
+  report.includeIncomplete = true;
   report.issues = [{ code: "missing_branch", message: "Есть движения с неопределённым филиалом" }];
   report.totals = { compensation: null, knownCompensation: 366.2, incompleteRows: 0 };
   const summary = rows((await load(report)).getWorksheet("Компенсации")!);
@@ -233,6 +237,7 @@ test("compensation XLSX omits proven inactive blocks but keeps zero-net sales an
   const excluded = rows(workbook.getWorksheet("Диагностика")!).find(row => row.getCell(6).text === "no_movements")!;
   assert.ok(excluded.getCell(3).text.includes("inactive"));
   report.activities = [];
+  report.includeIncomplete = true;
   report.issues = [{ code: "missing_source", message: "Нет источника" }];
   report.totals = { compensation: null, knownCompensation: 0, incompleteRows: 0 };
   const unknown = (await load(report)).getWorksheet("Компенсации")!;
@@ -264,7 +269,7 @@ test("compensation XLSX keeps known money available when only the barcode is mis
   const workbook = await load(report);
   const sheet = workbook.getWorksheet("Корректировки")!;
   const detail = rows(sheet).find(row => row.getCell(2).value === "=1+1")!;
-  unavailable(detail.getCell(1));
+  assert.equal(detail.getCell(1).value, null);
   assert.equal(detail.getCell(7).value, -126.2);
   assert.equal(sheet.lastRow!.getCell(7).value, -126.2);
   const summary = workbook.getWorksheet("Компенсации")!;
@@ -273,6 +278,7 @@ test("compensation XLSX keeps known money available when only the barcode is mis
 
 test("compensation XLSX retains false movement flags with unknown quantity in review details", async () => {
   const report = fixture();
+  report.includeIncomplete = true;
   const branch = report.activities[0].branches[0];
   branch.hasSales = false;
   branch.hasReturns = false;
@@ -300,6 +306,7 @@ test("compensation XLSX retains false movement flags with unknown quantity in re
 
 test("compensation XLSX shows activity-only and report blockers without inventing a store", async () => {
   const report = fixture();
+  report.includeIncomplete = true;
   report.activities = [{
     ...report.activities[0], branches: [],
     issues: [{ code: "missing_branch", message: "Не определён филиал активности" }],
@@ -323,6 +330,7 @@ test("compensation XLSX shows activity-only and report blockers without inventin
 
 test("compensation XLSX does not hide an inactive-looking branch under unresolved activity scope", async () => {
   const report = fixture();
+  report.includeIncomplete = true;
   const activity = report.activities[0];
   activity.branches = [{
     ...activity.branches[0], name: "Проверяемый магазин", hasSales: false, hasReturns: false,
@@ -340,6 +348,7 @@ test("compensation XLSX does not hide an inactive-looking branch under unresolve
 
 test("compensation XLSX retains a coverage issue even when movement flags and totals look empty", async () => {
   const report = fixture();
+  report.includeIncomplete = true;
   const activity = report.activities[0];
   activity.branches = [{
     ...activity.branches[0], hasSales: false, hasReturns: false, rows: [], totals: complete(0),
@@ -383,6 +392,7 @@ test("compensation XLSX keeps fallback identifiers and document numbers out of r
 
 test("compensation XLSX gives incomplete return-only totals review priority and keeps known zero numeric", async () => {
   const report = fixture();
+  report.includeIncomplete = true;
   const returned = report.activities[0].branches[1];
   returned.totals = { compensation: -80, knownCompensation: 0, incompleteRows: 1 };
   report.activities[0].totals = { compensation: null, knownCompensation: 252.4, incompleteRows: 1 };
@@ -407,6 +417,81 @@ test("compensation XLSX preserves numeric-zero sales and an all-inactive report 
   const empty = rows((await load(report)).getWorksheet("Компенсации")!);
   assert.ok(!empty.some(row => row.getCell(2).text === "Маркетинг А"));
   assert.ok(empty.some(row => row.getCell(1).text === "За выбранный период продаж и возвратов не было"));
+});
+
+test("default compensation XLSX removes incomplete price groups from every financial sheet but retains diagnostics and partial totals", async () => {
+  const report = fixture();
+  const sale = report.activities[0].branches[0];
+  const returned = report.activities[0].branches[1];
+  sale.rows.push(item({ name: "Скрытая цена", price: null, compensation: null, issues: [{ code: "missing_price", message: "Не определена цена" }] }));
+  returned.rows.push(item({ name: "Скрытый возврат", quantity: null, compensation: null }));
+  sale.totals = { compensation: null, knownCompensation: 252.4, incompleteRows: 1 };
+  returned.totals = { compensation: null, knownCompensation: -126.2, incompleteRows: 1 };
+  report.activities[0].totals = { compensation: null, knownCompensation: 126.2, incompleteRows: 2 };
+  report.totals = { compensation: null, knownCompensation: 366.2, incompleteRows: 2 };
+  const workbook = await load(projectCompensationReport(report));
+  for (const name of ["Компенсации", "Детализация", "Корректировки"]) {
+    const visible = rows(workbook.getWorksheet(name)!).flatMap(values).join(" ");
+    assert.doesNotMatch(visible, /Скрытая цена|Скрытый возврат|Не рассчитано|Нет данных/);
+  }
+  const total = rows(workbook.getWorksheet("Компенсации")!).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!;
+  assert.equal(total.getCell(5).value, null, "known part must not become a complete total");
+  assert.equal(total.getCell(6).value, 366.2);
+  assert.match(total.getCell(4).text, /неполный/i);
+  const diagnostics = rows(workbook.getWorksheet("Диагностика")!);
+  assert.ok(diagnostics.some(row => row.getCell(6).text === "missing_price"));
+  assert.ok(diagnostics.some(row => row.getCell(4).text.includes("Скрытый возврат")));
+  assert.match(workbook.getWorksheet("Компенсации")!.getRow(2).getCell(1).text, /Исключено.*2/);
+});
+
+test("default compensation XLSX all-filtered scopes are not no-movement or fabricated zero totals", async () => {
+  const report = fixture();
+  report.activities = [report.activities[0]];
+  const activity = report.activities[0];
+  activity.branches = [activity.branches[0]];
+  activity.branches[0].rows = [item({ name: "Без процента", discountPct: null, unitCompensation: null, compensation: null })];
+  activity.branches[0].totals = { compensation: null, knownCompensation: 0, incompleteRows: 1 };
+  activity.totals = report.totals = { compensation: null, knownCompensation: 0, incompleteRows: 1 };
+  const workbook = await load(report);
+  const summary = rows(workbook.getWorksheet("Компенсации")!);
+  assert.ok(!summary.some(row => row.getCell(2).text === "Маркетинг А"));
+  assert.match(summary.flatMap(values).join(" "), /Нет строк с полным расчётом/);
+  assert.doesNotMatch(summary.flatMap(values).join(" "), /продаж и возвратов не было|Не рассчитано/);
+  const total = summary.find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!;
+  assert.equal(total.getCell(5).value, null);
+  assert.equal(total.getCell(6).value, 0);
+  report.includeIncomplete = true;
+  const restored = await load(report);
+  assert.ok(rows(restored.getWorksheet("Детализация")!).some(row => row.getCell(2).text === "Без процента"));
+});
+
+test("default compensation XLSX never relabels a filtered source total as a complete visible total", async () => {
+  const report = fixture();
+  report.activities[0].branches[0].rows.push(item({ price: Infinity, name: "Невычислимая строка" }));
+  report.totals = complete(777);
+  const summary = rows((await load(report)).getWorksheet("Компенсации")!);
+  const total = summary.find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!;
+  assert.equal(total.getCell(5).value, null);
+  assert.equal(total.getCell(6).value, 777);
+  assert.match(total.getCell(4).text, /неполный/i);
+  const branch = summary.find(row => row.getCell(1).text === "Филиал А" && row.getCell(2).text === "Маркетинг А")!;
+  assert.equal(branch.getCell(5).value, null);
+  assert.equal(branch.getCell(6).value, 252.4);
+});
+
+test("default compensation XLSX keeps activity-only blockers exclusively in diagnostics", async () => {
+  const report = fixture();
+  report.activities = [{
+    ...report.activities[0], branches: [], totals: { compensation: null, knownCompensation: 0, incompleteRows: 0 },
+    issues: [{ code: "missing_branch", message: "Не определён филиал активности" }]
+  }];
+  report.totals = { compensation: null, knownCompensation: 0, incompleteRows: 0 };
+  const workbook = await load(report);
+  const summary = rows(workbook.getWorksheet("Компенсации")!);
+  assert.ok(!summary.some(row => row.getCell(2).text === "Маркетинг А"));
+  assert.doesNotMatch(summary.flatMap(values).join(" "), /Не рассчитано|продаж и возвратов не было/);
+  assert.match(summary.flatMap(values).join(" "), /Нет строк с полным расчётом/);
+  assert.ok(rows(workbook.getWorksheet("Диагностика")!).some(row => row.getCell(6).text === "missing_branch"));
 });
 
 test("compensation XLSX rejects an already closed download", async () => {

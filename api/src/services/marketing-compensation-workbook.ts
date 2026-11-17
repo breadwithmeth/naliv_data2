@@ -8,7 +8,7 @@ import type {
   CompensationActivity, CompensationBranch, CompensationIssue, CompensationRow,
   CompensationTotals, MarketingCompensationReport
 } from "./marketing-compensation-types.js";
-import { isInactiveCompensationActivity, isInactiveCompensationBranch } from "./marketing-compensation-presentation.js";
+import { isInactiveCompensationActivity, isInactiveCompensationBranch, projectCompensationReport } from "./marketing-compensation-presentation.js";
 
 const unavailable = "Нет данных";
 const moneyFormat = '#,##0.00;[Red](#,##0.00);0.00';
@@ -39,11 +39,11 @@ function period(from: string, to: string): string {
 function activityLabel(activity: CompensationActivity): string {
   return activity.name === activity.key || activity.name === activity.number ? "Акция без названия" : activity.name;
 }
-function activityPeriod(activity: CompensationActivity): string {
+function activityPeriod(activity: Pick<CompensationActivity, "startsOn" | "endsOn">): string {
   return `${activity.startsOn === null ? unavailable : date(activity.startsOn)}–${activity.endsOn === null ? unavailable : date(activity.endsOn)}`;
 }
 function incomplete(totals: CompensationTotals): boolean {
-  return totals.compensation === null || totals.incompleteRows > 0;
+  return !Number.isFinite(totals.compensation) || totals.incompleteRows > 0;
 }
 function storeGroups(blocks: BranchBlock[]): BranchBlock[][] {
   const stores = new Map<string | null, BranchBlock[]>();
@@ -100,9 +100,18 @@ function topRows(worksheet: ExcelJS.Worksheet, title: string, note: string, labe
   heading.commit();
 }
 function reportNote(report: MarketingCompensationReport): string {
-  return `Период расчёта ${period(report.from, report.to)} (включительно). Нет данных — показатель неизвестен; 0 — известный ноль. Рассчитанная часть не заменяет полный итог.`;
+  const exclusions = report.includeIncomplete ? "" : ` Исключено строк без полного расчёта: ${report.excludedIncompleteRows ?? 0}; блоков без расчёта: ${report.excludedIncompleteBlocks ?? 0}.`;
+  return `Период расчёта ${period(report.from, report.to)} (включительно). ${report.includeIncomplete ? "Нет данных — показатель неизвестен; " : ""}0 — известный ноль. Рассчитанная часть не заменяет полный итог.${exclusions}`;
 }
-function totalRows(worksheet: ExcelJS.Worksheet, label: string, totals: CompensationTotals): void {
+function totalRows(worksheet: ExcelJS.Worksheet, label: string, totals: CompensationTotals, includeIncomplete = false, filtered = false): void {
+  if ((incomplete(totals) || filtered) && !includeIncomplete) {
+    const row = worksheet.addRow([`${label} · рассчитанная часть, не полный итог`, null, null, null, null, null,
+      Number.isFinite(totals.knownCompensation) ? totals.knownCompensation : null]);
+    worksheet.mergeCells(row.number, 1, row.number, 5);
+    styleRow(row, "total");
+    row.commit();
+    return;
+  }
   const row = worksheet.addRow([
     `${label}${totals.incompleteRows ? ` · неполных строк: ${totals.incompleteRows}` : ""}`,
     null, null, null, null, null, incomplete(totals) ? "Не рассчитано" : totals.compensation
@@ -122,8 +131,8 @@ function branchTotals(blocks: BranchBlock[]): CompensationTotals {
   let knownCompensation = new Prisma.Decimal(0);
   let compensationComplete = true;
   let incompleteRows = 0;
-  for (const { branch: { totals } } of blocks) {
-    if (totals.compensation === null) compensationComplete = false;
+  for (const { branch: { totals, excludedIncompleteRows } } of blocks) {
+    if (totals.compensation === null || !Number.isFinite(totals.compensation) || (excludedIncompleteRows ?? 0) > 0) compensationComplete = false;
     else compensation = compensation.plus(totals.compensation);
     knownCompensation = knownCompensation.plus(totals.knownCompensation);
     incompleteRows += totals.incompleteRows;
@@ -136,7 +145,7 @@ function branchTotals(blocks: BranchBlock[]): CompensationTotals {
 function itemRow(worksheet: ExcelJS.Worksheet, item: CompensationRow): void {
   // Assign source strings directly: leading '=' is text, never an Excel formula.
   const row = worksheet.addRow([
-    item.barcode ?? unavailable, item.name === item.itemKey ? "Товар не определён" : item.name, item.price ?? unavailable,
+    item.barcode, item.name === item.itemKey ? "Товар не определён" : item.name, item.price ?? unavailable,
     item.discountPct === null ? unavailable : item.discountPct / 100,
     item.unitCompensation ?? unavailable, item.quantity ?? unavailable, item.compensation ?? unavailable
   ]);
@@ -171,6 +180,8 @@ async function finishSheet(workbook: StreamingWorkbook, worksheet: StreamingShee
 
 async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompensationReport, signal: AbortSignal): Promise<void> {
   let written = 0;
+  const includeIncomplete = report.includeIncomplete === true;
+  const hasExclusions = (report.excludedIncompleteRows ?? 0) > 0 || (report.excludedIncompleteBlocks ?? 0) > 0;
   const checkpoint = async () => { await setImmediate(); signal.throwIfAborted(); };
   workbook.creator = "Налив — аналитика";
   const includedBlocks: BranchBlock[] = [];
@@ -205,11 +216,12 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
   topRows(summary, "Маркетинговые компенсации", reportNote(report), [
     "Магазин", "Акция", "Период расчёта", "Статус", "Компенсация, ₸", "Рассчитанная часть, ₸", "Подробности"
   ]);
-  const summaryTotal = (label: string, totals: CompensationTotals, review = false) => {
-    const unknown = incomplete(totals);
+  const summaryTotal = (label: string, totals: CompensationTotals, review = false, filtered = false) => {
+    const unknown = incomplete(totals) || (!includeIncomplete && filtered);
     const row = summary.addRow([
-      label, null, null, unknown || review ? "Нужна проверка" : "Рассчитано",
-      unknown ? "Не рассчитано" : totals.compensation, unknown ? totals.knownCompensation : null,
+      label, null, null, unknown || review ? !includeIncomplete && unknown ? "Расчёт неполный · рассчитанная часть" : "Нужна проверка" : "Рассчитано",
+      unknown ? includeIncomplete ? "Не рассчитано" : null : totals.compensation,
+      unknown && Number.isFinite(totals.knownCompensation) ? totals.knownCompensation : null,
       totals.incompleteRows ? `Строк без расчёта: ${totals.incompleteRows}` : null
     ]);
     styleRow(row, "total");
@@ -218,9 +230,9 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
   for (const storeBlocks of storeGroups(includedBlocks)) {
     for (const block of storeBlocks) {
       const { activity, branch } = block;
-      const unknown = incomplete(branch.totals);
-      const review = needsReview(block);
-      const status = review ? "Нужна проверка" : branch.hasSales ? "Рассчитано" : "Возвраты / корректировки";
+      const unknown = incomplete(branch.totals) || (!includeIncomplete && (branch.excludedIncompleteRows ?? 0) > 0);
+      const review = needsReview(block) || unknown;
+      const status = review ? !includeIncomplete && unknown ? "Расчёт неполный · рассчитанная часть" : "Нужна проверка" : branch.hasSales ? "Рассчитано" : "Возвраты / корректировки";
       const detail = branch.hasSales ? detailName : branch.hasReturns ? "Корректировки" : `${detailName} · Требует проверки`;
       const notes = [
         detail,
@@ -230,7 +242,8 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
       ];
       const row = summary.addRow([
         branch.name, activityLabel(activity), period(activity.from, activity.to), status,
-        unknown ? "Не рассчитано" : branch.totals.compensation, unknown ? branch.totals.knownCompensation : null,
+        unknown ? includeIncomplete ? "Не рассчитано" : null : branch.totals.compensation,
+        unknown && Number.isFinite(branch.totals.knownCompensation) ? branch.totals.knownCompensation : null,
         notes.join(" · ")
       ]);
       styleRow(row);
@@ -242,7 +255,7 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
   }
   const reportNeedsReview = incomplete(report.totals) || report.issues.length > 0
     || (includedBlocks.length === 0 && report.totals.compensation !== 0);
-  if (unresolvedActivities.size || reportNeedsReview) {
+  if (includeIncomplete && (unresolvedActivities.size || reportNeedsReview)) {
     mergedRow(summary, "Не удалось полностью рассчитать", true);
     for (const activity of unresolvedActivities) {
       const row = summary.addRow([
@@ -257,10 +270,12 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
       styleRow(row);
       row.commit();
     }
-  } else if (includedBlocks.length === 0) {
+  } else if (includedBlocks.length === 0 && hasExclusions) {
+    mergedRow(summary, "Нет строк с полным расчётом. Включите строки без полного расчёта, чтобы вернуть исключённые блоки.");
+  } else if (includedBlocks.length === 0 && !reportNeedsReview) {
     mergedRow(summary, "За выбранный период продаж и возвратов не было");
   }
-  summaryTotal("ОБЩИЙ ИТОГ", report.totals, reportNeedsReview || unresolvedActivities.size > 0 || reviewBlocks.length > 0);
+  summaryTotal("ОБЩИЙ ИТОГ", report.totals, reportNeedsReview || unresolvedActivities.size > 0 || reviewBlocks.length > 0, hasExclusions);
   await finishSheet(workbook, summary, signal);
 
   const createDetailSheet = (name: string, note = "") => {
@@ -280,30 +295,32 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
           itemRow(detail, item);
           if (++written % 256 === 0) await checkpoint();
         }
-        totalRows(detail, "Итого по акции в магазине", branch.totals);
+        totalRows(detail, "Итого по акции в магазине", branch.totals, includeIncomplete, (branch.excludedIncompleteRows ?? 0) > 0);
       }
-      totalRows(detail, "Итого по магазину · показанные акции", branchTotals(storeBlocks));
+      totalRows(detail, "Итого по магазину · показанные акции", branchTotals(storeBlocks), includeIncomplete);
     }
   };
   const main = createDetailSheet(detailName);
   await writeStoreBlocks(main, mainBlocks);
-  if (mainBlocks.length) totalRows(main, "ИТОГО по акциям с продажами", branchTotals(mainBlocks));
+  if (mainBlocks.length) totalRows(main, "ИТОГО по акциям с продажами", branchTotals(mainBlocks), includeIncomplete);
   if (reviewBlocks.length) {
     mergedRow(main, "Требует проверки", true);
     mergedRow(main, "Наличие продаж и возвратов не определено. Исходные строки сохранены; причины — на листе «Диагностика».");
     await writeStoreBlocks(main, reviewBlocks);
-    totalRows(main, "ИТОГО по блокам, требующим проверки", branchTotals(reviewBlocks));
+    totalRows(main, "ИТОГО по блокам, требующим проверки", branchTotals(reviewBlocks), includeIncomplete);
   }
-  if (!mainBlocks.length && !reviewBlocks.length) mergedRow(main, reportNeedsReview || unresolvedActivities.size
-    ? "Нужна проверка. Ограничения расчёта — на листе «Диагностика»."
-    : correctionBlocks.length ? "Возвраты показаны на листе «Корректировки»."
-      : "За выбранный период продаж и возвратов не было");
+  if (!mainBlocks.length && !reviewBlocks.length) mergedRow(main, hasExclusions && !correctionBlocks.length
+    ? "Нет строк с полным расчётом. Исключённые строки и причины — на листе «Диагностика»."
+    : reportNeedsReview || unresolvedActivities.size
+      ? "Расчёт неполный. Ограничения расчёта — на листе «Диагностика»."
+      : correctionBlocks.length ? "Возвраты показаны на листе «Корректировки»."
+        : "За выбранный период продаж и возвратов не было");
   await finishSheet(workbook, main, signal, mainBlocks.some(block => block.branch.rows.length > 0)
     || reviewBlocks.some(block => block.branch.rows.length > 0));
   if (correctionBlocks.length) {
     const corrections = createDetailSheet("Корректировки", "Акции только с возвратами; суммы включены в общий итог сводки.");
     await writeStoreBlocks(corrections, correctionBlocks);
-    totalRows(corrections, "ИТОГО корректировок по возвратам", branchTotals(correctionBlocks));
+    totalRows(corrections, "ИТОГО корректировок по возвратам", branchTotals(correctionBlocks), includeIncomplete);
     await finishSheet(workbook, corrections, signal, correctionBlocks.some(block => block.branch.rows.length > 0));
   }
 
@@ -350,12 +367,24 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
       }
     }
   }
+  for (const entry of report.excludedIncompleteDiagnostics ?? []) {
+    const activity = entry.activity;
+    const dates = entry.row ? `Расчёт ${period(entry.row.from, entry.row.to)}; исходный интервал [${entry.row.from}, ${entry.row.to})`
+      : `Расчёт ${period(activity.from, activity.to)}; активность ${activityPeriod(activity)}`;
+    addIssues(entry.issues, entry.row ? "Строка" : entry.branch ? "Филиал" : "Маркетинг",
+      `${activity.name} [${activity.key}]; номер документа: ${activity.number ?? unavailable}`,
+      entry.branch ? `${entry.branch.name} [${entry.branch.key ?? unavailable}]` : null,
+      entry.row ? `${entry.row.name} [${entry.row.itemKey}]; характеристика: ${entry.row.characteristicKey ?? unavailable}; штрихкод: ${entry.row.barcode ?? unavailable}` : null,
+      dates);
+    if (++written % 256 === 0) await checkpoint();
+  }
   diagnostics.autoFilter = { from: { row: 3, column: 1 }, to: { row: diagnosticsLastRow, column: 7 } };
   await finishSheet(workbook, diagnostics, signal);
 }
 
 export async function writeMarketingCompensationWorkbook(report: MarketingCompensationReport, output: Writable): Promise<void> {
   if (output.destroyed) throw new Error("Excel download was closed");
+  report = projectCompensationReport(report);
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
     stream: output, useStyles: true, useSharedStrings: false
   }) as StreamingWorkbook;

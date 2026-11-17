@@ -1,11 +1,83 @@
 import type {
-  TurnoverChange, TurnoverNorms, TurnoverRecommendation, TurnoverRisk, TurnoverRow,
-  TurnoverSales, TurnoverTransfer
+  TurnoverChange, TurnoverDailyRow, TurnoverMode, TurnoverNorms, TurnoverPreview, TurnoverRecommendation,
+  TurnoverReport, TurnoverRisk, TurnoverRow, TurnoverSales, TurnoverTotal, TurnoverTransfer
 } from "./turnover-types.js";
 
 export function turnoverCoefficientBand(value: number | null): "red" | "orange" | "green" | null {
   if (value === null || !Number.isFinite(value)) return null;
   return value < 2 ? "red" : value < 3 ? "orange" : "green";
+}
+
+type CalculationRow = Pick<TurnoverRow,
+  "unit" | "openingQty" | "closingQty" | "averageQty" | "openingCost" | "closingCost" | "averageCost" |
+  "periodSales" | "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays"
+> & { daily?: TurnoverDailyRow[] };
+
+export function hasKnownTurnoverUnit(unit: string | null | undefined): unit is string {
+  return Boolean(unit?.trim() && !/^(?:Единица не указана|n\/a|н\/д|__unknown__)/i.test(unit.trim()));
+}
+
+function finite(value: number | null): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** Display detail and optional catalogue identifiers never change calculability. */
+export function isCompleteTurnoverRow(row: CalculationRow, mode: TurnoverMode = "both"): boolean {
+  return (mode === "money" || (hasKnownTurnoverUnit(row.unit)
+    && finite(row.openingQty) && finite(row.closingQty) && finite(row.averageQty)
+    && finite(row.periodSales.quantity) && finite(row.periodSales.averageDailyQty)
+    && finite(row.turnoverQty) && finite(row.turnoverQtyDays)))
+    && (mode === "quantity" || (finite(row.openingCost) && finite(row.closingCost) && finite(row.averageCost)
+      && finite(row.periodSales.cost) && finite(row.periodSales.revenue) && finite(row.periodSales.averageDailyCost)
+      && finite(row.turnoverCost) && finite(row.turnoverCostDays)))
+    && (!row.daily || row.daily.every(day => isCompleteTurnoverDailyRow(day, mode)));
+}
+
+export function isCompleteTurnoverDailyRow(day: TurnoverDailyRow, mode: TurnoverMode = "both"): boolean {
+  return (mode === "money" || (hasKnownTurnoverUnit(day.unit) && finite(day.quantity) && finite(day.salesQty)))
+    && (mode === "quantity" || (finite(day.stockCost) && finite(day.salesCost) && finite(day.revenue)));
+}
+
+function unavailableTurnoverTotal(): TurnoverTotal {
+  const sales: TurnoverSales = { quantity: null, cost: null, revenue: null, averageDailyQty: null, averageDailyCost: null };
+  return {
+    unit: null, daily: [], openingQty: null, closingQty: null, averageQty: null,
+    openingCost: null, closingCost: null, averageCost: null, periodSales: sales, comparisonSales: sales,
+    quantityChange: { pct: null, status: "missing" }, costChange: { pct: null, status: "missing" },
+    turnoverQty: null, turnoverQtyDays: null, turnoverCost: null, turnoverCostDays: null, stockDays: null,
+    excessQty: null, deficitQty: null, recommendedOrderQty: null, openOrderQty: null,
+    stagnantCost: { d30: null, d60: null, d90: null }
+  };
+}
+
+/**
+ * Direct DTO consumers may not have the source atoms needed to recalculate totals.
+ * Preserve authoritative totals when nothing is removed; otherwise withhold them,
+ * never sum display rows or retain aggregates for the discarded population.
+ */
+export function completeTurnoverReport<T extends TurnoverReport | TurnoverPreview>(report: T): T {
+  if (report.params.includeIncomplete) return report;
+  const mode = report.params.mode ?? "both";
+  const rows = report.rows.every(row => isCompleteTurnoverRow(row, mode))
+    ? report.rows : report.rows.filter(row => isCompleteTurnoverRow(row, mode));
+  const daily = report.daily.every(day => isCompleteTurnoverDailyRow(day, mode))
+    ? report.daily : report.daily.filter(day => isCompleteTurnoverDailyRow(day, mode));
+  const excluded = report.rows.length - rows.length;
+  if (!excluded && daily.length === report.daily.length) return report;
+  const excludedIncompleteRows = (report.excludedIncompleteRows ?? 0) + excluded;
+  return {
+    ...report, rows, excludedIncompleteRows,
+    // Aggregate daily and transfers cannot be attributed to the kept DTO rows.
+    daily: excluded ? [] : daily, transfers: [], totals: { overall: unavailableTurnoverTotal(), byUnit: [] },
+    summary: {
+      ...report.summary, rowCount: report.params.groupBy === "day" ? daily.length : rows.length,
+      totalRowCount: rows.length, skuCount: new Set(rows.map(row => row.sku).filter(Boolean)).size,
+      stockCost: null, frozen30Cost: null, frozen60Cost: null, frozen90Cost: null, costCoveragePct: null
+    },
+    warnings: [...report.warnings,
+      "Итоги исходной выборки не показаны: состав строк изменён, а атомарные данные для пересчёта отсутствуют. Показаны только строки с полным расчётом; это не полный итог источника.",
+      "Пустые ячейки дополнительных расчётов означают, что показатель недоступен; неизвестные значения не заменены нулями."]
+  } as T;
 }
 
 export function chronologicalAverage(values: (number | null)[]): number | null {

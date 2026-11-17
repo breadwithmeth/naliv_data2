@@ -2,6 +2,7 @@ import type ExcelJS from "exceljs";
 import type { EventEmitter } from "node:events";
 import type { TurnoverOption, TurnoverReport, TurnoverTotal } from "./turnover-types.js";
 import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
+import { completeTurnoverReport } from "./turnover-domain.js";
 
 type StreamingSheet = ExcelJS.Worksheet & { commit(): void };
 type StreamingWorkbook = ExcelJS.stream.xlsx.WorkbookWriter & { zip: EventEmitter; stream: EventEmitter };
@@ -43,6 +44,7 @@ function filterLabels(report: TurnoverReport): string[] {
 
 /** Human-readable introduction only: all financial values come from the server totals. */
 export async function writeTurnoverSummarySheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter, report: TurnoverReport): Promise<void> {
+  report = completeTurnoverReport(report);
   const sheet = workbook.addWorksheet("Кратко", {
     properties: { defaultRowHeight: 24 },
     pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
@@ -85,7 +87,7 @@ export async function writeTurnoverSummarySheet(workbook: ExcelJS.stream.xlsx.Wo
     const row = sheet.addRow([
       costBasis ? "Деньги по себестоимости" : "Количество",
       costBasis ? "₸" : total.unit || "Единица не указана",
-      ...values.map(value => typeof value === "number" && Number.isFinite(value) ? value : "Не рассчитано")
+      ...values.map(value => typeof value === "number" && Number.isFinite(value) ? value : report.params.includeIncomplete ? "Не рассчитано" : null)
     ]);
     row.height = 32;
     row.eachCell(cell => { cell.alignment = { wrapText: true, vertical: "middle" }; });
@@ -98,15 +100,25 @@ export async function writeTurnoverSummarySheet(workbook: ExcelJS.stream.xlsx.Wo
 
   textRow("Оборачиваемость · кратко", true);
   textRow(`Фактический период: ${dateLabel(report.params.from)}–${inclusiveEnd(report.params.to)} (включительно)`);
-  textRow(`Строк в отчёте: ${report.rows.length}`);
+  const rowCount = report.params.groupBy === "day" ? report.daily.length : report.rows.length;
+  textRow(`Строк в отчёте: ${rowCount}`);
+  if (!report.params.includeIncomplete) {
+    textRow("По строкам с полным расчётом. Итоги относятся только к включённым строкам, не ко всей исходной выборке.");
+    textRow(`Исключено строк без полного расчёта: ${report.excludedIncompleteRows ?? 0}`);
+    textRow("Пустые дополнительные расчёты и несовместимые итоги не показаны; это не нулевые значения.");
+  } else {
+    textRow("Включены строки без полного расчёта");
+  }
   if (report.coverage.requestedTo) {
     textRow(`Период сокращён. Запрошено по ${inclusiveEnd(report.coverage.requestedTo)}; рассчитано по ${inclusiveEnd(report.params.to)} (включительно).`);
   }
   for (const label of filterLabels(report)) textRow(label);
   sheet.addRow([]).commit();
 
-  if (report.rows.length === 0) {
-    textRow("По выбранным условиям товаров нет");
+  if (rowCount === 0) {
+    textRow((report.excludedIncompleteRows ?? 0) > 0
+      ? "Все строки по выбранным условиям исключены: нет полного расчёта. Включите строки без полного расчёта для проверки."
+      : "По выбранным условиям товаров нет");
   } else {
     const mode = report.params.mode ?? "both";
     if (mode !== "money") {
@@ -128,7 +140,7 @@ export async function writeTurnoverSummarySheet(workbook: ExcelJS.stream.xlsx.Wo
       sheet.addRow([]).commit();
       const revenue = report.totals.overall.periodSales.revenue;
       const row = sheet.addRow(["Розничная выручка, ₸", null, null, null, null,
-        typeof revenue === "number" && Number.isFinite(revenue) ? revenue : "Не рассчитано"]);
+        typeof revenue === "number" && Number.isFinite(revenue) ? revenue : report.params.includeIncomplete ? "Не рассчитано" : null]);
       sheet.mergeCells(row.number, 1, row.number, 5);
       row.height = 28;
       row.getCell(1).alignment = { wrapText: true, vertical: "middle" };

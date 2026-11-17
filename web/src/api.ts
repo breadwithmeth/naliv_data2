@@ -234,7 +234,7 @@ export type ReportDateRange = {
 };
 
 // Dashboard filters use inclusive dates; the wrappers convert the end exactly once.
-export type MarketingCompensationFilters = Required<ReportDateRange> & Pick<MarketingCompensationRequest, "activityKey">;
+export type MarketingCompensationFilters = Required<ReportDateRange> & Pick<MarketingCompensationRequest, "activityKey" | "includeIncomplete">;
 
 export type ReportRequest = ReportDateRange & {
   period: SalesPeriod;
@@ -1010,6 +1010,7 @@ function marketingCompensationParams(filters: MarketingCompensationFilters): URL
   const params = new URLSearchParams();
   appendReportParams(params, filters);
   if (filters.activityKey) params.set("activityKey", filters.activityKey);
+  if (filters.includeIncomplete !== undefined) params.set("includeIncomplete", String(filters.includeIncomplete));
   return params;
 }
 
@@ -1226,7 +1227,7 @@ function yearComparisonParams(filters: YearComparisonRequest): URLSearchParams {
 function turnoverParams(filters: TurnoverRequest): URLSearchParams {
   const params = new URLSearchParams();
   const fields = [
-    "from", "to", "comparisonFrom", "comparisonTo", "storeScope", "excludeZero", "warehouse",
+    "from", "to", "comparisonFrom", "comparisonTo", "storeScope", "excludeZero", "includeIncomplete", "warehouse",
     "brand", "sku", "search", "mode", "groupBy", "horizon", "risk", "sort", "profile", "auditGroup"
   ] as const;
   for (const field of fields) {

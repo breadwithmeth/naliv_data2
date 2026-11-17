@@ -220,7 +220,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       await tx.$executeRawUnsafe("insert into document_chek_kkm_tovary values ('c1','i1','460123')");
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
       prisma.$queryRawUnsafe = tx.$queryRawUnsafe.bind(tx) as typeof prisma.$queryRawUnsafe;
-      const params = { from: "2026-08-01", to: "2026-08-04", store: ["s1"] };
+      const params = { from: "2026-08-01", to: "2026-08-04", store: ["s1"], includeIncomplete: true };
       const report = await getTurnoverReport(params);
       const item = report.rows.find((row) => row.sku === "i1")!;
       assert.equal(item.openingQty, 10);
@@ -386,7 +386,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           stagnantCost: { d30: null, d60: null, d90: null }
         });
       });
-      const beforeHistory = await getTurnoverReport({ from: "2026-05-20", to: "2026-05-23", sku: "i1", store: ["s1"] });
+      const beforeHistory = await getTurnoverReport({ from: "2026-05-20", to: "2026-05-23", sku: "i1", store: ["s1"], includeIncomplete: true });
       assert.equal(beforeHistory.rows[0]!.periodSales.quantity, null);
       assert.equal(beforeHistory.rows[0]!.closingQty, null);
       assert.equal(turnoverQuerySchema.safeParse({ ...params, comparisonFrom: "2026-08-02", comparisonTo: "2026-08-05" }).success, false);
@@ -480,7 +480,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
             ('rr-s2-2026-08-02','i1','','w2',2,200)`);
           await tx.$executeRawUnsafe(`insert into information_register_sebestoimost_nomenklatury_record_type values
             ('2026-07-01',true,'s2','i1','',3,1)`);
-          const request = { from: params.from, to: params.to, profile: "sample" as const, sku: "i1" };
+          const request = { from: params.from, to: params.to, profile: "sample" as const, sku: "i1", includeIncomplete: true };
           const consolidated = await getTurnoverReport(request);
           assert.deepEqual(consolidated.rows.map((row) => row.sku), ["i1"]);
           const total = consolidated.rows[0]!;
@@ -515,7 +515,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           assert.equal(detail.row.periodSales.quantity, 14);
           assert.deepEqual(detail.row.daily.map((day) => day.quantity), [54, 62, 42]);
           await assert.rejects(getTurnoverRow({ ...request, sku: "i2", auditGroup: total.key }), /Строка/);
-          const otherProducts = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample" });
+          const otherProducts = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", includeIncomplete: true });
           assert.equal(otherProducts.rows.filter((row) => row.sku === "i1").length, 1);
           assert.equal(otherProducts.rows.find((row) => row.sku === "i2")!.closingQty, 5);
           assert.equal(otherProducts.rows.find((row) => row.sku === "i3")!.closingQty, 7);
@@ -541,7 +541,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       await t.test("consolidated SKU details do not add shops absent from the original population", async () => {
         await tx.$executeRawUnsafe("insert into catalog_magaziny values ('office','Office without retail history')");
         try {
-          const request = { from: params.from, to: params.to, profile: "sample" as const, search: "Item One" };
+          const request = { from: params.from, to: params.to, profile: "sample" as const, search: "Item One", includeIncomplete: true };
           const sample = await getTurnoverReport(request);
           assert.deepEqual(sample.rows.map((row) => row.sku), ["i1"]);
           assert.equal(sample.rows[0]!.periodSales.quantity, 3);
@@ -583,7 +583,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           assert.equal(options.stores.some((store) => store.name === "Офис Тест"), false);
           assert.equal(options.warehouses.some((warehouse) => warehouse.key === "dw1" && warehouse.storeKey === physical.key), true);
           assert.equal(options.warehouses.some((warehouse) => warehouse.key === "unused"), false);
-          const merged = await getTurnoverReport({ from: params.from, to: params.to, store: [physical.key], profile: "sample", mode: "quantity" });
+          const merged = await getTurnoverReport({ from: params.from, to: params.to, store: [physical.key], profile: "sample", mode: "quantity", includeIncomplete: true });
           assert.deepEqual(merged.rows.map((row) => row.sku), ["i1"]);
           const row = merged.rows[0]!;
           assert.equal(row.storeName, "г.Тест ул.Мира 1");
@@ -594,9 +594,9 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           assert.equal(row.averageQty, 33);
           assert.equal(row.turnoverQty, 9 / 33);
           assert.equal(row.turnoverQtyDays, 11);
-          const retailOnly = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", search: "Office Only" });
+          const retailOnly = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", search: "Office Only", includeIncomplete: true });
           assert.equal(retailOnly.rows.length, 0);
-          const withOffice = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", search: "Office Only", storeScope: "all" });
+          const withOffice = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", search: "Office Only", storeScope: "all", includeIncomplete: true });
           assert.equal(withOffice.rows.length, 1);
           assert.equal(withOffice.rows[0]!.closingQty, 5);
           assert.equal(withOffice.rows[0]!.periodSales.quantity, null);
@@ -617,20 +617,20 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           await tx.$executeRawUnsafe(`insert into catalog_nomenklatura values
             ('zero-item','Zero Item','folder',false,null,'Z','ZERO',null,'u1')`);
           await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah_tovary values ('rr-s1-2026-08-01','zero-item','','w1',0,0)");
-          const visible = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "quantity", search: "Zero Item" });
+          const visible = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "quantity", search: "Zero Item", includeIncomplete: true });
           assert.equal(visible.rows.length, 1);
           assert.equal(visible.rows[0]!.periodSales.quantity, 0);
-          const hidden = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "quantity", search: "Zero Item", excludeZero: true });
+          const hidden = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "quantity", search: "Zero Item", excludeZero: true, includeIncomplete: true });
           assert.equal(hidden.rows.length, 0);
           assert.equal(visible.totals.overall.periodSales.quantity, 0);
           assert.equal(hidden.totals.overall.periodSales.quantity, null);
           assert.deepEqual(hidden.totals.byUnit, []);
-          const hiddenMoney = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "money", search: "Zero Item", excludeZero: true });
+          const hiddenMoney = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "money", search: "Zero Item", excludeZero: true, includeIncomplete: true });
           assert.equal(hiddenMoney.rows.length, 0);
-          const stockOnly = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "quantity", search: "Litres", excludeZero: true });
+          const stockOnly = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "quantity", search: "Litres", excludeZero: true, includeIncomplete: true });
           assert.equal(stockOnly.rows.length, 1);
           assert.equal(stockOnly.rows[0]!.closingQty, 7);
-          const missing = await getTurnoverReport({ from: "2026-05-20", to: "2026-05-23", profile: "sample", mode: "quantity", sku: "i1", store: ["s1"], excludeZero: true });
+          const missing = await getTurnoverReport({ from: "2026-05-20", to: "2026-05-23", profile: "sample", mode: "quantity", sku: "i1", store: ["s1"], excludeZero: true, includeIncomplete: true });
           assert.equal(missing.rows.length, 1);
           assert.equal(missing.rows[0]!.daily.every((day) => day.quantity === null), true);
         } finally {

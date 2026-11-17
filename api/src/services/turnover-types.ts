@@ -26,6 +26,8 @@ export type TurnoverRequest = {
   storeScope?: "retail" | "all";
   /** Hide only rows whose daily stock and sales are exactly zero for every day. */
   excludeZero?: boolean;
+  /** Restore unavailable calculation rows; independent of the exact-zero filter. */
+  includeIncomplete?: boolean;
   warehouse?: string;
   category?: string[];
   brand?: string;
@@ -143,6 +145,8 @@ export type TurnoverReport = {
   comparison: { from: string; to: string; days: number };
   norms: TurnoverPolicy;
   rows: TurnoverRow[];
+  /** Atomic rows excluded for unavailable selected-mode calculation fields. */
+  excludedIncompleteRows?: number;
   daily: TurnoverDailyRow[];
   /** Actual table population after every filter, independent of display grouping. */
   totals: TurnoverTotals;

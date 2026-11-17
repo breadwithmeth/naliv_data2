@@ -152,6 +152,7 @@ test("both mode renders separate quantity and cost metrics with detailed additio
 
 test("coefficient color uses raw thresholds and unknown numbers have a neutral accessible dash", () => {
   const data = report();
+  data.params.includeIncomplete = true;
   data.rows = [1.999, 2, 3, null, NaN, Infinity].map((value, index) => ({ ...row(index), turnoverQty: value }));
   const body = section(render(data), "tbody");
   assert.equal((body.match(/turnover-coefficient-red/g) ?? []).length, 1);
@@ -168,6 +169,7 @@ test("coefficient color uses raw thresholds and unknown numbers have a neutral a
 
 test("missing identity values are omitted and returns are not explained as absent sales history", () => {
   const data = report();
+  data.params.includeIncomplete = true;
   data.params.profile = "summary";
   Object.assign(data.rows[0], {
     sku: "", article: null, storeName: null, unit: null, noSalesHistory: true,
@@ -184,6 +186,7 @@ test("missing identity values are omitted and returns are not explained as absen
 
 test("incompatible quantity totals retain per-unit subtotals without inventing an overall quantity", () => {
   const data = report();
+  data.params.includeIncomplete = true;
   data.totals.byUnit = [
     { ...data.totals.overall, unitKey: "unit-pieces", unit: "шт." },
     { ...data.totals.overall, unitKey: "unit-kilograms", unit: "кг", openingQty: 6 }
@@ -207,6 +210,7 @@ test("incompatible quantity totals retain per-unit subtotals without inventing a
 
 test("an unknown unit is not presented as proof of mixed units", () => {
   const data = report();
+  data.params.includeIncomplete = true;
   data.rows[0].unit = null;
   Object.assign(data.totals.overall, {
     unit: null, openingQty: null, closingQty: null, averageQty: null, turnoverQty: null, turnoverQtyDays: null,
@@ -262,4 +266,57 @@ test("builder has one primary show submit and secondary Excel with advanced sett
     assert.ok(advanced.includes(label), `missing advanced setting ${label}`);
   }
   assert.doesNotMatch(advanced, /type="checkbox"[^>]*checked/);
+});
+
+test("default preview excludes incomplete calculation rows independent of detailed columns and keeps optional identities", () => {
+  const data = report();
+  data.excludedIncompleteRows = 2;
+  data.rows = [
+    { ...row(0), name: "Complete missing identity", sku: null, article: null },
+    { ...row(1), name: "Unknown opening", openingQty: null },
+    { ...row(2), name: "Unknown ratios", turnoverQtyDays: null },
+    { ...row(3), name: "Nonfinite cost ignored in quantity", averageCost: Infinity }
+  ];
+  for (const detailed of [false, true]) {
+    const html = render(data, 0, detailed);
+    const body = section(html, "tbody");
+    assert.match(body, /Complete missing identity/);
+    assert.match(body, /Nonfinite cost ignored in quantity/);
+    assert.doesNotMatch(body, /Unknown opening|Unknown ratios|Показатель не рассчитан/);
+    assert.match(html, /По строкам с полным расчётом/);
+    assert.match(html, /Исключено строк без полного расчёта: 4/);
+    assert.doesNotMatch(section(html, "tfoot"), /2,5/,
+      "a raw filtered DTO must not retain totals for another population");
+  }
+  data.params.includeIncomplete = true;
+  const optedIn = render(data);
+  assert.match(section(optedIn, "tbody"), /Unknown opening|Unknown ratios/);
+  assert.match(section(optedIn, "tbody"), /Показатель не рассчитан/);
+});
+
+test("default all-filtered and incompatible totals explain omissions without unavailable financial cells", () => {
+  const data = report();
+  data.rows[0].turnoverQtyDays = null;
+  let html = render(data);
+  assert.match(html, /Все строки.*исключены/);
+  assert.match(html, /Включить строки без полного расчёта/);
+  assert.doesNotMatch(html, /<tfoot|aria-label="Показатель не рассчитан"/);
+  data.rows = [row()];
+  data.totals.byUnit = [{ ...data.totals.overall, unitKey: "pieces" }];
+  data.totals.overall = { ...data.totals.overall, unit: null, openingQty: null, closingQty: null,
+    averageQty: null, turnoverQty: null, turnoverQtyDays: null, periodSales: { ...data.totals.overall.periodSales, quantity: null } };
+  html = render(data, 0, true);
+  assert.match(html, /Общий итог количества не рассчитан/);
+  assert.doesNotMatch(section(html, "tfoot"), /aria-label="Показатель не рассчитан"/);
+});
+
+test("incomplete calculation opt-in is visible outside advanced settings and initially unchecked", () => {
+  const html = renderToStaticMarkup(createElement(TurnoverReport, {
+    dateRange: { from: "2026-11-01", to: "2026-11-03" }, onDateRangeChange: () => {}
+  }));
+  const index = html.indexOf("Включить строки без полного расчёта");
+  assert.ok(index >= 0 && index < html.indexOf('<details class="turnover-advanced">'));
+  const checkbox = html.slice(html.lastIndexOf("<input", index), index);
+  assert.match(checkbox, /type="checkbox"/);
+  assert.doesNotMatch(checkbox, /checked/);
 });

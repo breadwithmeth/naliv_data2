@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CompensationResults } from "../src/MarketingCompensation";
+import { CompensationResults, MarketingCompensation } from "../src/MarketingCompensation";
 import type {
   CompensationActivity, CompensationBranch, CompensationRow, CompensationTotals, MarketingCompensationReport
 } from "../src/api";
@@ -94,6 +94,7 @@ test("known compensation is never presented as the full total when calculation i
     totals: totals(200, 73.25, 2)
   })]);
   data.totals = totals(987.65, 73.25, 2);
+  data.includeIncomplete = true;
   const html = render(data);
   const summary = overall(html);
   assert.match(summary, /Расчёт неполный/);
@@ -118,6 +119,7 @@ test("unknown scopes and unresolved quantity rows are retained despite false mov
     })
   ]);
   data.totals = totals(null, 0, 1);
+  data.includeIncomplete = true;
   data.issues = [{ code: "report-check", message: "Общее ограничение источника сохраняется." }];
   const html = render(data);
   for (const name of ["Неопределённые магазины", "Неизвестное количество", "Непроверенный охват"]) {
@@ -180,6 +182,7 @@ test("a missing-coverage branch is not mistaken for a safely inactive activity",
     totals: totals(null)
   })]);
   data.totals = totals(null);
+  data.includeIncomplete = true;
   const html = render(data);
   assert.match(html, /Акция с неподтверждёнными данными/);
   assert.match(html, /Нужна проверка/);
@@ -189,6 +192,7 @@ test("a missing-coverage branch is not mistaken for a safely inactive activity",
 test("report-level limitations stay visible when all safely inactive activity blocks are hidden", () => {
   const data = report([inactiveActivity()]);
   data.totals = totals(null, 0);
+  data.includeIncomplete = true;
   data.issues = [{ code: "missing_source", message: "Общий источник для расчёта недоступен." }];
   const html = render(data);
   assert.match(overall(html), /Не рассчитано/);
@@ -197,4 +201,67 @@ test("report-level limitations stay visible when all safely inactive activity bl
   assert.match(html, /Подробности проверки отчёта \(1\)/);
   assert.match(html, /Общий источник для расчёта недоступен/);
   assert.doesNotMatch(html, /За выбранный период продаж и возвратов не было|<details[^>]*\sopen(?:=|>)/);
+});
+
+test("default results exclude all-unusable scopes and distinguish filtered emptiness from no movement", () => {
+  const data = report([activity("unknown", "Неизвестная акция", {
+    branches: [branch({ rows: [row({ price: null, compensation: null })], totals: totals(null, 0, 1) })],
+    totals: totals(null, 0, 1)
+  })]);
+  data.activityKey = "unknown";
+  data.totals = totals(null, 0, 1);
+  const html = render(data);
+  assert.doesNotMatch(html, /<h3[^>]*>Неизвестная акция|За выбранный период продаж и возвратов не было|Итого компенсация<\/dt><dd>Не рассчитано/);
+  assert.match(html, /Нет строк с полным расчётом/);
+  assert.match(html, /Исключено строк без полного расчёта: 1/);
+  assert.match(html, /Включить строки без полного расчёта/);
+  assert.match(overall(html), /Рассчитанная часть, не полный итог/);
+  assert.match(overall(html), /0,00\s*₸/);
+  data.includeIncomplete = true;
+  const restored = render(data);
+  assert.match(restored, /<h3[^>]*>Неизвестная акция/);
+  assert.match(overall(restored), /Итого компенсация<\/dt><dd>Не рассчитано/);
+});
+
+test("default mixed results use authoritative calculated part without an unavailable full-total cell", () => {
+  const data = report([activity("mixed", "Смешанный расчёт", {
+    branches: [branch({ rows: [row({ barcode: null }), row({ quantity: null, compensation: null })], totals: totals(null, 73.25, 1) })],
+    totals: totals(null, 73.25, 1)
+  })]);
+  data.totals = totals(null, 73.25, 1);
+  const html = render(data);
+  assert.match(html, /Смешанный расчёт/);
+  assert.match(html, /Исключено строк без полного расчёта: 1/);
+  assert.match(overall(html), /Рассчитанная часть, не полный итог/);
+  assert.match(overall(html), /73,25\s*₸/);
+  assert.doesNotMatch(overall(html), /Не рассчитано|200,00/);
+});
+
+test("default filtered result cannot promote an authoritative source amount to a full visible total", () => {
+  const data = report([activity("mixed", "Отфильтрованный расчёт", {
+    branches: [branch({ rows: [row(), row({ discountPct: Number.NaN })] })]
+  })]);
+  const html = render(data);
+  assert.match(overall(html), /Рассчитанная часть, не полный итог/);
+  assert.match(overall(html), /987,65\s*₸/);
+  assert.doesNotMatch(overall(html), /Итого компенсация/);
+  assert.match(html, /Исключено строк без полного расчёта: 1/);
+});
+
+test("include-incomplete control is visible and unchecked before loading any result", () => {
+  const html = renderToStaticMarkup(createElement(MarketingCompensation, { dateRange: { from: "2026-11-01", to: "2026-11-03" } }));
+  assert.match(html, /<input type="checkbox"\/><span>Включить строки без полного расчёта/);
+  assert.ok(html.indexOf("Включить строки без полного расчёта") < html.indexOf("compensation-results"));
+});
+
+test("activity-only blockers remain diagnosable without default financial scope rows", () => {
+  const data = report([activity("scope", "Область без филиала", {
+    branches: [], totals: totals(null), issues: [{ code: "missing_branch", message: "Не определён филиал активности" }]
+  })]);
+  data.totals = totals(null);
+  const html = render(data);
+  assert.doesNotMatch(html, /<h3[^>]*>Область без филиала/);
+  assert.match(html, /Нет строк с полным расчётом|блоков без расчёта: 1/);
+  assert.match(html, /Не определён филиал активности/);
+  assert.doesNotMatch(overall(html), /Итого компенсация|Не рассчитано/);
 });

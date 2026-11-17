@@ -59,7 +59,7 @@ test("compensations use rule prefixes and exact movement prices with certified r
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values ('r',null,'i',null,1,800)`);
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
       const params = { from: new Date("2026-09-01"), to: new Date("2026-10-01") };
-      const selected = { ...params, activityKey: "b" };
+      const selected = { ...params, activityKey: "b", includeIncomplete: true };
       const read = () => getMarketingCompensationReport(selected, certified);
       assert.deepEqual((await getMarketingCompensationActivities(params)).activities.map(a => a.key).sort(), ["a", "b"]);
       const result = await getMarketingCompensationReport(params, certified);
@@ -86,6 +86,9 @@ test("compensations use rule prefixes and exact movement prices with certified r
       assert.equal(notCertified.totals.compensation, null);
       assert.equal(notCertified.totals.knownCompensation, 200);
       assert.ok(notCertified.activities[0].branches[0].rows.some(r => r.issues.some(i => i.code === "return_price_unverified")));
+      const defaultNotCertified = await getMarketingCompensationReport({ ...selected, includeIncomplete: false }, unverified);
+      assert.equal(defaultNotCertified.excludedIncompleteRows, 1);
+      assert.deepEqual(defaultNotCertified.activities[0].branches[0].rows.map(row => row.price), [1000]);
       // Negative and positive source return quantities both mean a return.
       await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary set kolichestvo=-1");
       assert.equal((await read()).totals.compensation, 120);

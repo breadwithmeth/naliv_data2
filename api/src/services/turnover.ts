@@ -3,7 +3,7 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { prisma } from "../prisma.js";
 import {
-  chronologicalAverage, evaluateTurnoverRisks, planTurnoverTransfers, salesChange,
+  chronologicalAverage, evaluateTurnoverRisks, isCompleteTurnoverRow, planTurnoverTransfers, salesChange,
   sumNullable, turnoverRatios, turnoverSales
 } from "./turnover-domain.js";
 import {
@@ -73,6 +73,8 @@ export const turnoverQuerySchema = z.object({
     .transform((value) => [...new Set(typeof value === "string" ? [value] : value ?? [])].sort()),
   storeScope: z.enum(["retail", "all"]).default("retail"),
   excludeZero: z.union([z.boolean(), z.enum(["true", "false"])]).default(false)
+    .transform((value) => value === true || value === "true"),
+  includeIncomplete: z.union([z.boolean(), z.enum(["true", "false"])]).default(false)
     .transform((value) => value === true || value === "true"),
   category: z.union([keyField, z.array(keyField).max(1000)]).optional()
     .transform((value) => [...new Set(typeof value === "string" ? [value] : value ?? [])].sort()),
@@ -466,7 +468,7 @@ async function loadSources(params: NormalizedTurnoverRequest, searchKeys: string
 }
 
 type NormalizedTurnoverRequest = TurnoverRequest & {
-  comparisonFrom: string; comparisonTo: string; store: string[]; storeScope: "retail" | "all"; excludeZero: boolean; category: string[]; mode: "quantity" | "money" | "both";
+  comparisonFrom: string; comparisonTo: string; store: string[]; storeScope: "retail" | "all"; excludeZero: boolean; includeIncomplete: boolean; category: string[]; mode: "quantity" | "money" | "both";
   groupBy: "sku" | "store" | "category" | "brand" | "day"; horizon: 7 | 14 | 30;
   risk: "all" | "no-sales" | "overstock" | "deficit" | "stagnant";
   sort: "turnover" | "stock-cost" | "no-movement" | "sales-decline";
@@ -1034,9 +1036,18 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   const groupedDaily = new Map<string, Map<string, TurnoverDailyRow>>();
   const atomicRows: TurnoverRow[] = [];
   const pairByKey = new Map(selectedPairs.map((pair) => [`${pair.key}/${params.from}/${params.to}`, pair]));
+  let excludedIncompleteRows = 0;
+  let missingPeriodSales = false, missingWindowSales = false, missingMoney = false;
   for (const pair of selectedPairs) {
     const row = makeRow(pair, params.from, params.to, params.comparisonFrom, params.comparisonTo);
     if (params.excludeZero && isZeroTurnoverRow(row, params.mode)) continue;
+    missingPeriodSales ||= row.periodSales.quantity === null;
+    missingWindowSales ||= row.windows.some(window => window.sales.quantity === null || window.previousSales.quantity === null);
+    missingMoney ||= row.periodSales.cost === null || row.averageCost === null;
+    if (!params.includeIncomplete && !isCompleteTurnoverRow(row, params.mode)) {
+      if (params.risk === "all" || row.risks.includes(params.risk)) excludedIncompleteRows++;
+      continue;
+    }
     if (params.risk === "all" || row.risks.includes(params.risk)) {
       if (retainReportDaily) mergeDaily(reportDaily, row.daily);
       if (consolidateStores || params.groupBy === "store" || params.groupBy === "category" || params.groupBy === "brand") {
@@ -1052,7 +1063,8 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     if (!keepDaily) row.daily = [];
     atomicRows.push(row);
   }
-  const transfers = params.profile === "sample" ? [] : planTurnoverTransfers(atomicRows);
+  const visibleAtomic = params.risk === "all" ? atomicRows : atomicRows.filter((row) => row.risks.includes(params.risk as Exclude<typeof params.risk, "all">));
+  const transfers = params.profile === "sample" ? [] : planTurnoverTransfers(params.includeIncomplete ? atomicRows : visibleAtomic);
   const transferRows = new Map(atomicRows.map((row) => [`${row.storeKey}\u0000${row.sku}\u0000${row.unit}`, row]));
   for (const transfer of transfers) {
     for (const store of [transfer.fromStoreKey, transfer.toStoreKey]) {
@@ -1061,7 +1073,6 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
         reason: `${transfer.fromStoreName} → ${transfer.toStoreName}: ${transfer.quantity.toFixed(3)} ${transfer.unit}; альтернатива закупке, ограничена излишком отправителя и потребностью получателя с учётом открытых заказов.` });
     }
   }
-  const visibleAtomic = params.risk === "all" ? atomicRows : atomicRows.filter((row) => row.risks.includes(params.risk as Exclude<typeof params.risk, "all">));
   let rows: TurnoverRow[];
   if (params.groupBy === "sku" && !consolidateStores) rows = visibleAtomic;
   else if (params.groupBy === "day") {
@@ -1102,6 +1113,10 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   const missingStockDates = expectedDates.filter((date) => !snapshots.has(shiftDate(date, 1)));
   const observedDays = expectedDates.length - missingStockDates.length;
   const warningSet = new Set<string>();
+  if (!params.includeIncomplete) {
+    warningSet.add("По строкам с полным расчётом: итоги относятся только к включённым SKU/магазинам, а не ко всей исходной выборке. Пустые дополнительные показатели не заменены нулями.");
+    if (excludedIncompleteRows) warningSet.add(`Исключено строк без полного расчёта: ${excludedIncompleteRows}. Включите строки без полного расчёта, чтобы проверить исходные данные.`);
+  }
   if (!atomicRows.length) warningSet.add("Фильтрам не соответствуют наблюдаемые остатки, продажи или открытые заказы; отсутствие строк не доказывает нулевые продажи до начала доступной истории.");
   if (params.auditGroup && !rows.some((row) => row.key === params.auditGroup)) warningSet.add("Строка запрошенного дневного аудита не найдена в текущем составе отчёта; сформируйте отчёт заново.");
   if (requestedTo) {
@@ -1110,10 +1125,10 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   }
   if (missingStockDates.length) warningSet.add(`Нет обязательных дневных снимков: ${missingStockDates.length} из ${expectedDates.length}. Средние остатки и зависимые коэффициенты недоступны, снимки не переносятся вперёд.`);
   if (!snapshots.has(params.from)) warningSet.add("Нет снимка точно на начало периода; начальные остатки неизвестны.");
-  if (atomicRows.some((row) => row.periodSales.quantity === null)) warningSet.add("Не во все дни выбранного периода есть проведённый розничный отчёт магазина либо подтверждение пустого дня по отчётам и чекам; продажи соответствующих строк — н/д, а не ноль.");
-  if (atomicRows.some((row) => row.windows.some((window) => window.sales.quantity === null || window.previousSales.quantity === null))) warningSet.add("Часть окон 7/14/30 дней не покрыта историей розничных отчётов; сравнение этих окон недоступно.");
+  if (missingPeriodSales) warningSet.add("Не во все дни выбранного периода есть проведённый розничный отчёт магазина либо подтверждение пустого дня по отчётам и чекам; продажи соответствующих строк — н/д, а не ноль.");
+  if (missingWindowSales) warningSet.add("Часть окон 7/14/30 дней не покрыта историей розничных отчётов; сравнение этих окон недоступно.");
   if (receiptsWithoutRetailReport) warningSet.add("В части дней есть проведённые чеки, но нет розничного отчёта магазина (возможна незакрытая смена); продажи этих дней неизвестны, не заменены нулём и не смешаны с чеками.");
-  if (atomicRows.some((row) => row.periodSales.cost === null || row.averageCost === null)) warningSet.add("Часть денежных показателей недоступна из-за пропусков снимков или учётных цен. Нулевая, отрицательная или пустая цена не считается бесплатным товаром и не заменяется более старой ценой.");
+  if (missingMoney) warningSet.add("Часть денежных показателей недоступна из-за пропусков снимков или учётных цен. Нулевая, отрицательная или пустая цена не считается бесплатным товаром и не заменяется более старой ценой.");
   if (!source.brands.length || selectedPairs.some((pair) => !pair.brand)) warningSet.add("Справочник брендов не заполнен или привязки отсутствуют. Бренд по названию товара не угадывается.");
   if (selectedPairs.some((pair) => pair.unit.startsWith("Единица не указана"))) warningSet.add("У части SKU нет подтверждённой базовой единицы. Такие SKU не суммируются между собой и не участвуют в перемещениях.");
   if (visibleAtomic.length && totals.overall.unit === null) warningSet.add("Общее количество, количественные коэффициенты и дни запаса не рассчитаны: в отборе разные или неизвестные базовые единицы. Количественные подытоги показаны отдельно по известным единицам; денежные суммы не зависят от единиц.");
@@ -1132,15 +1147,15 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   const stockCosts = atomicRows.map((row) => row.closingCost);
   const costCoverages = atomicRows.map((row) => row.costCoveragePct);
   const sumFrozen = (threshold: "d30" | "d60" | "d90") => atomicRows.length
-    ? sumNullable(atomicRows.map((row) => row.stagnantCost[threshold])) : snapshots.has(params.to) ? 0 : null;
+    ? sumNullable(atomicRows.map((row) => row.stagnantCost[threshold])) : !excludedIncompleteRows && snapshots.has(params.to) ? 0 : null;
   return {
     params, comparison: { from: params.comparisonFrom, to: params.comparisonTo, days: expectedDates.length }, norms: params.norms,
     rows, daily: [...reportDaily.values()].sort((a, b) => a.date.localeCompare(b.date) || a.unit.localeCompare(b.unit, "ru")), transfers,
-    totals,
+    totals, excludedIncompleteRows,
     summary: {
       rowCount: params.groupBy === "day" ? reportDaily.size : rows.length,
       totalRowCount: atomicRows.length, skuCount: new Set(atomicRows.map((row) => row.sku)).size,
-      stockCost: stockCosts.length ? sumNullable(stockCosts) : snapshots.has(params.to) ? 0 : null,
+      stockCost: stockCosts.length ? sumNullable(stockCosts) : !excludedIncompleteRows && snapshots.has(params.to) ? 0 : null,
       noSalesCount: atomicRows.filter((row) => row.risks.includes("no-sales")).length,
       overstockCount: atomicRows.filter((row) => row.risks.includes("overstock")).length,
       deficitCount: atomicRows.filter((row) => row.risks.includes("deficit")).length,
@@ -1177,6 +1192,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
       "Единица — ссылка базовой единицы карточки 1С. Разные ссылки, включая одинаковые подписи, разделены и различимы по суффиксу; неизвестная единица изолирована по SKU. Литры, килограммы и штуки не суммируются.",
       "Магазин — физическая точка: ключи catalog_magaziny с одинаковым точным адресом от «г.» объединяются, остатки и продажи юридических лиц суммируются, а себестоимость каждого исходного ключа применяется до объединения. По умолчанию retail-охват включает только физические магазины с проведёнными розничными отчётами; офисы и отделы доступны явно через storeScope=all. Склад по умолчанию — склад выбранного магазина; удалённые и помеченные «не использовать» склады исключены.",
       "excludeZero удаляет строку только тогда, когда все дневные остатки и продажи равны точному нулю за весь период в выбранном режиме. Пропуски, null и нулевая продажа при ненулевом остатке не считаются нулевой строкой.",
+      "includeIncomplete=false исключает SKU/магазин с недоступными расчётными полями выбранного режима до объединения дневных данных, групп, перемещений и итогов. Нулевые/отрицательные известные значения не заменяются и не являются самостоятельной причиной исключения; отсутствие вычислимых дней оборота — причина. Артикул и штрихкод необязательны. includeIncomplete=true возвращает исходный расчёт с недоступными значениями.",
       "Классификация — текущая товарная группа карточки, иначе ближайшая папка номенклатуры; фильтр категории-папки включает потомков, конкретный SKU отбирается по точной ссылке. Нормативы наследуются от родительских папок к ближайшей категории. Историческая классификация и бренды из названий не восстанавливаются.",
       "Дни без движения считаются до последнего дня выбранного периода по последней положительной продаже SKU в конкретном магазине за всю доступную историю; возвраты её не обновляют. При полном отсутствии продаж возраст без движения ограничен первой наблюдаемой положительной доступностью SKU.",
       "Дни запаса = конечный остаток / среднедневные нетто-продажи выбранного горизонта. Цель 30 дней — редактируемое прикладное значение, не норма 1С. Целевое количество = max(спрос × max(целевые дни, известный срок поставки), известный минимум карточки); открытые заказы вычитаются из заказа. Нулевой наблюдаемый спрос не создаёт заказ только ради минимума. Денежный порог и срок поставки неизвестны, пока явно не заданы; минимум карточки используется лишь при подтверждённом сопоставлении магазина с нормативным полем 1С.",

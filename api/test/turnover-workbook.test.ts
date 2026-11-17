@@ -130,6 +130,7 @@ test("Кратко preserves known zeros and signed returns and never turns miss
   for (const profile of ["sample", "summary", "full"] as const) {
     const report = fixture("both");
     report.params.profile = profile;
+    report.params.includeIncomplete = true;
     report.totals.overall = {
       ...report.totals.overall, closingQty: 0, closingCost: null,
       periodSales: { ...sales, quantity: -5, cost: 0, revenue: 0 },
@@ -152,6 +153,7 @@ test("Кратко preserves known zeros and signed returns and never turns miss
 test("Кратко lists incompatible quantities by unit without inventing an overall or an unknown unit", async () => {
   const report = fixture("both");
   report.params.profile = "summary";
+  report.params.includeIncomplete = true;
   const overall = report.totals.overall;
   report.totals.byUnit = [
     { ...overall, unit: "л", unitKey: "litre", closingQty: 40, periodSales: { ...sales, quantity: 100 }, turnoverQty: 2.5, turnoverQtyDays: 1.2 },
@@ -372,6 +374,7 @@ test("combined sample export keeps both examples separate with distinct lookup s
 test("sample exports keep product labels independent of shops and withhold mixed-unit quantity totals", async () => {
   const report = fixture("money");
   report.params.profile = "sample";
+  report.params.includeIncomplete = true;
   report.params.store = [];
   report.rows.push({
     ...row, key: "other:item", sku: "other", name: "Другой товар", storeKey: "second", storeName: "Второй магазин",
@@ -396,6 +399,7 @@ test("sample exports keep product labels independent of shops and withhold mixed
 
 test("money-only export preserves unknown costs and the exact applied filter and category norms", async () => {
   const report = fixture("money");
+  report.params.includeIncomplete = true;
   report.rows[0].averageCost = null;
   report.totals.overall.averageCost = null;
   report.totals.overall.turnoverCost = null;
@@ -444,7 +448,7 @@ test("broad report export retains aggregate daily history when individual audits
   report.rows[0].daily = [];
   const workbook = await load(report);
   const daily = workbook.getWorksheet("Ежедневные остатки")!;
-  assert.equal(daily.getCell("D5").value, "n/a");
+  assert.equal(daily.getCell("D5").value, null, "an optional missing SKU is blank, not unavailable financial data");
   assert.equal(daily.getCell("G5").value, 0.5);
   assert.equal(daily.getCell("H5").value, 10);
   assert.equal(daily.getCell("I5").value, 100);
@@ -508,6 +512,7 @@ test("coefficient fills and conditional rules cover data and totals, not turnove
   for (const profile of ["sample", "summary"] as const) {
     const report = fixture("both");
     report.params.profile = profile;
+    report.params.includeIncomplete = true;
     const values = [0, 1.999, 2, 2.999, 3, null, NaN, Infinity];
     report.rows = values.map((value, i) => ({ ...row, key: `row${i}`, sku: `sku${i}`, name: `Item ${i}`, turnoverQty: value, turnoverCost: value }));
     report.totals.overall.turnoverQty = 2.5;
@@ -605,5 +610,98 @@ test("a stalled Excel download stops consuming the full assortment and disconnec
     stalled.destroy();
     release?.();
     await assert.rejects(generation, /closed|abort/i);
+  }
+});
+
+test("every default workbook profile filters raw incomplete DTO rows and withholds stale population totals without optional identity rejection", async () => {
+  for (const profile of ["sample", "summary", "full"] as const) for (const mode of ["quantity", "money", "both"] as const) {
+    const report = fixture(mode);
+    report.params.profile = profile;
+    report.rows = [
+      { ...row, name: "Complete without optional identity", sku: null, article: null, barcodes: [], nextDeliveryDate: null,
+        daily: row.daily.map(day => ({ ...day, salesQty: day.salesQty === 2 ? -2 : day.salesQty })) },
+      { ...row, key: "incomplete", name: "Hidden incomplete source", openingQty: null, openingCost: null },
+      { ...row, key: "nonfinite", name: "Hidden nonfinite source", turnoverQty: Infinity, turnoverCostDays: NaN }
+    ];
+    report.warnings = ["Original source warning retained"];
+    const workbook = await load(report);
+    for (const sheet of workbook.worksheets) {
+      const values = sheetValues(sheet);
+      assert.equal(values.includes("Hidden incomplete source"), false);
+      assert.equal(values.includes("Hidden nonfinite source"), false);
+      assert.equal(values.includes("n/a"), false, `${profile}/${mode}/${sheet.name} must not leak unavailable cells`);
+    }
+    const intro = sheetValues(workbook.getWorksheet("Кратко")!);
+    assert.ok(intro.includes("Строк в отчёте: 1"));
+    assert.ok(intro.some(value => typeof value === "string" && /Исключено строк без полного расчёта: 2/.test(value)));
+    assert.ok(intro.includes("Original source warning retained"));
+    assert.ok(intro.some(value => typeof value === "string" && /Итоги.*не показаны/.test(value)));
+    const main = profile === "sample" ? workbook.worksheets[1] : workbook.getWorksheet("Оборачиваемость")!;
+    assert.ok(sheetValues(main).includes("Complete without optional identity"));
+    if (profile !== "sample") {
+      const headers = main.getRow(4).values as unknown[];
+      for (const label of ["SKU (ключ 1С)", "Артикул"]) assert.equal(main.getRow(5).getCell(headers.indexOf(label)).value, null);
+      const delivery = headers.indexOf("Ближайшая ожидаемая поставка");
+      assert.equal(main.getRow(5).getCell(delivery).value, null);
+    }
+    report.params.includeIncomplete = true;
+    const original = await load(report);
+    const originalMain = profile === "sample" ? original.worksheets[1] : original.getWorksheet("Оборачиваемость")!;
+    assert.ok(sheetValues(originalMain).includes("Hidden incomplete source"));
+    assert.ok(sheetValues(originalMain).includes("Hidden nonfinite source"));
+  }
+});
+
+test("already-filtered server totals survive writer projection and an all-filtered raw DTO never invents zero", async () => {
+  for (const profile of ["sample", "summary", "full"] as const) {
+    const report = fixture("both");
+    report.params.profile = profile;
+    report.excludedIncompleteRows = 4;
+    report.totals.overall.periodSales = { ...sales, quantity: 99, cost: 990 };
+    const book = await load(report);
+    assert.equal(namedRow(book.getWorksheet("Кратко")!, "Количество").getCell(3).value, 99);
+    assert.ok(sheetValues(book.getWorksheet("Кратко")!).some(value => typeof value === "string" && /По строкам с полным расчётом/.test(value)));
+    report.rows = [{ ...row, turnoverQtyDays: null }];
+    const empty = await load(report);
+    const values = sheetValues(empty.getWorksheet("Кратко")!);
+    assert.ok(values.some(value => typeof value === "string" && /Все строки.*исключены/.test(value)));
+    assert.equal(values.includes("Количество"), false);
+    assert.equal(values.includes("Деньги по себестоимости"), false);
+    for (const sheet of empty.worksheets) assert.equal(sheetValues(sheet).includes("n/a"), false);
+  }
+});
+
+test("default aggregate incompatibility leaves unavailable numeric cells blank rather than a zero or marker", async () => {
+  for (const profile of ["sample", "summary", "full"] as const) {
+    const report = fixture("quantity");
+    report.params.profile = profile;
+    report.totals.byUnit = [{ ...report.totals.overall, unit: "л", unitKey: "litre" }];
+    report.totals.overall = { ...report.totals.overall, unit: null, openingQty: null, closingQty: null,
+      averageQty: null, turnoverQty: null, turnoverQtyDays: null,
+      periodSales: { ...sales, quantity: null, averageDailyQty: null }, daily: [] };
+    const book = await load(report);
+    for (const sheet of book.worksheets) assert.equal(sheetValues(sheet).includes("n/a"), false);
+    const intro = sheetValues(book.getWorksheet("Кратко")!);
+    assert.ok(intro.includes("Общий итог количества не рассчитан"));
+    assert.equal(namedRow(book.getWorksheet("Кратко")!, "Количество").getCell(3).value, 12);
+  }
+});
+
+test("opt-in sample formulas retain original unavailable guards and cached financial results", async () => {
+  const report = fixture("both");
+  report.params.profile = "sample";
+  report.params.includeIncomplete = true;
+  report.rows.push({ ...row, key: "unknown", name: "Unavailable financial row", averageQty: null, averageCost: null,
+    periodSales: { quantity: null, cost: null, revenue: null, averageDailyQty: null, averageDailyCost: null },
+    turnoverQty: null, turnoverQtyDays: null, turnoverCost: null, turnoverCostDays: null,
+    daily: row.daily.map(day => ({ ...day, quantity: null, stockCost: null })) });
+  const book = await load(report);
+  for (const sheetName of ["рассчет оборачиваемости", "рассчет оборачиваемости деньги"]) {
+    const sheet = book.getWorksheet(sheetName)!;
+    for (const address of ["G3", "H3", "I3", "K3", "L3"]) assert.equal(sheet.getCell(address).value, "n/a");
+    assert.match(sheet.getCell("I4").value.formula, /IF\(AND\(ISNUMBER\(K4\),ISNUMBER\(H4\),K4>=0,H4>0\),K4\/H4,"n\/a"\)/);
+    assert.match(sheet.getCell("L4").value.formula, /IF\(AND\(ISNUMBER\(I4\),I4>0\),J4\/I4,"n\/a"\)/);
+    assert.equal(sheet.getCell("I4").value.result, 0.8);
+    assert.equal(sheet.getCell("L4").value.result, 3.75);
   }
 });

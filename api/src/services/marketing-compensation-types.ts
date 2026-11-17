@@ -19,14 +19,29 @@ export type CompensationBranch = {
   key: string | null; name: string; rows: CompensationRow[];
   hasSales: boolean; hasReturns: boolean;
   totals: CompensationTotals; issues: CompensationIssue[];
+  excludedIncompleteRows?: number;
 };
 export type CompensationActivity = CompensationActivityOption & {
   from: string; to: string; branches: CompensationBranch[];
   totals: CompensationTotals; issues: CompensationIssue[];
+  excludedIncompleteRows?: number;
+  excludedIncompleteBlocks?: number;
+};
+// Excluded financial rows are represented by context/issues only, never by a
+// second financial population or a client-calculated total.
+export type CompensationExcludedDiagnostic = {
+  activity: CompensationActivityOption & { from: string; to: string };
+  branch?: Pick<CompensationBranch, "key" | "name">;
+  row?: Pick<CompensationRow, "itemKey" | "characteristicKey" | "name" | "barcode" | "from" | "to">;
+  issues: CompensationIssue[];
 };
 export type MarketingCompensationReport = {
   from: string; to: string; activityKey: string | null;
   activities: CompensationActivity[]; totals: CompensationTotals;
   issues: CompensationIssue[];
+  includeIncomplete?: boolean;
+  excludedIncompleteRows?: number;
+  excludedIncompleteBlocks?: number;
+  excludedIncompleteDiagnostics?: CompensationExcludedDiagnostic[];
 };
-export type MarketingCompensationRequest = { from: string; to: string; activityKey?: string };
+export type MarketingCompensationRequest = { from: string; to: string; activityKey?: string; includeIncomplete?: boolean };

@@ -10,9 +10,10 @@ import type {
 import { writeTurnoverSampleWorkbook } from "./turnover-sample-workbook.js";
 import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
 import { writeTurnoverSummarySheet } from "./turnover-summary-workbook.js";
+import { completeTurnoverReport } from "./turnover-domain.js";
 
 type Value = string | number | null;
-type Column<T> = { label: string; block: string; value: (row: T) => Value; footer?: (total: TurnoverTotal, label: string) => Value; footerOnly?: boolean; coefficient?: boolean; width?: number; format?: string };
+type Column<T> = { label: string; block: string; value: (row: T) => Value; footer?: (total: TurnoverTotal, label: string) => Value; footerOnly?: boolean; coefficient?: boolean; optional?: boolean; width?: number; format?: string };
 type StreamingSheet = ExcelJS.Worksheet & { commit(): void };
 type StreamingWorkbook = ExcelJS.stream.xlsx.WorkbookWriter & { zip: EventEmitter & { abort(): void } };
 const decimal = '#,##0.###;[Red](#,##0.###);0';
@@ -21,8 +22,8 @@ const percent = '0.0%;[Red](0.0%);0.0%';
 const changeNames = { new: "Продажи появились", "no-base": "Нет базы для сравнения", missing: "Нет данных", comparable: "Нет данных" };
 const riskNames = { "no-sales": "Нет продаж", overstock: "Излишек", deficit: "Риск дефицита", stagnant: "Без движения" };
 
-function changeValue(change: TurnoverChange): Value {
-  return change.pct === null ? changeNames[change.status] : change.pct / 100;
+function changeValue(change: TurnoverChange, includeIncomplete: boolean): Value {
+  return change.pct === null ? includeIncomplete ? changeNames[change.status] : null : change.pct / 100;
 }
 
 function identityColumns(includeBarcodes = true): Column<TurnoverRow>[] {
@@ -31,8 +32,8 @@ function identityColumns(includeBarcodes = true): Column<TurnoverRow>[] {
     { label: "Склад", block: "Идентификация", value: r => r.warehouseName, width: 25 },
     { label: "Категория", block: "Идентификация", value: r => r.categoryName, width: 25 },
     { label: "Бренд", block: "Идентификация", value: r => r.brandName, width: 24 },
-    { label: "SKU (ключ 1С)", block: "Идентификация", value: r => r.sku, width: 38 },
-    { label: "Артикул", block: "Идентификация", value: r => r.article, width: 18 },
+    { label: "SKU (ключ 1С)", block: "Идентификация", value: r => r.sku, optional: true, width: 38 },
+    { label: "Артикул", block: "Идентификация", value: r => r.article, optional: true, width: 18 },
     { label: "Наименование", block: "Идентификация", value: r => r.name, footer: (_total, label) => label, width: 45 }
   ];
   if (includeBarcodes) columns.push({ label: "Штрихкоды", block: "Идентификация", value: r => r.barcodes.join(", "), width: 24 });
@@ -63,21 +64,21 @@ function reportColumns(report: TurnoverReport): Column<TurnoverRow>[] {
   );
   if (report.params.mode !== "money") columns.push(
     { label: "Нетто количество периода сравнения", block: "Сравнение периодов", value: r => r.comparisonSales.quantity, footer: t => t.comparisonSales.quantity },
-    { label: "Изменение количества, % / статус", block: "Сравнение периодов", value: r => changeValue(r.quantityChange), footer: t => changeValue(t.quantityChange), format: percent }
+    { label: "Изменение количества, % / статус", block: "Сравнение периодов", value: r => changeValue(r.quantityChange, Boolean(report.params.includeIncomplete)), footer: t => changeValue(t.quantityChange, Boolean(report.params.includeIncomplete)), format: percent }
   );
   if (report.params.mode !== "quantity") columns.push(
     { label: "Себестоимость продаж периода сравнения, ₸", block: "Сравнение периодов", value: r => r.comparisonSales.cost, footer: t => t.comparisonSales.cost, format: money },
-    { label: "Изменение себестоимости продаж, % / статус", block: "Сравнение периодов", value: r => changeValue(r.costChange), footer: t => changeValue(t.costChange), format: percent }
+    { label: "Изменение себестоимости продаж, % / статус", block: "Сравнение периодов", value: r => changeValue(r.costChange, Boolean(report.params.includeIncomplete)), footer: t => changeValue(t.costChange, Boolean(report.params.includeIncomplete)), format: percent }
   );
   columns.push(
     { label: `Дни запаса · спрос за ${report.params.horizon ?? 14} дней`, block: "Риски и решения", value: r => r.stockDays, footer: t => t.stockDays },
-    { label: "Последняя продажа в магазине", block: "Риски и решения", value: r => r.lastSaleDate, width: 22 },
+    { label: "Последняя продажа в магазине", block: "Риски и решения", value: r => r.lastSaleDate, optional: true, width: 22 },
     { label: "Дни без движения / история", block: "Риски и решения", value: r => r.noSalesHistory ? "Нет продаж за историю учёта" : r.daysWithoutMovement, width: 26 },
     { label: "Дни без наличия (наблюдаемые)", block: "Риски и решения", value: r => r.outOfStockDays },
     { label: "Излишек, единица строки", block: "Риски и решения", value: r => r.excessQty, footer: t => t.excessQty },
     { label: "Дефицит, единица строки", block: "Риски и решения", value: r => r.deficitQty, footer: t => t.deficitQty },
     { label: "Открытые заказы за вычетом поступлений", block: "Риски и решения", value: r => r.openOrderQty, footer: t => t.openOrderQty },
-    { label: "Ближайшая ожидаемая поставка", block: "Риски и решения", value: r => r.nextDeliveryDate, width: 24 },
+    { label: "Ближайшая ожидаемая поставка", block: "Риски и решения", value: r => r.nextDeliveryDate, optional: true, width: 24 },
     { label: "Рекомендовано к заказу, единица строки", block: "Риски и решения", value: r => r.recommendedOrderQty, footer: t => t.recommendedOrderQty },
     { label: "Статусы", block: "Риски и решения", value: r => r.risks.map(risk => riskNames[risk]).join("; "), width: 28 },
     { label: "Рекомендации и причины", block: "Риски и решения", value: r => r.recommendations.map(rec => `${rec.action}: ${rec.reason}`).join("\n"), width: 65 },
@@ -95,7 +96,7 @@ function reportColumns(report: TurnoverReport): Column<TurnoverRow>[] {
 
 // Await each bounded worksheet's archive entry before producing the next part.
 // ExcelJS commits rows without backpressure, so yielding alone is not a bound.
-function table<T>(workbook: StreamingWorkbook, name: string, columns: Column<T>[], title: string, note: string, signal: AbortSignal) {
+function table<T>(workbook: StreamingWorkbook, name: string, columns: Column<T>[], title: string, note: string, signal: AbortSignal, includeIncomplete = false) {
   let sheet: StreamingSheet;
   let part = 0;
   let rowCount = 4;
@@ -171,7 +172,9 @@ function table<T>(workbook: StreamingWorkbook, name: string, columns: Column<T>[
       const row = sheet.addRow(columns.map(column => {
         if (column.footerOnly) return null;
         const value = column.value(record);
-        return value === null || (typeof value === "number" && !Number.isFinite(value)) ? "n/a" : typeof value === "string" ? value.slice(0, 32_767) : value;
+        return value === null || (typeof value === "number" && !Number.isFinite(value))
+          ? includeIncomplete && !column.optional ? "n/a" : null
+          : typeof value === "string" ? value.slice(0, 32_767) : value;
       }));
       columns.forEach((column, index) => {
         const cell = row.getCell(index + 1);
@@ -185,7 +188,7 @@ function table<T>(workbook: StreamingWorkbook, name: string, columns: Column<T>[
       const row = sheet.addRow(columns.map(column => {
         if (!column.footer) return null;
         const value = column.footer(total, label);
-        return value === null || (typeof value === "number" && !Number.isFinite(value)) ? "n/a" : value;
+        return value === null || (typeof value === "number" && !Number.isFinite(value)) ? includeIncomplete ? "n/a" : null : value;
       }));
       row.eachCell({ includeEmpty: true }, cell => {
         cell.font = { name: "Calibri", size: 11, bold: true };
@@ -246,9 +249,12 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
     workbook.creator = "Naliv Аналитика";
     workbook.created = new Date(report.generatedAt);
     await writeTurnoverSummarySheet(workbook, report);
-    const note = `Период [${report.params.from}, ${report.params.to}); сравнение [${report.comparison.from}, ${report.comparison.to}). n/a — данных нет или расчёт невозможен; 0 — известный ноль. Стоимость по себестоимости, выручка отдельно.`;
+    const includeIncomplete = Boolean(report.params.includeIncomplete);
+    const note = `Период [${report.params.from}, ${report.params.to}); сравнение [${report.comparison.from}, ${report.comparison.to}). ${includeIncomplete
+      ? "n/a — данных нет или расчёт невозможен; 0 — известный ноль."
+      : `По строкам с полным расчётом. Исключено строк без полного расчёта: ${report.excludedIncompleteRows ?? 0}. Пустые дополнительные показатели не рассчитаны, не равны нулю.`} Стоимость по себестоимости, выручка отдельно.`;
     if (report.params.groupBy === "day") {
-      const main = table(workbook, "Оборачиваемость", dailyColumns(report, true), "Оборачиваемость запасов · по дням", note + " В ИТОГО дневной остаток означает конечный запас; начальный и средний запас периода приведены отдельно.", canceled.signal);
+      const main = table(workbook, "Оборачиваемость", dailyColumns(report, true), "Оборачиваемость запасов · по дням", note + " В ИТОГО дневной остаток означает конечный запас; начальный и средний запас периода приведены отдельно.", canceled.signal, includeIncomplete);
       for (const row of report.daily) {
         if (!main.add(row)) { await main.nextPart(); main.add(row); }
         if (++written % 1024 === 0) await checkpoint();
@@ -257,7 +263,7 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
       main.footer(report.totals.overall);
       await main.finish();
     } else {
-      const main = table(workbook, "Оборачиваемость", reportColumns(report), "Оборачиваемость товарных запасов", note, canceled.signal);
+      const main = table(workbook, "Оборачиваемость", reportColumns(report), "Оборачиваемость товарных запасов", note, canceled.signal, includeIncomplete);
       for (const row of report.rows) {
         if (!main.add(row)) { await main.nextPart(); main.add(row); }
         if (++written % 1024 === 0) await checkpoint();
@@ -280,18 +286,18 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
       { label: "Нетто продажи раньше", block: "Количество", value: r => r.window.previousSales.quantity },
       { label: "Среднедневные продажи сейчас", block: "Количество", value: r => r.window.sales.averageDailyQty },
       { label: "Среднедневные продажи раньше", block: "Количество", value: r => r.window.previousSales.averageDailyQty },
-      { label: "Изменение количества, % / статус", block: "Количество", value: r => changeValue(r.window.quantityChange), format: percent }
+      { label: "Изменение количества, % / статус", block: "Количество", value: r => changeValue(r.window.quantityChange, includeIncomplete), format: percent }
     );
     if (report.params.mode !== "quantity") windows.push(
       { label: "Себестоимость продаж сейчас, ₸", block: "Себестоимость", value: r => r.window.sales.cost, format: money },
       { label: "Себестоимость продаж раньше, ₸", block: "Себестоимость", value: r => r.window.previousSales.cost, format: money },
       { label: "Среднедневная себестоимость сейчас, ₸", block: "Себестоимость", value: r => r.window.sales.averageDailyCost, format: money },
       { label: "Среднедневная себестоимость раньше, ₸", block: "Себестоимость", value: r => r.window.previousSales.averageDailyCost, format: money },
-      { label: "Изменение себестоимости, % / статус", block: "Себестоимость", value: r => changeValue(r.window.costChange), format: percent },
+      { label: "Изменение себестоимости, % / статус", block: "Себестоимость", value: r => changeValue(r.window.costChange, includeIncomplete), format: percent },
       { label: "Розничная выручка сейчас, ₸", block: "Выручка отдельно", value: r => r.window.sales.revenue, format: money },
       { label: "Розничная выручка раньше, ₸", block: "Выручка отдельно", value: r => r.window.previousSales.revenue, format: money }
     );
-    const demand = table(workbook, "Продажи 7 14 30 дней", windows, "Динамика спроса · соседние равные интервалы", note, canceled.signal);
+    const demand = table(workbook, "Продажи 7 14 30 дней", windows, "Динамика спроса · соседние равные интервалы", note, canceled.signal, includeIncomplete);
     for (const row of report.rows) for (const window of row.windows) {
       const value = { row, window };
       if (!demand.add(value)) { await demand.nextPart(); demand.add(value); }
@@ -304,10 +310,10 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
       { label: "Магазин", block: "Товар", value: r => r.row?.storeName ?? "Вся отфильтрованная выборка", width: 32 },
       { label: "Склад", block: "Товар", value: r => r.row?.warehouseName ?? "По применённым фильтрам", width: 24 },
       { label: "Наименование", block: "Товар", value: r => r.row?.name ?? "Итого в одной единице учёта", width: 42 },
-      { label: "SKU", block: "Товар", value: r => r.row?.sku ?? null, width: 38 },
+      { label: "SKU", block: "Товар", value: r => r.row?.sku ?? null, optional: true, width: 38 },
       ...dailyColumns(report).map(column => ({ ...column, value: (r: DailyAudit) => column.value(r.day) }))
     ];
-    const daily = table(workbook, "Ежедневные остатки", audit, "Ежедневные остатки · аудит среднего запаса", "Широкая выборка: итоги по единице учёта; для аудита SKU выберите конкретный товар. Вес краёв ½; среднее = взвешенная сумма / (N − 1). Один день — единственный остаток. Пропуск снимка не ноль. " + note, canceled.signal);
+    const daily = table(workbook, "Ежедневные остатки", audit, "Ежедневные остатки · аудит среднего запаса", "Широкая выборка: итоги по единице учёта; для аудита SKU выберите конкретный товар. Вес краёв ½; среднее = взвешенная сумма / (N − 1). Один день — единственный остаток. Пропуск снимка не ноль. " + note, canceled.signal, includeIncomplete);
     if (report.rows.some(row => row.daily.length > 0)) {
       for (const row of report.rows) for (const day of row.daily) {
         const value = { row, day };
@@ -330,7 +336,7 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
       { label: "Из магазина", block: "Перемещение", value: r => r.fromStoreName, width: 35 },
       { label: "В магазин", block: "Перемещение", value: r => r.toStoreName, width: 35 },
       { label: "Рекомендуемое количество", block: "Перемещение", value: r => r.quantity }
-    ], "Рекомендации межфилиальных перемещений", "Проверить доступность и логистику перед исполнением. Перемещения не включены в продажи. " + note, canceled.signal);
+    ], "Рекомендации межфилиальных перемещений", "Проверить доступность и логистику перед исполнением. Перемещения не включены в продажи. " + note, canceled.signal, includeIncomplete);
     for (const row of report.transfers) {
       if (!transfers.add(row)) { await transfers.nextPart(); transfers.add(row); }
       if (++written % 1024 === 0) await checkpoint();
@@ -341,7 +347,7 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
     const parameters = table<[string, Value]>(workbook, "Параметры и методика", [
       { label: "Параметр", block: "Сохранённый запрос", value: r => r[0], width: 48 },
       { label: "Значение", block: "Сохранённый запрос", value: r => r[1], width: 110 }
-    ], "Параметры, нормативы и ограничения расчёта", "Файл отражает сформированный отчёт, а не ещё не применённые изменения формы. Нормативы браузера включены в этот файл; первичные данные не изменяются. Большие таблицы продолжаются на листах с номером части.", canceled.signal);
+    ], "Параметры, нормативы и ограничения расчёта", "Файл отражает сформированный отчёт, а не ещё не применённые изменения формы. Нормативы браузера включены в этот файл; первичные данные не изменяются. Большие таблицы продолжаются на листах с номером части.", canceled.signal, includeIncomplete);
     const optionName = (options: { key: string; name: string }[], key: string) => `${options.find(option => option.key === key)?.name ?? key} [${key}]`;
     const entries: [string, Value][] = [
       ["Период [с, по)", `[${report.params.from}, ${report.params.to})`],
@@ -358,6 +364,8 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
         ? "Все физические подразделения, включая офисы и отделы"
         : "Розничная сеть: физические магазины с проведёнными розничными отчётами"],
       ["Исключать нулевые товары", report.params.excludeZero ? "Да" : "Нет"],
+      ["Включать строки без полного расчёта", includeIncomplete ? "Да" : "Нет"],
+      ["Исключено строк без полного расчёта", report.excludedIncompleteRows ?? 0],
       ["Склад", report.params.warehouse ? optionName(report.options.warehouses, report.params.warehouse) : "Все склады"],
       ["Категория", report.params.category?.length ? report.params.category.map(key => optionName(report.options.categories, key)).join("; ") : "Все категории"],
       ["Бренд", report.params.brand ? optionName(report.options.brands, report.params.brand) : "Все бренды"],
@@ -400,6 +408,7 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
 }
 
 export async function writeTurnoverWorkbook(report: TurnoverReport, output: Writable): Promise<void> {
+  report = completeTurnoverReport(report);
   if (report.params.profile === "sample") {
     await writeTurnoverSampleWorkbook(report, output);
     return;
