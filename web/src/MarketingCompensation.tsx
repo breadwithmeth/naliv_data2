@@ -7,6 +7,9 @@ import type {
   ReportDateRange
 } from "./api";
 import { formatDate, formatNumber } from "./format";
+import {
+  isInactiveCompensationActivity, isInactiveCompensationBranch
+} from "../../api/src/services/marketing-compensation-presentation";
 
 type InclusiveDateRange = Required<Pick<ReportDateRange, "from" | "to">>;
 type LoadState<T> =
@@ -27,93 +30,156 @@ function periodLabel(from: string, to: string): string {
   return `${formatDate(from)} — ${formatDate(lastDay)}`;
 }
 
-function Issues({ issues, label, expanded = false }: {
-  issues: CompensationIssue[]; label: string; expanded?: boolean;
-}) {
+function Issues({ issues, label }: { issues: CompensationIssue[]; label: string }) {
   if (!issues.length) return null;
-  return <details className="compensation-issues" open={expanded || undefined}>
+  return <details className="compensation-issues">
     <summary>{label} ({formatNumber(issues.length)})</summary>
     <ul>{issues.map((issue, index) => <li key={`${issue.code}-${index}`}>{issue.message}</li>)}</ul>
   </details>;
 }
 
+function isIncomplete(totals: CompensationTotals): boolean {
+  return totals.compensation === null || totals.incompleteRows > 0;
+}
+
 function Totals({ totals }: { totals: CompensationTotals }) {
-  const incomplete = totals.compensation === null || totals.incompleteRows > 0;
+  const incomplete = isIncomplete(totals);
   return <div className="compensation-total-block">
     <dl className="compensation-totals">
-      <div><dt>Итого компенсация</dt><dd>{totals.compensation === null ? "Не рассчитана" : money(totals.compensation)}</dd></div>
-      {incomplete ? <div><dt>Известная часть компенсации, не полный итог</dt><dd>{money(totals.knownCompensation)}</dd></div> : null}
+      <div><dt>Итого компенсация</dt><dd>{incomplete ? "Не рассчитано" : money(totals.compensation)}</dd></div>
+      {incomplete ? <div><dt>Рассчитанная часть, не полный итог</dt><dd>{money(totals.knownCompensation)}</dd></div> : null}
     </dl>
-    {incomplete ? <p className="compensation-incomplete">Расчёт неполный. Строк без полного расчёта: {formatNumber(totals.incompleteRows)}. Причины указаны в замечаниях.</p> : null}
+    {incomplete ? <p className="compensation-incomplete">Расчёт неполный. Строк без расчёта: {formatNumber(totals.incompleteRows)}. Причины — в подробностях проверки.</p> : null}
   </div>;
 }
 
-function ItemRow({ row }: { row: CompensationRow }) {
-  return <tr>
-    <td className="compensation-barcode">{row.barcode ?? <span className="compensation-missing">Нет данных</span>}</td>
-    <th scope="row" className="compensation-item">
-      <span>{row.name}</span>
-      {row.characteristicKey !== null ? <span className="compensation-row-note">Характеристика: {row.characteristicKey}</span> : null}
-      <span className="compensation-row-note">Расчёт: {periodLabel(row.from, row.to)}</span>
-      <Issues issues={row.issues} label="Замечания к строке" />
-    </th>
-    <td className="num">{money(row.price)}<span className="compensation-row-note">Цена до скидки из строки продажи/возврата 1С</span></td>
-    <td className="num">{row.discountPct === null ? "Нет данных" : `${decimalFormatter.format(row.discountPct)} %`}</td>
-    <td className="num">{money(row.unitCompensation)}</td>
-    <td className="num">{row.quantity === null ? "Нет данных" : decimalFormatter.format(row.quantity)}</td>
-    <td className="num compensation-line-total">{money(row.compensation)}</td>
-  </tr>;
+function ScopeTotal({ totals, status }: { totals: CompensationTotals; status: string }) {
+  return <div className="compensation-scope-total">
+    {isIncomplete(totals) ? <>
+      <p className="compensation-incomplete">Нужна проверка · Расчёт неполный</p>
+      <p className="compensation-note">Рассчитанная часть: <strong>{money(totals.knownCompensation)}</strong></p>
+      <p className="compensation-note">Строк без расчёта: {formatNumber(totals.incompleteRows)}</p>
+    </> : <>
+      <p className="compensation-line-total">{money(totals.compensation)}</p>
+      <p className={status === "Нужна проверка" ? "compensation-incomplete" : "compensation-note"}>{status}</p>
+    </>}
+  </div>;
 }
 
-function Branch({ branch, activityName, expandSmallBranches }: {
-  branch: CompensationBranch; activityName: string; expandSmallBranches: boolean;
-}) {
+function branchStatus(branch: CompensationBranch): string {
+  if (isIncomplete(branch.totals)) return "Нужна проверка";
+  if (isInactiveCompensationBranch(branch)) return "Без движений";
+  if (!branch.hasSales && !branch.hasReturns) return "Нужна проверка";
+  return !branch.hasSales && branch.hasReturns ? "Только возвраты / корректировки" : "Рассчитано";
+}
+
+function activityStatus(activity: CompensationActivity): string {
+  if (isIncomplete(activity.totals) || !activity.branches.length || activity.issues.length
+    || activity.branches.some((branch) => branchStatus(branch) === "Нужна проверка")) return "Нужна проверка";
+  if (isInactiveCompensationActivity(activity)) return "Без движений";
+  return !activity.branches.some((branch) => branch.hasSales) && activity.branches.some((branch) => branch.hasReturns)
+    ? "Только возвраты / корректировки" : "Рассчитано";
+}
+
+function ItemRow({ row }: { row: CompensationRow }) {
+  const calculationId = useId();
+  const [expanded, setExpanded] = useState(false);
+  return <>
+    <tr>
+      <th scope="row" className="compensation-item">{row.name}</th>
+      <td className="num">{row.quantity === null ? "Нет данных" : decimalFormatter.format(row.quantity)}</td>
+      <td className="num compensation-line-total">{money(row.compensation)}</td>
+      <td><button type="button" className="compensation-button" aria-label={`Расчёт: ${row.name}`} aria-expanded={expanded} aria-controls={calculationId} onClick={() => setExpanded((current) => !current)}>Расчёт</button></td>
+    </tr>
+    <tr id={calculationId} className="compensation-calculation" hidden={!expanded}>
+      <td colSpan={4}>
+        {expanded ? <><dl className="compensation-periods">
+          <div><dt>Штрихкод</dt><dd className="compensation-barcode">{row.barcode ?? "Нет данных"}</dd></div>
+          <div><dt>Цена до скидки</dt><dd>{money(row.price)}</dd></div>
+          <div><dt>Процент</dt><dd>{row.discountPct === null ? "Нет данных" : `${decimalFormatter.format(row.discountPct)} %`}</dd></div>
+          <div><dt>Компенсация на единицу</dt><dd>{money(row.unitCompensation)}</dd></div>
+          <div><dt>Период расчёта</dt><dd>{periodLabel(row.from, row.to)}</dd></div>
+        </dl>
+        <Issues issues={row.issues} label="Подробности проверки строки" />
+        {row.characteristicKey !== null ? <details className="compensation-method">
+          <summary>Технические сведения</summary>
+          <div><p>Ключ характеристики: {row.characteristicKey}</p></div>
+        </details> : null}</> : null}
+      </td>
+    </tr>
+  </>;
+}
+
+function Branch({ branch, activityName }: { branch: CompensationBranch; activityName: string }) {
   const headingId = useId();
   const detailId = useId();
-  const [expanded, setExpanded] = useState(expandSmallBranches && branch.rows.length <= 200);
+  const [expanded, setExpanded] = useState(false);
   return <section className="compensation-branch" aria-labelledby={headingId}>
     <div className="compensation-heading">
-      <div><h4 id={headingId}>{branch.name}</h4><p className="compensation-note">Товарных строк: {formatNumber(branch.rows.length)}</p></div>
-      {branch.rows.length ? <button type="button" className="compensation-button" aria-expanded={expanded} aria-controls={detailId} aria-describedby={headingId} onClick={() => setExpanded((current) => !current)}>{expanded ? "Скрыть товары" : "Показать товары"}</button> : null}
+      <h4 id={headingId}>{branch.name}</h4>
+      <ScopeTotal totals={branch.totals} status={branchStatus(branch)} />
+      {branch.rows.length ? <button type="button" className="compensation-button" aria-expanded={expanded} aria-controls={detailId} aria-describedby={headingId} onClick={() => setExpanded((current) => !current)}>{expanded ? "Скрыть товары" : "Товары"}</button> : null}
     </div>
-    <Issues issues={branch.issues} label="Замечания к филиалу" />
+    <Issues issues={branch.issues} label="Подробности проверки магазина" />
     {branch.rows.length ? <div id={detailId} hidden={!expanded}>{expanded ? <>
-      <p className="compensation-scroll-hint">На узком экране прокрутите таблицу по горизонтали.</p>
       <div className="compensation-table-scroll" role="region" tabIndex={0} aria-label={`Товары: ${branch.name}, ${activityName}. Таблица с горизонтальной прокруткой.`}>
-        <table className="compensation-table">
-          <caption>Детализация по товарам · строк: {formatNumber(branch.rows.length)}</caption>
+        <table className="compensation-table compensation-table-compact">
+          <caption>Товары · строк: {formatNumber(branch.rows.length)}</caption>
           <thead><tr>
-            <th scope="col">Штрихкод</th>
-            <th scope="col">Полное наименование товара</th>
-            <th scope="col" className="num">Розничная цена до скидки, ₸</th>
-            <th scope="col" className="num">Процент, %</th>
-            <th scope="col" className="num">Компенсация на единицу, ₸</th>
-            <th scope="col" className="num">Количество за вычетом возвратов</th>
+            <th scope="col">Товар</th>
+            <th scope="col" className="num">Количество с учётом возвратов</th>
             <th scope="col" className="num">Компенсация, ₸</th>
+            <th scope="col">Расчёт</th>
           </tr></thead>
           <tbody>{branch.rows.map((row) => <ItemRow key={JSON.stringify([row.itemKey, row.characteristicKey, row.from, row.to, row.price])} row={row} />)}</tbody>
         </table>
       </div>
-    </> : null}</div> : <p className="compensation-note">За расчётный период в филиале нет строк для отображения. Проверьте замечания к отчёту и активности.</p>}
-    <div className="compensation-branch-total"><h5>Итого по филиалу</h5><Totals totals={branch.totals} /></div>
+    </> : null}</div> : <p className="compensation-note">{isInactiveCompensationBranch(branch)
+      ? "За выбранный период продаж и возвратов не было."
+      : "Товарных строк нет. Отсутствие данных не означает ноль; проверьте подробности проверки."}</p>}
   </section>;
 }
 
-function Activity({ activity, expandSmallBranches }: { activity: CompensationActivity; expandSmallBranches: boolean }) {
+function Activity({ activity, showInactive }: { activity: CompensationActivity; showInactive: boolean }) {
   const headingId = useId();
-  return <article className="panel compensation-activity" aria-labelledby={headingId}>
-    <header className="compensation-activity-heading">
-      <h3 id={headingId}>{activity.name}{activity.number ? ` · № ${activity.number}` : ""}</h3>
-      <dl className="compensation-periods">
-        <div><dt>Срок активности</dt><dd>{formatDate(activity.startsOn)} — {formatDate(activity.endsOn)}</dd></div>
-        <div><dt>Расчётный период</dt><dd>{periodLabel(activity.from, activity.to)}</dd></div>
-      </dl>
-      <Issues issues={activity.issues} label="Замечания к активности" />
+  const detailId = useId();
+  const [expanded, setExpanded] = useState(false);
+  const inactive = isInactiveCompensationActivity(activity);
+  const hiddenBranches = activity.issues.length ? 0 : activity.branches.filter(isInactiveCompensationBranch).length;
+  return <article className="compensation-activity" aria-labelledby={headingId}>
+    <header className="compensation-heading compensation-activity-row">
+      <div><h3 id={headingId}>{activity.name}</h3><p className="compensation-note">{periodLabel(activity.from, activity.to)}</p></div>
+      <ScopeTotal totals={activity.totals} status={activityStatus(activity)} />
+      <button type="button" className="compensation-button" aria-expanded={expanded} aria-controls={detailId} aria-describedby={headingId} onClick={() => setExpanded((current) => !current)}>{expanded ? "Скрыть магазины" : "Магазины"}</button>
     </header>
-    {activity.branches.length ? activity.branches.map((branch, index) => <Branch key={`${branch.key ?? "unknown"}-${index}`} branch={branch} activityName={activity.name} expandSmallBranches={expandSmallBranches} />)
-      : <p className="compensation-note">Для активности нет детализации по филиалам. Проверьте замечания: отсутствие данных не означает нулевую компенсацию.</p>}
-    <footer className="compensation-activity-total"><h4>Итого по активности</h4><Totals totals={activity.totals} /></footer>
+    {inactive ? <p className="compensation-note">За выбранный период продаж и возвратов не было.</p> : null}
+    <div id={detailId} hidden={!expanded}>{expanded ? <>
+      <Issues issues={activity.issues} label="Подробности проверки акции" />
+      {activity.branches.map((branch, index) => showInactive || activity.issues.length > 0 || !isInactiveCompensationBranch(branch)
+        ? <Branch key={JSON.stringify([branch.key, index])} branch={branch} activityName={activity.name} /> : null)}
+      {!activity.branches.length ? <p className="compensation-incomplete">Нужна проверка: магазины для акции не определены. Отсутствие данных не означает нулевую компенсацию.</p> : null}
+      {!showInactive && hiddenBranches > 0 ? <p className="compensation-note">Магазины без движений скрыты. Чтобы увидеть их, включите «Показать без движений» над списком.</p> : null}
+    </> : null}</div>
   </article>;
+}
+
+export function CompensationResults({ report, showInactive }: { report: MarketingCompensationReport; showInactive: boolean }) {
+  const activities = report.activities.filter((activity) => showInactive || activity.key === report.activityKey || !isInactiveCompensationActivity(activity));
+  const noMovements = report.activities.length > 0 && !isIncomplete(report.totals) && report.issues.length === 0
+    && report.activities.every(isInactiveCompensationActivity);
+  return <>
+    <section className="panel compensation-summary" aria-label="Общий итог компенсаций">
+      <h3>Общий итог</h3>
+      <p className="compensation-note">{periodLabel(report.from, report.to)}</p>
+      <Totals totals={report.totals} />
+    </section>
+    {!activities.length ? <div className="compensation-empty">
+      <h3>{noMovements ? "За выбранный период продаж и возвратов не было" : "Акций по выбранным условиям нет"}</h3>
+      <p>{noMovements ? "Пустые акции можно вернуть переключателем «Показать без движений»." : "Выберите другой период или «Все акции». Если расчёт неполный, проверьте подробности."}</p>
+    </div> : null}
+    {activities.map((activity) => <Activity key={activity.key} activity={activity} showInactive={showInactive} />)}
+    <Issues issues={report.issues} label="Подробности проверки отчёта" />
+  </>;
 }
 
 export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateRange }) {
@@ -129,6 +195,7 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
   const [reportAttempt, setReportAttempt] = useState(0);
   const [optionsState, setOptionsState] = useState<LoadState<CompensationActivityOption[]>>({ key: periodKey, status: "loading" });
   const [reportState, setReportState] = useState<LoadState<MarketingCompensationReport>>({ key: requestKey, status: "loading" });
+  const [showInactive, setShowInactive] = useState(false);
   const [downloadState, setDownloadState] = useState<DownloadState | null>(null);
   const downloadController = useRef<AbortController | null>(null);
   const options = optionsState.key === periodKey ? optionsState : null;
@@ -138,6 +205,14 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
   const activities = options?.status === "success" ? options.data : [];
   const optionsPending = !options || options.status === "loading";
   const reportPending = !state || state.status === "loading";
+  const inactiveCount = report?.activities.reduce((count, activity) => {
+    if (isInactiveCompensationActivity(activity)) return count + 1;
+    return count + (activity.issues.length ? 0 : activity.branches.filter(isInactiveCompensationBranch).length);
+  }, 0) ?? 0;
+
+  useEffect(() => {
+    setShowInactive(false);
+  }, [requestKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -196,29 +271,37 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
 
   return <section className="reports-section compensation-workspace" aria-labelledby={headingId}>
     <div className="compensation-heading">
-      <div><h2 id={headingId}>Компенсации</h2><p className="compensation-note">Расчёт компенсаций от поставщиков по активностям и филиалам.</p></div>
+      <div><h2 id={headingId}>Компенсации</h2><p className="compensation-note">Итоги по акциям. Магазины и расчёт товаров — по запросу.</p></div>
       <button type="button" className="compensation-button compensation-download" disabled={!report || download?.status === "loading"} onClick={downloadExcel}>
         <Download size={17} aria-hidden="true" />{download?.status === "loading" ? "Готовим Excel…" : "Скачать Excel"}
       </button>
     </div>
     <div className="compensation-toolbar">
-      <label className="compensation-field" htmlFor={selectorId}><span>Маркетинговая активность</span>
+      <label className="compensation-field" htmlFor={selectorId}><span>Акция</span>
         <select id={selectorId} value={activityKey} disabled={optionsPending || options?.status === "error"} aria-describedby={selectorHintId} onChange={(event) => setSelection({ periodKey, key: event.target.value })}>
-          <option value="">Все активности</option>
-          {activityKey && !activities.some((activity) => activity.key === activityKey) ? <option value={activityKey}>Выбранная активность</option> : null}
-          {activities.map((activity) => <option key={activity.key} value={activity.key}>{activity.name}{activity.number ? ` · № ${activity.number}` : ""}</option>)}
+          <option value="">Все акции</option>
+          {activityKey && !activities.some((activity) => activity.key === activityKey) ? <option value={activityKey}>Выбранная акция</option> : null}
+          {activities.map((activity) => <option key={activity.key} value={activity.key}>{activity.name}</option>)}
         </select>
       </label>
-      <p className="compensation-note" id={selectorHintId}>Период: {formatDate(dateRange.from)} — {formatDate(dateRange.to)}, включительно. При смене периода показываются все активности.</p>
-      {optionsPending ? <p className="compensation-note" role="status">Загружаем список активностей…</p> : null}
-      {options?.status === "error" ? <div className="compensation-error" role="alert"><p>Список активностей недоступен: {options.error} Отчёт загружается отдельно.</p><button type="button" className="compensation-button" onClick={() => setOptionsAttempt((attempt) => attempt + 1)}>Повторить загрузку списка</button></div> : null}
-      {options?.status === "success" && !activities.length ? <p className="compensation-note">В списке нет активностей за выбранный период. Проверьте замечания к отчёту или выберите другой период выше.</p> : null}
+      <p className="compensation-note" id={selectorHintId}>{formatDate(dateRange.from)} — {formatDate(dateRange.to)}, включительно</p>
+      {optionsPending ? <p className="compensation-note" role="status">Загружаем список акций…</p> : null}
+      {options?.status === "error" ? <div className="compensation-error" role="alert">
+        <p>Не удалось загрузить список акций. Сам отчёт загружается отдельно.</p>
+        <button type="button" className="compensation-button" onClick={() => setOptionsAttempt((attempt) => attempt + 1)}>Повторить</button>
+        <details className="compensation-method"><summary>Подробности ошибки</summary><div><p>{options.error}</p></div></details>
+      </div> : null}
+      {options?.status === "success" && !activities.length ? <p className="compensation-note">Акций за выбранный период нет. Выберите другой период или проверьте подробности отчёта.</p> : null}
     </div>
-    {download?.status === "loading" ? <p className="compensation-note" role="status">Формируем Excel за выбранный период и по выбранным активностям…</p> : null}
+    {download?.status === "loading" ? <p className="compensation-note" role="status">Формируем Excel по всему выбранному отбору…</p> : null}
     {download?.status === "success" ? <p className="compensation-note" role="status">{download.message}</p> : null}
-    {download?.status === "error" ? <div className="compensation-error" role="alert"><p>Не удалось выгрузить Excel: {download.message}</p><button type="button" className="compensation-button" onClick={downloadExcel}>Повторить выгрузку</button></div> : null}
+    {download?.status === "error" ? <div className="compensation-error" role="alert">
+      <p>Не удалось скачать Excel. Повторите попытку.</p>
+      <button type="button" className="compensation-button" onClick={downloadExcel}>Повторить</button>
+      <details className="compensation-method"><summary>Подробности ошибки</summary><div><p>{download.message}</p></div></details>
+    </div> : null}
     <details className="compensation-method">
-      <summary>Как рассчитывается компенсация</summary>
+      <summary>Как считается</summary>
       <div>
         <p>Розничная цена до скидки — поле «Цена» той же строки продажи или возврата в 1С. Разные цены одного товара показаны отдельными строками; цена другой продажи, выручка и установки цен не подставляются.</p>
         <p>Процент — только префикс названия правила скидки, например «18,57% в строке…». Название акции и числовое поле скидки не используются. Товары берутся из сегмента номенклатуры правила.</p>
@@ -229,16 +312,18 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
     </details>
     <div className="compensation-results" aria-busy={reportPending}>
       {reportPending ? <div className="compensation-loading" role="status"><p>Загружаем расчёт компенсаций…</p><span>Данные предыдущего периода или отбора не показываются.</span></div> : null}
-      {state?.status === "error" ? <div className="compensation-error" role="alert"><p>Не удалось загрузить компенсации: {state.error}</p><button type="button" className="compensation-button" onClick={() => setReportAttempt((attempt) => attempt + 1)}>Повторить загрузку отчёта</button></div> : null}
+      {state?.status === "error" ? <div className="compensation-error" role="alert">
+        <p>Не удалось загрузить компенсации. Повторите попытку.</p>
+        <button type="button" className="compensation-button" onClick={() => setReportAttempt((attempt) => attempt + 1)}>Повторить</button>
+        <details className="compensation-method"><summary>Подробности ошибки</summary><div><p>{state.error}</p></div></details>
+      </div> : null}
       {report ? <>
-        <Issues issues={report.issues} label="Замечания к отчёту" expanded />
-        <section className="panel compensation-summary" aria-label="Общий итог компенсаций">
-          <h3>Общий итог</h3>
-          <p className="compensation-note">{periodLabel(report.from, report.to)} · активностей: {formatNumber(report.activities.length)}</p>
-          <Totals totals={report.totals} />
-        </section>
-        {!report.activities.length ? <div className="compensation-empty"><h3>Нет активностей для отображения</h3><p>Выберите другой период или «Все активности». Если есть замечания к отчёту, сначала проверьте их: отсутствие данных не означает нулевую компенсацию.</p></div> : null}
-        {report.activities.map((activity) => <Activity key={activity.key} activity={activity} expandSmallBranches={report.activityKey !== null} />)}
+        <label className="compensation-inactive-toggle">
+          <input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />
+          <span>Показать без движений ({formatNumber(inactiveCount)})</span>
+          <span className="compensation-note">Акции и магазины с подтверждённым отсутствием продаж и возвратов</span>
+        </label>
+        <CompensationResults key={requestKey} report={report} showInactive={showInactive} />
       </> : null}
     </div>
   </section>;

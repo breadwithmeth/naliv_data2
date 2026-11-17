@@ -2574,12 +2574,6 @@ select:focus {
   line-height: 1.6;
 }
 
-.turnover-excel-label {
-  flex: none;
-  padding-top: 4px;
-  color: var(--turnover-excel);
-  font-weight: 600;
-}
 
 .turnover-form {
   min-width: 0;
@@ -2606,17 +2600,6 @@ select:focus {
   overflow-wrap: anywhere;
 }
 
-.turnover-report-types {
-  margin: 24px;
-}
-
-.turnover-format-types {
-  margin: 0 24px 24px;
-}
-
-.turnover-format-types .turnover-report-choice {
-  padding: 14px 16px;
-}
 
 .turnover-report-options {
   display: grid;
@@ -2668,12 +2651,6 @@ select:focus {
   line-height: 1.5;
 }
 
-.turnover-builder-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  min-width: 0;
-  border-top: 1px solid #dce4ef;
-}
 
 .turnover-configuration {
   display: grid;
@@ -2826,13 +2803,6 @@ select:focus {
   background: var(--turnover-background);
 }
 
-.turnover-period-caption {
-  margin: 16px 0 6px;
-  font-size: 13px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
 
 .turnover-note {
   max-width: 78ch;
@@ -3007,110 +2977,13 @@ select:focus {
   grid-column: 1 / -1;
 }
 
-.turnover-file-summary {
-  display: grid;
-  align-content: start;
-  gap: 20px;
-  min-width: 0;
-  padding: 24px;
-  border-left: 1px solid #dce4ef;
-  border-radius: 0 0 7px;
-  background: var(--turnover-background);
-}
-
-.turnover-file-heading {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  color: var(--turnover-excel);
-}
-
-.turnover-file-heading svg {
-  flex: none;
-}
-
-.turnover-file-heading h3 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.turnover-file-parameters {
-  display: grid;
-  gap: 16px;
-  min-width: 0;
-  margin: 0;
-}
-
-.turnover-file-parameters > div {
-  min-width: 0;
-}
-
-.turnover-file-parameters dt {
-  margin-bottom: 4px;
-  color: var(--turnover-muted);
-  font-size: 12px;
-}
-
-.turnover-file-parameters dd {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-}
-
-.turnover-file-parameters .turnover-summary-report {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.turnover-summary-period {
-  font-variant-numeric: tabular-nums;
-}
-
-.turnover-summary-period > span {
-  display: block;
-  margin-top: 4px;
-  color: var(--turnover-muted);
-  font-size: 12px;
-}
-
-.turnover-file-description {
-  padding-top: 20px;
-  border-top: 1px solid #dce4ef;
-  font-size: 13px;
-}
-
-.turnover-file-description > strong {
-  color: var(--turnover-excel);
-  font-weight: 600;
-}
-
-.turnover-file-description p {
-  max-width: 75ch;
-  margin: 8px 0 0;
-  color: var(--turnover-muted);
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.turnover-download-actions {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-
-.turnover-download-actions > .turnover-button {
-  width: 100%;
-}
 
 .turnover-message {
   min-width: 0;
   margin: 0;
   padding: 12px;
   border: 1px solid #cfdcf1;
-  border-left: 3px solid var(--turnover-action);
+  border-left-width: 1px;
   border-radius: 6px;
   color: #344054;
   background: #f5f8ff;
@@ -3201,7 +3074,7 @@ select:focus {
 
 .turnover-preview-table {
   width: 100%;
-  min-width: 1100px;
+  min-width: 740px;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -3318,21 +3191,6 @@ select:focus {
   gap: 8px;
 }
 
-@media (max-width: 1100px) {
-  .turnover-builder-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .turnover-file-summary {
-    border-top: 1px solid #dce4ef;
-    border-left: 0;
-    border-radius: 0 0 7px 7px;
-  }
-
-  .turnover-file-parameters {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
 
 @media (max-width: 700px) {
   .turnover-report-options {
@@ -3341,27 +3199,18 @@ select:focus {
 }
 
 @media (max-width: 600px) {
-  .turnover-report-types {
-    margin: 16px;
-  }
-
-  .turnover-format-types {
-    margin: 0 16px 16px;
-  }
 
   .turnover-report-choice {
     padding: 14px;
   }
 
-  .turnover-configuration,
-  .turnover-file-summary {
+  .turnover-configuration {
     padding: 16px;
   }
 
   .turnover-period-inputs,
   .turnover-filter-grid,
-  .turnover-checkbox-list,
-  .turnover-file-parameters {
+  .turnover-checkbox-list {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -3682,7 +3531,7 @@ select:focus {
 
 .compensation-table {
   width: 100%;
-  min-width: 1120px;
+  min-width: 640px;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -3819,5 +3668,208 @@ select:focus {
 
   .compensation-totals > div {
     flex-basis: auto;
+  }
+}
+
+.turnover-configuration {
+  gap: 20px;
+}
+
+.turnover-report-choice {
+  align-items: center;
+  padding: 10px 14px;
+}
+
+.turnover-advanced,
+.turnover-methodology {
+  min-width: 0;
+}
+
+.turnover-advanced > summary,
+.turnover-methodology > summary,
+.turnover-preview-warnings > summary {
+  padding-block: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.turnover-advanced-content {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding-top: 16px;
+}
+
+.turnover-form > .turnover-download-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 0 24px 24px;
+}
+
+.turnover-form > .turnover-download-actions > .turnover-button {
+  width: auto;
+}
+
+.turnover-form > .turnover-message {
+  margin: 0 24px 24px;
+}
+
+.turnover-methodology {
+  margin-block: 4px 16px;
+}
+
+.turnover-detail-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  margin-bottom: 12px;
+}
+
+.turnover-result-summary {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.turnover-total-block h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.turnover-total-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 20px;
+  margin: 0;
+}
+
+.turnover-total-metrics > div {
+  min-width: 0;
+}
+
+.turnover-total-metrics dt {
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.turnover-total-metrics dd {
+  margin: 4px 0 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.turnover-workspace ::selection {
+  color: var(--turnover-ink);
+  background: #dbe8ff;
+}
+
+.turnover-workspace details > summary:focus-visible,
+.compensation-workspace .compensation-button:focus-visible,
+.compensation-workspace .compensation-field select:focus-visible,
+.compensation-workspace input:focus-visible,
+.compensation-workspace details > summary:focus-visible {
+  outline: 3px solid #2864d8;
+  outline-offset: 3px;
+}
+
+.compensation-workspace .compensation-activity {
+  min-width: 0;
+  padding: 16px 0;
+  border-top: 1px solid #e0e6ee;
+}
+
+.compensation-activity-row > div:first-child {
+  flex: 1 1 260px;
+}
+
+.compensation-scope-total {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.compensation-scope-total p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.compensation-inactive-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  min-height: 44px;
+  width: fit-content;
+  max-width: 100%;
+  cursor: pointer;
+}
+
+.compensation-inactive-toggle input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: #2864d8;
+}
+
+.compensation-inactive-toggle .compensation-note {
+  flex-basis: 100%;
+  padding-left: 28px;
+}
+
+.compensation-table-compact .compensation-item {
+  min-width: 220px;
+  width: auto;
+}
+
+.compensation-calculation > td {
+  white-space: normal;
+  background: #f8fafc;
+}
+
+.compensation-calculation .compensation-method,
+.compensation-calculation .compensation-issues {
+  margin-top: 12px;
+}
+
+@media (max-width: 700px) {
+  .compensation-workspace .compensation-activity-row > .compensation-scope-total,
+  .compensation-workspace .compensation-branch > .compensation-heading > .compensation-scope-total {
+    flex: 1 1 180px;
+  }
+
+  .compensation-workspace .compensation-activity-row > .compensation-button,
+  .compensation-workspace .compensation-branch > .compensation-heading > .compensation-button {
+    flex: 0 1 auto;
+    width: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .turnover-form > .turnover-download-actions {
+    align-items: stretch;
+    padding: 0 16px 16px;
+  }
+
+  .turnover-form > .turnover-download-actions > .turnover-button {
+    flex: 1 1 160px;
+  }
+
+  .turnover-form > .turnover-message {
+    margin: 0 16px 16px;
+  }
+
+  .turnover-total-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

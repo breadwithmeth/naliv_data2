@@ -240,13 +240,13 @@ totals; the recalculated package passed Open XML validation without errors.
 
 ## Оборачиваемость товарных запасов
 
-Раздел **Товары → Оборачиваемость** (`#stock/turnover`) формирует Excel в двух вариантах:
-«Сводно по товарам» и «По магазинам».
-В форме выбираются **«Товараоборот в шт.»** или **«Товараоборот в деньгах»**, детализация,
-период, магазины, склад, несколько категорий, бренд и товар, затем нажимается
-**Показать отчёт** или **Скачать Excel**. Настройки находятся слева, состав выбранной
-выгрузки — справа; на телефоне блоки располагаются друг под другом. Предпросмотр
-загружается только по кнопке. Изменение отбора отменяет запрос и убирает старый результат.
+Раздел **Товары → Оборачиваемость** (`#stock/turnover`) сначала показывает отчёт,
+а затем позволяет скачать Excel по всему отбору, независимо от текущей страницы.
+В короткой форме — период, пресеты, режим **Количество / Деньги**, магазины и поиск
+товара. Категории, склад, бренд, детализация по магазинам, офисы и исключение нулевых
+товаров доступны в закрытых **«Дополнительных настройках»** со счётчиком активных условий.
+Enter и **«Показать отчёт»** открывают результат; скачивание — отдельное действие.
+Изменение отбора отменяет запрос и убирает старый результат.
 
 - **«Сводно по товарам»** — две таблицы: остатки и продажи; одна строка на SKU.
   **«По магазинам»** — строки магазин × SKU, листы динамики 7/14/30, ежедневных
@@ -275,6 +275,13 @@ totals; the recalculated package passed Open XML validation without errors.
   Пустой справочник брендов явно обозначен; выбор бренда в этом случае недоступен.
 
 Сводный формат файла:
+- Первый лист **«Кратко»** во всех форматах показывает фактический период, отбор,
+  число строк и серверные итоги по всему отбору. Денежные продажи и остатки — по
+  себестоимости, розничная выручка подписана отдельно. Несовместимые единицы получают
+  отдельные количественные подытоги без ложного общего количества. Пропуски —
+  **«Не рассчитано»**, достоверный ноль остаётся числом. Ограничения и сокращение
+  периода видны на этом листе; прежние расчётные листы и формулы не изменены.
+
 
 - Лист **«рассчет оборачиваемости»** (в денежном варианте — с завершающим пробелом):
   строка заголовков закреплена; `Номенклатура`, дневные остатки, колонки `01.09.` и `01.09. / 2`,
@@ -326,8 +333,14 @@ totals; the recalculated package passed Open XML validation without errors.
   по исходному числу до округления. `n/a` и дни оборота не окрашиваются. Excel содержит
   статическую заливку и правила условного форматирования для пересчёта.
 - Предпросмотр: 100 товарных строк на страницу, серверные итоги по всему отбору,
-  фактический период ответа и предупреждения о сокращении. Сводный запрос использует
-  `profile=sample`; предпросмотр магазинов — `summary`, скачивание магазинов — `full`.
+  фактический период и видимое предупреждение о сокращении. Основные столбцы —
+  продажи с учётом возвратов, конечный запас, обороты и дни на оборот. Переключатель
+  **«Подробные столбцы»** добавляет начальный/средний запас, идентификаторы и розничную
+  выручку без повторного запроса. Числовой пропуск — **«—»**, не ноль; причины доступны
+  в закрытых **«Подробностях проверки»**. Пустой результат предлагает изменить отбор.
+  Сводный запрос использует `profile=sample`; предпросмотр магазинов — `summary`,
+  скачивание магазинов — `full`. `excludeZero` по умолчанию выключен: непродающийся
+  запас не скрывается.
 
 Поиск товара заранее сужает источник по названию, артикулу, коду или ключу SKU.
 Справочники формы загружаются отдельным запросом `GET /api/reports/turnover/options`.
@@ -661,16 +674,26 @@ The currently published 1C metadata exposes no authoritative item-card barcode
 source; receipt barcodes are deliberately not substituted. An additional 1C
 publication/source is needed to populate those barcodes.
 
-Excel sheet order: **«Компенсации»**, optional **«Корректировки»**, **«Диагностика»**.
-The seven columns show barcode, product, pre-discount retail price, percentage,
-unit compensation, net quantity and compensation. Stores are sorted by name/key;
-each contains its sales-bearing activities, product price groups and subtotals.
-Zero-net sales blocks remain visible. Return-only and negative-sale adjustments
-appear only on «Корректировки» and are included in the general total.
-Known inactive blocks do not create zero product rows. Unresolved scopes remain
-diagnostic and block the full report total; an invalid percentage on a rule with
-proven no movements does not invalidate its known zero contribution.
-Text cells and leading-zero barcodes stay text; diagnostics retain every level.
+На сайте сначала показаны фактический период, общий итог и компактный список акций.
+Магазины, товары и расчёт каждой ценовой строки раскрываются по запросу. Неполный
+расчёт явно отделяет **«Рассчитанную часть»** от недоступного полного итога.
+Переключатель **«Показать без движений»** возвращает доказанно пустые акции; явно
+выбранная пустая акция остаётся видимой. Отсутствие flags движения само по себе не
+доказывает пустоту: строки с неизвестным количеством, замечания и нерешённый scope
+не скрываются. Продажа с полным возвратом и возвратные корректировки сохраняются.
+
+Excel sheet order: **«Компенсации»**, **«Детализация»**, optional **«Корректировки»**,
+**«Диагностика»**. The first sheet contains store/activity summaries, inclusive
+calculation periods, status, full compensation or the separately labeled known
+part, and the detail-sheet name; it has no product rows. Store subtotals use the
+included branch blocks; the report total comes only from `report.totals`.
+The seven product columns and all distinct price groups remain on the detail sheets.
+Return-only blocks contribute once to the summary and appear on «Корректировки».
+Rows with unresolved movement flags remain in the «Требует проверки» detail section.
+Only conservatively proven inactive blocks are excluded; enclosing activity issues
+prevent hiding branches. Exclusions, identifiers and every issue level remain in
+diagnostics. Missing data is text, never a fabricated numeric zero. Text beginning
+with `=` and leading-zero barcodes stay text.
 
 Deploy the compatible API before `return-price-prepare --apply`: the additive
 contract transition is explicit ledger lineage, not replacement of historical

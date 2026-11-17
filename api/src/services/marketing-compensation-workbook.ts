@@ -8,12 +8,14 @@ import type {
   CompensationActivity, CompensationBranch, CompensationIssue, CompensationRow,
   CompensationTotals, MarketingCompensationReport
 } from "./marketing-compensation-types.js";
+import { isInactiveCompensationActivity, isInactiveCompensationBranch } from "./marketing-compensation-presentation.js";
 
-const unavailable = "n/a";
+const unavailable = "Нет данных";
 const moneyFormat = '#,##0.00;[Red](#,##0.00);0.00';
 const quantityFormat = '#,##0.###;[Red](#,##0.###);0';
 const percentFormat = '0.##%;[Red](0.##%);0%';
 const mainName = "Компенсации";
+const detailName = "Детализация";
 const diagnosticsName = "Диагностика";
 const headings = ["Штрихкод", "Наименование", "Розничная цена до скидки, ₸", "Компенсация, %", "Компенсация на единицу, ₸", "Нетто количество", "Компенсация, ₸"];
 const border: Partial<ExcelJS.Borders> = {
@@ -26,17 +28,35 @@ type BranchBlock = { activity: CompensationActivity; branch: CompensationBranch 
 type StreamingSheet = ExcelJS.Worksheet & { commit(): void };
 type StreamingWorkbook = ExcelJS.stream.xlsx.WorkbookWriter & { zip: EventEmitter & { abort(): void } };
 
+function date(value: string): string {
+  return `${value.slice(8, 10)}.${value.slice(5, 7)}.${value.slice(0, 4)}`;
+}
 function period(from: string, to: string): string {
-  return `[${from}, ${to})`;
+  const lastDay = new Date(`${to}T00:00:00Z`);
+  lastDay.setUTCDate(lastDay.getUTCDate() - 1);
+  return `${date(from)}–${date(lastDay.toISOString().slice(0, 10))}`;
 }
 function activityLabel(activity: CompensationActivity): string {
-  return `${activity.name}${activity.number === null ? "" : ` · № ${activity.number}`} [${activity.key}]`;
+  return activity.name === activity.key || activity.name === activity.number ? "Акция без названия" : activity.name;
 }
 function activityPeriod(activity: CompensationActivity): string {
-  return `${activity.startsOn ?? unavailable} — ${activity.endsOn ?? unavailable} (включительно)`;
+  return `${activity.startsOn === null ? unavailable : date(activity.startsOn)}–${activity.endsOn === null ? unavailable : date(activity.endsOn)}`;
 }
-function branchLabel(branch: CompensationBranch): string {
-  return `${branch.name} [${branch.key ?? unavailable}]`;
+function incomplete(totals: CompensationTotals): boolean {
+  return totals.compensation === null || totals.incompleteRows > 0;
+}
+function storeGroups(blocks: BranchBlock[]): BranchBlock[][] {
+  const stores = new Map<string | null, BranchBlock[]>();
+  for (const block of blocks) {
+    const list = stores.get(block.branch.key);
+    if (list) list.push(block);
+    else stores.set(block.branch.key, [block]);
+  }
+  const ordered = [...stores.values()].sort((a, b) => a[0].branch.name.localeCompare(b[0].branch.name, "ru")
+    || (a[0].branch.key ?? "").localeCompare(b[0].branch.key ?? ""));
+  for (const group of ordered) group.sort((a, b) => a.activity.name.localeCompare(b.activity.name, "ru")
+    || a.activity.key.localeCompare(b.activity.key));
+  return ordered;
 }
 
 function sheet(workbook: StreamingWorkbook, name: string, widths: number[], formats: string[]): StreamingSheet {
@@ -80,18 +100,18 @@ function topRows(worksheet: ExcelJS.Worksheet, title: string, note: string, labe
   heading.commit();
 }
 function reportNote(report: MarketingCompensationReport): string {
-  return `Период расчёта ${period(report.from, report.to)}; правая граница исключена. n/a — данных нет или полный итог недоступен; 0 — известный ноль. Известная часть не заменяет полный итог.`;
+  return `Период расчёта ${period(report.from, report.to)} (включительно). Нет данных — показатель неизвестен; 0 — известный ноль. Рассчитанная часть не заменяет полный итог.`;
 }
 function totalRows(worksheet: ExcelJS.Worksheet, label: string, totals: CompensationTotals): void {
   const row = worksheet.addRow([
     `${label}${totals.incompleteRows ? ` · неполных строк: ${totals.incompleteRows}` : ""}`,
-    null, null, null, null, null, totals.compensation ?? unavailable
+    null, null, null, null, null, incomplete(totals) ? "Не рассчитано" : totals.compensation
   ]);
   worksheet.mergeCells(row.number, 1, row.number, 5);
   styleRow(row, "total");
   row.commit();
-  if (totals.compensation === null) {
-    const known = worksheet.addRow(["Известная часть компенсации (не полный итог)", null, null, null, null, null, totals.knownCompensation]);
+  if (incomplete(totals)) {
+    const known = worksheet.addRow(["Рассчитанная часть компенсации (не полный итог)", null, null, null, null, null, totals.knownCompensation]);
     worksheet.mergeCells(known.number, 1, known.number, 5);
     styleRow(known, "total");
     known.commit();
@@ -116,7 +136,7 @@ function branchTotals(blocks: BranchBlock[]): CompensationTotals {
 function itemRow(worksheet: ExcelJS.Worksheet, item: CompensationRow): void {
   // Assign source strings directly: leading '=' is text, never an Excel formula.
   const row = worksheet.addRow([
-    item.barcode ?? unavailable, item.name, item.price ?? unavailable,
+    item.barcode ?? unavailable, item.name === item.itemKey ? "Товар не определён" : item.name, item.price ?? unavailable,
     item.discountPct === null ? unavailable : item.discountPct / 100,
     item.unitCompensation ?? unavailable, item.quantity ?? unavailable, item.compensation ?? unavailable
   ]);
@@ -153,34 +173,109 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
   let written = 0;
   const checkpoint = async () => { await setImmediate(); signal.throwIfAborted(); };
   workbook.creator = "Налив — аналитика";
+  const includedBlocks: BranchBlock[] = [];
   const mainBlocks: BranchBlock[] = [];
   const correctionBlocks: BranchBlock[] = [];
-  for (const activity of report.activities) for (const branch of activity.branches) {
-    if (branch.hasSales) mainBlocks.push({ activity, branch });
-    else if (branch.hasReturns) correctionBlocks.push({ activity, branch });
+  const reviewBlocks: BranchBlock[] = [];
+  const excluded = new Set<CompensationBranch>();
+  const unresolvedActivities = new Set<CompensationActivity>();
+  for (const activity of report.activities) {
+    const allBranchesInactive = activity.branches.every(isInactiveCompensationBranch);
+    const unresolved = activity.issues.length > 0 || incomplete(activity.totals)
+      || (allBranchesInactive && !isInactiveCompensationActivity(activity));
+    if (unresolved) unresolvedActivities.add(activity);
+    for (const branch of activity.branches) {
+      signal.throwIfAborted();
+      if (!unresolved && isInactiveCompensationBranch(branch)) {
+        excluded.add(branch);
+        continue;
+      }
+      const block = { activity, branch };
+      includedBlocks.push(block);
+      if (branch.hasSales) mainBlocks.push(block);
+      else if (branch.hasReturns) correctionBlocks.push(block);
+      else reviewBlocks.push(block);
+    }
   }
+  const needsReview = ({ activity, branch }: BranchBlock) => unresolvedActivities.has(activity)
+    || incomplete(branch.totals) || (!branch.hasSales && !branch.hasReturns);
+  const summary = sheet(workbook, mainName, [34, 46, 29, 28, 24, 27, 46], [
+    "@", "@", "@", "@", moneyFormat, moneyFormat, "@"
+  ]);
+  topRows(summary, "Маркетинговые компенсации", reportNote(report), [
+    "Магазин", "Акция", "Период расчёта", "Статус", "Компенсация, ₸", "Рассчитанная часть, ₸", "Подробности"
+  ]);
+  const summaryTotal = (label: string, totals: CompensationTotals, review = false) => {
+    const unknown = incomplete(totals);
+    const row = summary.addRow([
+      label, null, null, unknown || review ? "Нужна проверка" : "Рассчитано",
+      unknown ? "Не рассчитано" : totals.compensation, unknown ? totals.knownCompensation : null,
+      totals.incompleteRows ? `Строк без расчёта: ${totals.incompleteRows}` : null
+    ]);
+    styleRow(row, "total");
+    row.commit();
+  };
+  for (const storeBlocks of storeGroups(includedBlocks)) {
+    for (const block of storeBlocks) {
+      const { activity, branch } = block;
+      const unknown = incomplete(branch.totals);
+      const review = needsReview(block);
+      const status = review ? "Нужна проверка" : branch.hasSales ? "Рассчитано" : "Возвраты / корректировки";
+      const detail = branch.hasSales ? detailName : branch.hasReturns ? "Корректировки" : `${detailName} · Требует проверки`;
+      const notes = [
+        detail,
+        ...(review && branch.hasReturns && !branch.hasSales ? ["возвраты / корректировки"] : []),
+        ...(unknown ? [`строк без расчёта: ${branch.totals.incompleteRows}`] : []),
+        ...(review ? [diagnosticsName] : [])
+      ];
+      const row = summary.addRow([
+        branch.name, activityLabel(activity), period(activity.from, activity.to), status,
+        unknown ? "Не рассчитано" : branch.totals.compensation, unknown ? branch.totals.knownCompensation : null,
+        notes.join(" · ")
+      ]);
+      styleRow(row);
+      row.commit();
+      if (++written % 256 === 0) await checkpoint();
+    }
+    summaryTotal(`Итого по магазину: ${storeBlocks[0].branch.name} · показанные акции`,
+      branchTotals(storeBlocks), storeBlocks.some(needsReview));
+  }
+  const reportNeedsReview = incomplete(report.totals) || report.issues.length > 0
+    || (includedBlocks.length === 0 && report.totals.compensation !== 0);
+  if (unresolvedActivities.size || reportNeedsReview) {
+    mergedRow(summary, "Не удалось полностью рассчитать", true);
+    for (const activity of unresolvedActivities) {
+      const row = summary.addRow([
+        null, activityLabel(activity), period(activity.from, activity.to), "Нужна проверка", null, null,
+        `${diagnosticsName} · ${activity.branches.length ? "есть ограничения расчёта активности" : "магазины не определены"}`
+      ]);
+      styleRow(row);
+      row.commit();
+    }
+    if (reportNeedsReview) {
+      const row = summary.addRow([null, "Весь отчёт", period(report.from, report.to), "Нужна проверка", null, null, diagnosticsName]);
+      styleRow(row);
+      row.commit();
+    }
+  } else if (includedBlocks.length === 0) {
+    mergedRow(summary, "За выбранный период продаж и возвратов не было");
+  }
+  summaryTotal("ОБЩИЙ ИТОГ", report.totals, reportNeedsReview || unresolvedActivities.size > 0 || reviewBlocks.length > 0);
+  await finishSheet(workbook, summary, signal);
+
   const createDetailSheet = (name: string, note = "") => {
     const detail = sheet(workbook, name, [28.7109375, 66.140625, 24, 18, 24, 22, 25], [
       "@", "@", moneyFormat, percentFormat, moneyFormat, quantityFormat, moneyFormat
     ]);
-    topRows(detail, `Маркетинговые компенсации${name === mainName ? "" : " · корректировки"}`, `${reportNote(report)}${note ? ` ${note}` : ""}`, headings);
+    topRows(detail, `Маркетинговые компенсации · ${name.toLocaleLowerCase("ru")}`, `${reportNote(report)}${note ? ` ${note}` : ""}`, headings);
     return detail;
   };
   const writeStoreBlocks = async (detail: StreamingSheet, blocks: BranchBlock[]) => {
-    const stores = new Map<string | null, BranchBlock[]>();
-    for (const block of blocks) {
-      const list = stores.get(block.branch.key) ?? [];
-      list.push(block);
-      stores.set(block.branch.key, list);
-    }
-    const ordered = [...stores.values()].sort((a, b) => a[0].branch.name.localeCompare(b[0].branch.name, "ru")
-      || (a[0].branch.key ?? "").localeCompare(b[0].branch.key ?? ""));
-    for (const storeBlocks of ordered) {
-      mergedRow(detail, branchLabel(storeBlocks[0].branch), true);
-      storeBlocks.sort((a, b) => a.activity.name.localeCompare(b.activity.name, "ru") || a.activity.key.localeCompare(b.activity.key));
+    for (const storeBlocks of storeGroups(blocks)) {
+      mergedRow(detail, storeBlocks[0].branch.name, true);
       for (const { activity, branch } of storeBlocks) {
         mergedRow(detail, activityLabel(activity), true);
-        mergedRow(detail, `Период акции: ${activityPeriod(activity)}; расчёт ${period(activity.from, activity.to)}.`);
+        mergedRow(detail, `Период акции: ${activityPeriod(activity)}; расчёт ${period(activity.from, activity.to)} (включительно).`);
         for (const item of branch.rows) {
           itemRow(detail, item);
           if (++written % 256 === 0) await checkpoint();
@@ -190,26 +285,31 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
       totalRows(detail, "Итого по магазину · показанные акции", branchTotals(storeBlocks));
     }
   };
-  const main = createDetailSheet(mainName);
+  const main = createDetailSheet(detailName);
   await writeStoreBlocks(main, mainBlocks);
-  if (!mainBlocks.length) mergedRow(main, report.totals.compensation === null
-    ? "Данные неполны; проверьте лист «Диагностика». Отсутствие продаж не подтверждено."
-    : correctionBlocks.length ? "Нет акций с продажами; возвраты показаны на листе «Корректировки»."
-      : "Нет продаж за выбранный период");
-  totalRows(main, "ИТОГО по акциям с продажами", branchTotals(mainBlocks));
-  if (correctionBlocks.length) totalRows(main, "Корректировки по возвратам", branchTotals(correctionBlocks));
-  totalRows(main, "ОБЩИЙ ИТОГ с корректировками", report.totals);
-  await finishSheet(workbook, main, signal, mainBlocks.some(b => b.branch.rows.length > 0));
+  if (mainBlocks.length) totalRows(main, "ИТОГО по акциям с продажами", branchTotals(mainBlocks));
+  if (reviewBlocks.length) {
+    mergedRow(main, "Требует проверки", true);
+    mergedRow(main, "Наличие продаж и возвратов не определено. Исходные строки сохранены; причины — на листе «Диагностика».");
+    await writeStoreBlocks(main, reviewBlocks);
+    totalRows(main, "ИТОГО по блокам, требующим проверки", branchTotals(reviewBlocks));
+  }
+  if (!mainBlocks.length && !reviewBlocks.length) mergedRow(main, reportNeedsReview || unresolvedActivities.size
+    ? "Нужна проверка. Ограничения расчёта — на листе «Диагностика»."
+    : correctionBlocks.length ? "Возвраты показаны на листе «Корректировки»."
+      : "За выбранный период продаж и возвратов не было");
+  await finishSheet(workbook, main, signal, mainBlocks.some(block => block.branch.rows.length > 0)
+    || reviewBlocks.some(block => block.branch.rows.length > 0));
   if (correctionBlocks.length) {
-    const corrections = createDetailSheet("Корректировки", "Акции только с возвратами; суммы включены в общий итог.");
+    const corrections = createDetailSheet("Корректировки", "Акции только с возвратами; суммы включены в общий итог сводки.");
     await writeStoreBlocks(corrections, correctionBlocks);
     totalRows(corrections, "ИТОГО корректировок по возвратам", branchTotals(correctionBlocks));
-    await finishSheet(workbook, corrections, signal, correctionBlocks.some(b => b.branch.rows.length > 0));
+    await finishSheet(workbook, corrections, signal, correctionBlocks.some(block => block.branch.rows.length > 0));
   }
 
   const diagnostics = sheet(workbook, diagnosticsName, [18, 52, 45, 60, 64, 32, 85], []);
   topRows(diagnostics, "Диагностика исходных данных", reportNote(report), [
-    "Уровень", "Маркетинг", "Филиал", "Номенклатура / характеристика", "Контекст дат [с, по)", "Код", "Сообщение"
+    "Уровень", "Маркетинг", "Филиал", "Номенклатура / характеристика", "Контекст дат", "Код", "Сообщение"
   ]);
   let diagnosticsLastRow = 3;
   const addIssues = (issues: CompensationIssue[], level: string, activity: string | null, branch: string | null, item: string | null, dates: string) => {
@@ -223,24 +323,29 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
   };
   addIssues(report.issues, "Отчёт", null, null, null, period(report.from, report.to));
   for (const activity of report.activities) {
-    const label = activityLabel(activity);
-    const dates = `Расчёт ${period(activity.from, activity.to)}; активность ${activityPeriod(activity)}`;
-    addIssues(activity.issues, "Маркетинг", label, null, null, dates);
+    const label = `${activity.name} [${activity.key}]; номер документа: ${activity.number ?? unavailable}`;
+    const dates = `Расчёт ${period(activity.from, activity.to)}; активность ${activityPeriod(activity)}; исходный интервал [${activity.from}, ${activity.to})`;
+    addIssues(activity.issues.length ? activity.issues : [{
+      code: "activity_context", message: "Идентификатор и период активности."
+    }], "Маркетинг", label, null, null, dates);
     for (const branch of activity.branches) {
-      const branchIdentity = branchLabel(branch);
+      const branchIdentity = `${branch.name} [${branch.key ?? unavailable}]`;
       addIssues(branch.issues, "Филиал", label, branchIdentity, null, dates);
       if (!branch.hasSales && !branch.hasReturns) addIssues([{
-        code: branch.totals.compensation === null ? "unresolved_movements" : "no_movements",
-        message: branch.totals.compensation === null
-          ? "Блок не включён в таблицы: наличие движений не определено. Полный итог недоступен."
-          : "Блок не включён в таблицы: нет положительных продаж или корректировок."
+        code: excluded.has(branch) ? "no_movements" : "unresolved_movements",
+        message: excluded.has(branch)
+          ? "Блок исключён из сводки и детализации: за выбранный период продаж и возвратов не было."
+          : "Блок включён в сводку и детализацию в раздел «Требует проверки»: отсутствие движений не подтверждено или не разрешены ограничения активности."
+      }], "Филиал", label, branchIdentity, null, dates);
+      else if (!branch.issues.length) addIssues([{
+        code: "branch_context", message: `Продажи: ${branch.hasSales ? "есть" : "не отмечены"}; возвраты: ${branch.hasReturns ? "есть" : "не отмечены"}.`
       }], "Филиал", label, branchIdentity, null, dates);
       for (const item of branch.rows) {
-        if (item.issues.length) {
-          addIssues(item.issues, "Строка", label, branchIdentity,
-            `${item.name} [${item.itemKey}]; характеристика: ${item.characteristicKey ?? unavailable}; штрихкод: ${item.barcode ?? unavailable}`,
-            `Расчёт ${period(item.from, item.to)}; цена до скидки из строки движения 1С`);
-        }
+        addIssues(item.issues.length ? item.issues : [{
+          code: "row_context", message: "Цена до скидки из строки продажи/возврата 1С."
+        }], "Строка", label, branchIdentity,
+        `${item.name} [${item.itemKey}]; характеристика: ${item.characteristicKey ?? unavailable}; штрихкод: ${item.barcode ?? unavailable}`,
+        `Расчёт ${period(item.from, item.to)}; исходный интервал [${item.from}, ${item.to}); цена до скидки из строки движения 1С`);
         if (++written % 256 === 0) await checkpoint();
       }
     }

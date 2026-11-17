@@ -9,6 +9,7 @@ import type {
 } from "./turnover-types.js";
 import { writeTurnoverSampleWorkbook } from "./turnover-sample-workbook.js";
 import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
+import { writeTurnoverSummarySheet } from "./turnover-summary-workbook.js";
 
 type Value = string | number | null;
 type Column<T> = { label: string; block: string; value: (row: T) => Value; footer?: (total: TurnoverTotal, label: string) => Value; footerOnly?: boolean; coefficient?: boolean; width?: number; format?: string };
@@ -244,6 +245,7 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
   try {
     workbook.creator = "Naliv Аналитика";
     workbook.created = new Date(report.generatedAt);
+    await writeTurnoverSummarySheet(workbook, report);
     const note = `Период [${report.params.from}, ${report.params.to}); сравнение [${report.comparison.from}, ${report.comparison.to}). n/a — данных нет или расчёт невозможен; 0 — известный ноль. Стоимость по себестоимости, выручка отдельно.`;
     if (report.params.groupBy === "day") {
       const main = table(workbook, "Оборачиваемость", dailyColumns(report, true), "Оборачиваемость запасов · по дням", note + " В ИТОГО дневной остаток означает конечный запас; начальный и средний запас периода приведены отдельно.", canceled.signal);

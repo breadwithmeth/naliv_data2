@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { PassThrough, Writable } from "node:stream";
 import { buffer } from "node:stream/consumers";
 import { setImmediate } from "node:timers/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import ExcelJS from "exceljs";
 import { writeTurnoverWorkbook } from "../src/services/turnover-workbook.js";
 import { turnoverCoefficientBand } from "../src/services/turnover-domain.js";
@@ -50,17 +52,194 @@ function fixture(mode: "quantity" | "money" | "both"): TurnoverReport {
     methodology: ["Стоимость по себестоимости на дату; розничная выручка отдельно."], warnings: [], generatedAt: "2026-10-01T01:00:00Z"
   };
 }
-async function load(report: TurnoverReport) {
+async function load(report: TurnoverReport, fixtureName?: string) {
   const stream = new PassThrough();
   const [, bytes] = await Promise.all([writeTurnoverWorkbook(report, stream), buffer(stream)]);
+  if (fixtureName && process.env.TURNOVER_WORKBOOK_FIXTURE_DIR) {
+    await mkdir(process.env.TURNOVER_WORKBOOK_FIXTURE_DIR, { recursive: true });
+    await writeFile(join(process.env.TURNOVER_WORKBOOK_FIXTURE_DIR, fixtureName), bytes);
+  }
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(bytes);
   return workbook;
 }
 
+function sheetValues(sheet: ExcelJS.Worksheet): ExcelJS.CellValue[] {
+  const values: ExcelJS.CellValue[] = [];
+  sheet.eachRow(row => row.eachCell(cell => values.push(cell.value)));
+  return values;
+}
+
+function namedRow(sheet: ExcelJS.Worksheet, label: string): ExcelJS.Row {
+  let found: ExcelJS.Row | undefined;
+  sheet.eachRow(row => { if (row.getCell(1).value === label) found = row; });
+  assert.ok(found, `missing summary row: ${label}`);
+  return found;
+}
+
+function rowValues(row: ExcelJS.Row): ExcelJS.CellValue[] {
+  return (row.values as ExcelJS.CellValue[]).slice(1);
+}
+
+test("Кратко is first in every profile and mode and uses server totals rather than displayed rows", async () => {
+  for (const profile of ["sample", "summary", "full"] as const) for (const mode of ["quantity", "money", "both"] as const) {
+    const report = fixture(mode);
+    report.params.profile = profile;
+    report.totals.overall = {
+      ...report.totals.overall, openingQty: 20, closingQty: 40, averageQty: 40,
+      openingCost: 200, closingCost: 500, averageCost: 400,
+      periodSales: { ...sales, quantity: 100, cost: 1250, revenue: 1777 },
+      turnoverQty: 2.5, turnoverQtyDays: 1.2, turnoverCost: 3.125, turnoverCostDays: 0.96,
+      daily: row.daily.map((day, index) => ({
+        ...day, quantity: [20, 50, 40][index], stockCost: [200, 450, 500][index]
+      }))
+    };
+    report.summary.rowCount = 999;
+    const workbook = await load(report, `turnover-${profile}-${mode}.xlsx`);
+    assert.equal(workbook.worksheets[0]?.name, "Кратко");
+    const summary = workbook.getWorksheet("Кратко")!;
+    const values = sheetValues(summary);
+    assert.ok(values.includes("Строк в отчёте: 1"));
+    assert.equal(values.includes("n/a"), false);
+    assert.equal(values.includes(12), false, "must not sum the displayed fixture row");
+    if (mode !== "money") {
+      const quantity = namedRow(summary, "Количество");
+      assert.deepEqual(rowValues(quantity), ["Количество", "л", 100, 40, 2.5, 1.2]);
+      assert.equal((quantity.getCell(5).fill as ExcelJS.FillPattern).fgColor?.argb, "FFFFEDD5");
+      assert.equal((quantity.getCell(6).fill as ExcelJS.FillPattern)?.fgColor?.argb, undefined);
+    } else {
+      assert.equal(values.includes("Количество"), false);
+    }
+    if (mode !== "quantity") {
+      const cost = namedRow(summary, "Деньги по себестоимости");
+      assert.deepEqual(rowValues(cost), ["Деньги по себестоимости", "₸", 1250, 500, 3.125, 0.96]);
+      assert.ok(values.includes("Продажи по себестоимости, ₸"));
+      assert.ok(values.includes("Остаток на конец по себестоимости, ₸"));
+      const revenue = namedRow(summary, "Розничная выручка, ₸");
+      assert.equal(revenue.getCell(6).value, 1777);
+      assert.equal((cost.getCell(5).fill as ExcelJS.FillPattern).fgColor?.argb, "FFDCFCE7");
+    } else {
+      assert.equal(values.includes("Деньги по себестоимости"), false);
+      assert.equal(values.includes("Розничная выручка, ₸"), false);
+    }
+    assert.equal(summary.columnCount, 6);
+  }
+});
+
+test("Кратко preserves known zeros and signed returns and never turns missing or nonfinite metrics into numbers", async () => {
+  for (const profile of ["sample", "summary", "full"] as const) {
+    const report = fixture("both");
+    report.params.profile = profile;
+    report.totals.overall = {
+      ...report.totals.overall, closingQty: 0, closingCost: null,
+      periodSales: { ...sales, quantity: -5, cost: 0, revenue: 0 },
+      turnoverQty: -0.5, turnoverQtyDays: null, turnoverCost: Infinity, turnoverCostDays: NaN
+    };
+    const summary = (await load(report, `turnover-${profile}-incomplete.xlsx`)).getWorksheet("Кратко")!;
+    assert.deepEqual(rowValues(namedRow(summary, "Количество")),
+      ["Количество", "л", -5, 0, -0.5, "Не рассчитано"]);
+    const cost = namedRow(summary, "Деньги по себестоимости");
+    assert.deepEqual(rowValues(cost),
+      ["Деньги по себестоимости", "₸", 0, "Не рассчитано", "Не рассчитано", "Не рассчитано"]);
+    assert.equal(cost.getCell(3).type, ExcelJS.ValueType.Number);
+    assert.equal(cost.getCell(4).type, ExcelJS.ValueType.String);
+    assert.equal((cost.getCell(5).fill as ExcelJS.FillPattern)?.fgColor?.argb, undefined);
+    assert.equal(namedRow(summary, "Розничная выручка, ₸").getCell(6).value, 0);
+    assert.equal(sheetValues(summary).includes("n/a"), false);
+  }
+});
+
+test("Кратко lists incompatible quantities by unit without inventing an overall or an unknown unit", async () => {
+  const report = fixture("both");
+  report.params.profile = "summary";
+  const overall = report.totals.overall;
+  report.totals.byUnit = [
+    { ...overall, unit: "л", unitKey: "litre", closingQty: 40, periodSales: { ...sales, quantity: 100 }, turnoverQty: 2.5, turnoverQtyDays: 1.2 },
+    { ...overall, unit: "шт", unitKey: "piece", closingQty: 0, periodSales: { ...sales, quantity: -3 }, turnoverQty: -1, turnoverQtyDays: null }
+  ];
+  report.totals.overall = {
+    ...overall, unit: null, closingQty: null, periodSales: { ...sales, quantity: null },
+    turnoverQty: null, turnoverQtyDays: null
+  };
+  const summary = (await load(report, "turnover-summary-mixed-units.xlsx")).getWorksheet("Кратко")!;
+  const quantities: ExcelJS.CellValue[][] = [];
+  summary.eachRow(row => { if (row.getCell(1).value === "Количество") quantities.push(rowValues(row)); });
+  assert.deepEqual(quantities, [
+    ["Количество", "л", 100, 40, 2.5, 1.2],
+    ["Количество", "шт", -3, 0, -1, "Не рассчитано"]
+  ]);
+  assert.ok(sheetValues(summary).includes("Общий итог количества не рассчитан"));
+  assert.equal(namedRow(summary, "Деньги по себестоимости").getCell(3).value, 120);
+
+  report.totals.byUnit = [];
+  const unknown = (await load(report, "turnover-summary-missing-unit.xlsx")).getWorksheet("Кратко")!;
+  assert.ok(sheetValues(unknown).includes("Общий итог количества не рассчитан"));
+  assert.equal(sheetValues(unknown).includes("Разные единицы"), false);
+  assert.equal(sheetValues(unknown).includes("Количество"), false);
+});
+
+test("Кратко shows inclusive actual and shortened dates, labelled filters and every warning without raw keys", async () => {
+  const report = fixture("money");
+  report.params.profile = "summary";
+  report.params.warehouse = "wh";
+  report.params.category = ["beer", "missing-category-private-key"];
+  report.params.brand = "missing-brand-private-key";
+  report.params.sku = "item";
+  report.params.search = "=поиск";
+  report.params.storeScope = "all";
+  report.params.excludeZero = true;
+  report.coverage.requestedTo = "2026-10-04";
+  report.warnings = ["Ограничение стоимости\nНужна проверка", "Возвраты включены"];
+  const summary = (await load(report, "turnover-summary-shortened.xlsx")).getWorksheet("Кратко")!;
+  const text = sheetValues(summary).filter(value => typeof value === "string").join("\n");
+  assert.match(text, /Фактический период: 28\.09\.2026–30\.09\.2026/);
+  assert.match(text, /Запрошено по 03\.10\.2026/);
+  assert.match(text, /рассчитано по 30\.09\.2026/);
+  for (const label of ["Магазины: Магазин", "Склад: Склад", "Категории: Пиво", "Товар: =1+1", "Поиск: =поиск"]) assert.ok(text.includes(label));
+  assert.ok(text.includes("Выбранное значение отсутствует в справочнике"));
+  assert.doesNotMatch(text, /missing-category-private-key|missing-brand-private-key|\[store\]|\[wh\]/);
+  for (const warning of report.warnings) {
+    assert.ok(text.includes(warning));
+    const warningRow = namedRow(summary, warning);
+    assert.equal(warningRow.getCell(1).alignment.wrapText, true);
+  }
+  assert.ok(text.includes("Подробный расчёт — на следующих листах"));
+});
+
+test("empty Кратко keeps the period and limitations but omits unknown totals tables", async () => {
+  for (const profile of ["sample", "summary", "full"] as const) {
+    const report = fixture("both");
+    report.params.profile = profile;
+    report.rows = [];
+    report.coverage.requestedTo = "2026-10-04";
+    report.warnings = ["Ограничение данных остаётся доступным"];
+    const summary = (await load(report, `turnover-${profile}-empty.xlsx`)).getWorksheet("Кратко")!;
+    const values = sheetValues(summary);
+    assert.ok(values.includes("По выбранным условиям товаров нет"));
+    assert.ok(values.includes("Строк в отчёте: 0"));
+    assert.ok(values.includes(report.warnings[0]));
+    assert.equal(values.includes("Не рассчитано"), false);
+    assert.equal(values.includes("Продажи за период"), false);
+    assert.equal(values.includes("Деньги по себестоимости"), false);
+    assert.equal(values.includes("n/a"), false);
+  }
+});
+
+test("summary-sheet output errors still reject sample and analytical downloads", async () => {
+  for (const profile of ["sample", "summary", "full"] as const) {
+    const report = fixture("both");
+    report.params.profile = profile;
+    const output = new Writable({
+      write(_chunk, _encoding, callback) { callback(new Error("Summary download failed")); }
+    });
+    await assert.rejects(writeTurnoverWorkbook(report, output), /Summary download failed/);
+    assert.equal(output.destroyed, true);
+  }
+});
+
 test("turnover XLSX preserves numeric cost basis, leading-zero identity and safe text cells", async () => {
   const workbook = await load(fixture("both"));
-  const sheet = workbook.worksheets[0];
+  const sheet = workbook.getWorksheet("Оборачиваемость")!;
   assert.equal(sheet.getCell("G5").type, ExcelJS.ValueType.String);
   assert.equal(sheet.getCell("G5").value, "=1+1");
   assert.equal(sheet.getCell("F5").value, "001");
@@ -84,8 +263,8 @@ test("summary workbook contains only the main table and parameters without barco
   report.rows[0].daily = [];
   report.daily = [];
   const workbook = await load(report);
-  assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["Оборачиваемость", "Параметры и методика"]);
-  const main = workbook.worksheets[0]!;
+  assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["Кратко", "Оборачиваемость", "Параметры и методика"]);
+  const main = workbook.getWorksheet("Оборачиваемость")!;
   const headers = main.getRow(4).values as unknown[];
   assert.equal(headers.includes("Штрихкоды"), false);
   const opening = headers.indexOf("Начальный остаток");
@@ -102,8 +281,8 @@ test("sample quantity workbook reproduces the example sheets, widths, headers an
   report.params.profile = "sample";
   report.params.groupBy = "sku";
   const workbook = await load(report);
-  assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["рассчет оборачиваемости", "Продажи за период "]);
-  const main = workbook.worksheets[0]!;
+  assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["Кратко", "рассчет оборачиваемости", "Продажи за период "]);
+  const main = workbook.getWorksheet("рассчет оборачиваемости")!;
   assert.equal(main.getColumn(1).width, 65.5703125);
   assert.equal(main.getColumn(2).width, 9.140625);
   assert.equal(main.getColumn(3).width, 9.140625);
@@ -153,8 +332,8 @@ test("sample money workbook reproduces the money sheets, VLOOKUP range and total
   report.params.profile = "sample";
   report.params.groupBy = "sku";
   const workbook = await load(report);
-  assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["рассчет оборачиваемости ", "Продажи за период "]);
-  const main = workbook.worksheets[0]!;
+  assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["Кратко", "рассчет оборачиваемости ", "Продажи за период "]);
+  const main = workbook.getWorksheet("рассчет оборачиваемости ")!;
   assert.equal(main.getCell("B2").value, 100);
   assert.equal(main.getCell("D2").value, 150);
   assert.equal(main.getCell("F2").value, 200);
@@ -183,11 +362,11 @@ test("combined sample export keeps both examples separate with distinct lookup s
   report.params.groupBy = "sku";
   const workbook = await load(report);
   assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), [
-    "рассчет оборачиваемости", "Продажи за период ",
+    "Кратко", "рассчет оборачиваемости", "Продажи за период ",
     "рассчет оборачиваемости деньги", "Продажи за период в деньгах"
   ]);
-  assert.equal(workbook.worksheets[0]!.getCell("K2").value.formula, "VLOOKUP(A2,'Продажи за период '!A2:B2,2,0)");
-  assert.equal(workbook.worksheets[2]!.getCell("K2").value.formula, "VLOOKUP(A2,'Продажи за период в деньгах'!A1:C1,3,0)");
+  assert.equal(workbook.getWorksheet("рассчет оборачиваемости")!.getCell("K2").value.formula, "VLOOKUP(A2,'Продажи за период '!A2:B2,2,0)");
+  assert.equal(workbook.getWorksheet("рассчет оборачиваемости деньги")!.getCell("K2").value.formula, "VLOOKUP(A2,'Продажи за период в деньгах'!A1:C1,3,0)");
 });
 
 test("sample exports keep product labels independent of shops and withhold mixed-unit quantity totals", async () => {
@@ -206,7 +385,7 @@ test("sample exports keep product labels independent of shops and withhold mixed
     periodSales: { quantity: null, cost: 240, revenue: 360, averageDailyQty: null, averageDailyCost: 120 },
     daily: row.daily.map(d => ({ ...d, quantity: null, stockCost: d.stockCost! * 2 })) };
   const workbook = await load(report);
-  const main = workbook.worksheets[0]!;
+  const main = workbook.getWorksheet("рассчет оборачиваемости ")!;
   assert.equal(main.getCell("A2").value, row.name);
   assert.equal(main.getCell("A3").value, "Другой товар");
   const sales = workbook.getWorksheet("Продажи за период ")!;
@@ -222,7 +401,7 @@ test("money-only export preserves unknown costs and the exact applied filter and
   report.totals.overall.turnoverCost = null;
   report.totals.overall.turnoverCostDays = null;
   const workbook = await load(report);
-  const main = workbook.worksheets[0];
+  const main = workbook.getWorksheet("Оборачиваемость")!;
   assert.equal(main.getCell("L5").value, "n/a");
   assert.equal(main.getCell("M5").value, 120);
   assert.equal(main.getCell("Q5").value, 180);
@@ -313,7 +492,7 @@ test("sample footer recomputes coefficient 2.5 with N3 once and never looks up a
   report.totals.overall = { ...report.totals.overall, openingQty: 20, closingQty: 40, averageQty: 40,
     periodSales: { ...sales, quantity: 100 }, turnoverQty: 2.5, turnoverQtyDays: 1.2,
     daily: row.daily.map((d, index) => ({ ...d, quantity: [20, 50, 40][index] })) };
-  const main = (await load(report)).worksheets[0];
+  const main = (await load(report)).getWorksheet("рассчет оборачиваемости")!;
   assert.equal(main.getCell("A2").value, "ИТОГО");
   assert.equal(main.getCell("A4").value, "ИТОГО");
   assert.equal(main.getCell("H4").value.result, 40);
@@ -337,7 +516,7 @@ test("coefficient fills and conditional rules cover data and totals, not turnove
     const [, bytes] = await Promise.all([writeTurnoverWorkbook(report, stream), buffer(stream)]);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(bytes);
-    const main = workbook.worksheets[0];
+    const main = workbook.getWorksheet(profile === "sample" ? "рассчет оборачиваемости" : "Оборачиваемость")!;
     const coefficient = profile === "sample" ? 9 : 14;
     const days = profile === "sample" ? 12 : 15;
     const first = profile === "sample" ? 2 : 5;
@@ -349,7 +528,7 @@ test("coefficient fills and conditional rules cover data and totals, not turnove
     }
     assert.equal((main.lastRow!.getCell(coefficient).fill as ExcelJS.FillPattern).fgColor?.argb, "FFFFEDD5");
     const zip = await JSZip.loadAsync(bytes);
-    const xml = await zip.file("xl/worksheets/sheet1.xml")!.async("string");
+    const xml = await zip.file(`xl/worksheets/sheet${main.id}.xml`)!.async("string");
     assert.match(xml, /conditionalFormatting/);
     assert.match(xml, /ISNUMBER/);
     assert.match(xml, /&lt;2/);
@@ -363,7 +542,7 @@ test("analytical day footer exposes distinct opening closing average and sales i
   for (const mode of ["quantity", "money", "both"] as const) {
     const report = fixture(mode);
     report.params.groupBy = "day";
-    const main = (await load(report)).worksheets[0];
+    const main = (await load(report)).getWorksheet("Оборачиваемость")!;
     const footer = main.lastRow!;
     assert.equal(footer.getCell(1).value, "ИТОГО");
     assert.equal(footer.getCell(2).value, "л");

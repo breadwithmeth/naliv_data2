@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import type { Writable } from "node:stream";
 import type { TurnoverMode, TurnoverReport, TurnoverRow, TurnoverTotal, TurnoverTotals } from "./turnover-types.js";
 import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
+import { writeTurnoverSummarySheet } from "./turnover-summary-workbook.js";
 
 const MAIN_UNITS = "рассчет оборачиваемости";
 const MAIN_MONEY = "рассчет оборачиваемости ";
@@ -284,6 +285,7 @@ export async function writeTurnoverSampleWorkbook(report: TurnoverReport, output
   const entries = labelRows(report);
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: output, useStyles: true, useSharedStrings: true });
   try {
+    await writeTurnoverSummarySheet(workbook, report);
     const mode = report.params.mode ?? "both";
     if (mode === "quantity" || mode === "both") {
       createMainSheet(workbook, entries, days, {

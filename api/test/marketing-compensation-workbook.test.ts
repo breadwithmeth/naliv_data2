@@ -60,21 +60,35 @@ function values(row: ExcelJS.Row): ExcelJS.CellValue[] {
 }
 function unavailable(cell: ExcelJS.Cell) {
   assert.equal(cell.type, ExcelJS.ValueType.String);
-  assert.ok(cell.text.length > 0, "unavailable data must be visible, not blank or zero");
+  assert.equal(cell.value, "Нет данных");
 }
 function noteText(cell: ExcelJS.Cell): string {
   const note = cell.note;
   return typeof note === "string" ? note : note?.texts?.map(part => part.text ?? "").join("") ?? "";
 }
 
-test("compensation XLSX groups stores before activities and separates return-only adjustments", async () => {
+test("compensation XLSX starts with a compact store-first summary and preserves price-group details", async () => {
   const workbook = await load(fixture());
-  assert.deepEqual(workbook.worksheets.map(s => s.name), ["Компенсации", "Корректировки", "Диагностика"]);
-  const main = workbook.worksheets[0];
-  const corrections = workbook.worksheets[1];
-  const items = rows(main).filter(row => row.getCell(2).value === "=1+1");
+  assert.deepEqual(workbook.worksheets.map(s => s.name), ["Компенсации", "Детализация", "Корректировки", "Диагностика"]);
+  const summary = workbook.getWorksheet("Компенсации")!;
+  const detail = workbook.getWorksheet("Детализация")!;
+  const corrections = workbook.getWorksheet("Корректировки")!;
+  assert.deepEqual(values(summary.getRow(3)), [
+    "Магазин", "Акция", "Период расчёта", "Статус", "Компенсация, ₸", "Рассчитанная часть, ₸", "Подробности"
+  ]);
+  const blocks = rows(summary).filter(row => ["Маркетинг А", "Маркетинг Б"].includes(row.getCell(2).text));
+  assert.deepEqual(blocks.map(values), [
+    ["Филиал А", "Маркетинг А", "01.09.2026–15.09.2026", "Рассчитано", 252.4, null, "Детализация"],
+    ["Филиал А", "Маркетинг Б", "15.09.2026–30.09.2026", "Рассчитано", 240, null, "Детализация"],
+    ["Филиал Б", "Маркетинг А", "01.09.2026–15.09.2026", "Возвраты / корректировки", -126.2, null, "Корректировки"]
+  ]);
+  assert.ok(!rows(summary).some(row => row.getCell(2).value === "=1+1"));
+  const visibleSummary = rows(summary).flatMap(values).join(" ");
+  assert.doesNotMatch(visibleSummary, /activity-a|branch-a|№ 001|\[2026-|n\/a/);
+  assert.match(summary.getRow(2).getCell(1).text, /01\.09\.2026–30\.09\.2026/);
+  const items = rows(detail).filter(row => row.getCell(2).value === "=1+1");
   const returned = rows(corrections).filter(row => row.getCell(2).value === "=1+1");
-  assert.equal(main.columnCount, 7);
+  assert.equal(detail.columnCount, 7);
   assert.equal(items.length, 2);
   assert.equal(returned.length, 1);
   assert.deepEqual(values(items[0]), ["000123", "=1+1", 631, 0.2, 126.2, 2, 252.4]);
@@ -82,16 +96,35 @@ test("compensation XLSX groups stores before activities and separates return-onl
   assert.deepEqual(values(returned[0]), ["000123", "=1+1", 631, 0.2, 126.2, -1, -126.2]);
   assert.equal(items[0].getCell(1).type, ExcelJS.ValueType.String);
   assert.equal(items[0].getCell(2).type, ExcelJS.ValueType.String);
-  assert.ok(noteText(items[0].getCell(2)).includes("2026-09-16"));
+  assert.ok(noteText(items[0].getCell(2)).includes("characteristic"));
   assert.ok(noteText(items[1].getCell(3)).includes("Цена до скидки из строки продажи/возврата 1С"));
-  const find = (label: string) => rows(main).find(r => r.getCell(1).text.startsWith(label))!;
-  assert.equal(find("ИТОГО по акциям с продажами").getCell(7).value, 492.4);
-  assert.equal(find("Корректировки по возвратам").getCell(7).value, -126.2);
-  assert.equal(find("ОБЩИЙ ИТОГ с корректировками").getCell(7).value, 366.2);
-  const headings = rows(main).map(r => r.getCell(1).text);
-  assert.ok(headings.findIndex(v => v.includes("branch-a")) < headings.findIndex(v => v.includes("activity-a")));
-  assert.ok(headings.findIndex(v => v.includes("activity-a")) < headings.findIndex(v => v.includes("activity-b")));
-  assert.ok(!headings.some(v => v.includes("branch-b")));
+  const headings = rows(detail).map(row => row.getCell(1).text);
+  assert.ok(headings.indexOf("Филиал А") < headings.indexOf("Маркетинг А"));
+  assert.ok(headings.indexOf("Маркетинг А") < headings.indexOf("Маркетинг Б"));
+  assert.ok(!headings.includes("Филиал Б"));
+  assert.equal(rows(summary).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!.getCell(5).value, 366.2);
+});
+
+test("compensation XLSX counts sales 200 and return-only -80 once and uses report totals verbatim", async () => {
+  const report = fixture();
+  report.activities = [report.activities[0]];
+  const [sale, returned] = report.activities[0].branches;
+  sale.rows = [item({ name: "Продажа", compensation: 200 })];
+  returned.rows = [item({ name: "Возврат", quantity: -1, compensation: -80 })];
+  sale.totals = complete(200);
+  returned.totals = complete(-80);
+  report.activities[0].totals = complete(120);
+  report.totals = complete(120);
+  const workbook = await load(report);
+  const summary = workbook.getWorksheet("Компенсации")!;
+  const blocks = rows(summary).filter(row => row.getCell(2).text === "Маркетинг А");
+  assert.deepEqual(blocks.map(row => row.getCell(5).value), [200, -80]);
+  assert.equal(rows(summary).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!.getCell(5).value, 120);
+  assert.equal(rows(workbook.getWorksheet("Детализация")!).filter(row => row.getCell(2).text === "Возврат").length, 0);
+  assert.equal(rows(workbook.getWorksheet("Корректировки")!).filter(row => row.getCell(2).text === "Возврат").length, 1);
+  report.totals = complete(777);
+  const independent = (await load(report)).getWorksheet("Компенсации")!;
+  assert.equal(rows(independent).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!.getCell(5).value, 777);
 });
 
 test("compensation XLSX preserves unknown totals and real zeros without partial-sum substitution", async () => {
@@ -105,25 +138,44 @@ test("compensation XLSX preserves unknown totals and real zeros without partial-
   branch.totals = { compensation: null, knownCompensation: 252.4, incompleteRows: 1 };
   report.activities[0].totals = { compensation: null, knownCompensation: 126.2, incompleteRows: 1 };
   report.totals = { compensation: null, knownCompensation: 366.2, incompleteRows: 1 };
-  const sheet = (await load(report)).worksheets[0];
+  const workbook = await load(report);
+  const sheet = workbook.getWorksheet("Детализация")!;
   const missing = rows(sheet).find(row => row.getCell(2).value === "Недостающие данные")!;
   for (const column of [1, 3, 4, 5, 6, 7]) unavailable(missing.getCell(column));
   const zero = rows(sheet).find(row => row.getCell(2).value === "Нулевые данные")!;
   assert.deepEqual(values(zero).slice(2), [0, 0, 0, 0, 0]);
-  const total = rows(sheet).find(r => r.getCell(1).text.startsWith("ОБЩИЙ ИТОГ с корректировками"))!;
-  unavailable(total.getCell(7));
-  assert.equal(sheet.lastRow!.getCell(7).value, 366.2);
-  assert.match(sheet.lastRow!.getCell(1).text, /Известная часть/);
+  const summary = workbook.getWorksheet("Компенсации")!;
+  const incomplete = rows(summary).find(row => row.getCell(1).text === "Филиал А" && row.getCell(2).text === "Маркетинг А")!;
+  assert.deepEqual(values(incomplete).slice(3, 6), ["Нужна проверка", "Не рассчитано", 252.4]);
+  const total = rows(summary).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!;
+  assert.deepEqual(values(total).slice(3, 6), ["Нужна проверка", "Не рассчитано", 366.2]);
+});
+
+test("compensation XLSX keeps known store subtotals separate from an unknown report-wide total", async () => {
+  const report = fixture();
+  report.issues = [{ code: "missing_branch", message: "Есть движения с неопределённым филиалом" }];
+  report.totals = { compensation: null, knownCompensation: 366.2, incompleteRows: 0 };
+  const summary = rows((await load(report)).getWorksheet("Компенсации")!);
+  assert.deepEqual(summary.filter(row => row.getCell(1).text.startsWith("Итого по магазину"))
+    .map(row => row.getCell(5).value), [492.4, -126.2]);
+  const total = summary.find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!;
+  assert.deepEqual(values(total).slice(3, 6), ["Нужна проверка", "Не рассчитано", 366.2]);
 });
 
 test("compensation XLSX includes every diagnostic level with keys, dates and formula-safe messages", async () => {
   const report = fixture();
+  report.activities[0].name = "=SUM(1,2)";
   report.issues.push({ code: "source_missing", message: "=HYPERLINK(\"https://example.test\")" });
   report.activities[0].issues.push({ code: "duplicate", message: "Activity issue" });
   const branch = report.activities[0].branches[0];
+  branch.name = "=HYPERLINK(\"https://example.test\")";
   branch.issues.push({ code: "duplicate", message: "Branch issue" });
   branch.rows[0].issues.push({ code: "duplicate", message: "Row issue" }, { code: "missing_barcode", message: "Barcode issue" });
   const workbook = await load(report);
+  const summary = rows(workbook.getWorksheet("Компенсации")!);
+  const hostile = summary.find(row => row.getCell(2).text === "=SUM(1,2)" && row.getCell(1).text === branch.name)!;
+  assert.equal(hostile.getCell(1).type, ExcelJS.ValueType.String);
+  assert.equal(hostile.getCell(2).type, ExcelJS.ValueType.String);
   const diagnostics = workbook.worksheets.at(-1)!;
   const details = rows(diagnostics).filter(row => ["source_missing", "duplicate", "missing_barcode"].includes(String(row.getCell(6).value)));
   assert.equal(details.length, 5);
@@ -137,24 +189,32 @@ test("compensation XLSX includes every diagnostic level with keys, dates and for
   assert.ok(rowIssue.getCell(3).text.includes("branch-a"));
   assert.ok(rowIssue.getCell(4).text.includes("same-item"));
   assert.ok(rowIssue.getCell(4).text.includes("characteristic"));
-  for (const date of ["2026-09-01", "2026-09-16"]) assert.ok(rowIssue.getCell(5).text.includes(date));
+  for (const date of ["01.09.2026", "15.09.2026"]) assert.ok(rowIssue.getCell(5).text.includes(date));
   for (const sheet of workbook.worksheets) sheet.eachRow(row => row.eachCell(cell => {
     assert.notEqual(cell.type, ExcelJS.ValueType.Formula);
     assert.notEqual(cell.type, ExcelJS.ValueType.Error);
   }));
 });
 
-test("compensation XLSX never merges different store keys with the same display name", async () => {
+test("compensation XLSX keeps equal store names and an unknown store in separate subtotal groups", async () => {
   const report = fixture();
   report.activities[0].branches[1].name = "Филиал А";
   report.activities[0].branches[1].hasSales = true;
+  report.activities[0].branches.push({
+    ...report.activities[0].branches[0], key: null, name: "Филиал А", rows: [item({ compensation: 0.1 })], totals: complete(0.1)
+  });
+  report.activities[1].branches[0].totals = complete(0.2);
   const workbook = await load(report);
-  assert.deepEqual(workbook.worksheets.map(s => s.name), ["Компенсации", "Диагностика"]);
-  const main = workbook.worksheets[0];
-  const headings = rows(main).filter(r => /^Филиал А \[branch-/.test(r.getCell(1).text));
-  assert.deepEqual(headings.map(r => r.getCell(1).text), ["Филиал А [branch-a]", "Филиал А [branch-b]"]);
-  assert.equal(rows(main).filter(r => r.getCell(1).text.startsWith("Итого по магазину")).length, 2);
-  assert.equal(rows(main).filter(r => r.getCell(2).text === "=1+1").length, 3);
+  assert.deepEqual(workbook.worksheets.map(s => s.name), ["Компенсации", "Детализация", "Диагностика"]);
+  const summary = workbook.getWorksheet("Компенсации")!;
+  const subtotals = rows(summary).filter(row => row.getCell(1).text.startsWith("Итого по магазину"));
+  assert.equal(subtotals.length, 3);
+  assert.deepEqual(subtotals.map(row => row.getCell(5).value), [0.1, 252.6, -126.2]);
+  const detail = workbook.getWorksheet("Детализация")!;
+  assert.equal(rows(detail).filter(row => row.getCell(1).text === "Филиал А").length, 3);
+  assert.equal(rows(detail).filter(row => row.getCell(2).text === "=1+1").length, 4);
+  const diagnostics = rows(workbook.getWorksheet("Диагностика")!);
+  for (const key of ["branch-a", "branch-b"]) assert.ok(diagnostics.some(row => row.getCell(3).text.includes(key)));
 });
 
 test("compensation XLSX omits proven inactive blocks but keeps zero-net sales and unknown diagnostics", async () => {
@@ -167,15 +227,19 @@ test("compensation XLSX omits proven inactive blocks but keeps zero-net sales an
   report.activities[0].branches[0].totals = complete(0);
   report.totals = complete(113.8);
   const workbook = await load(report);
-  assert.ok(!rows(workbook.worksheets[0]).some(r => r.getCell(1).text.includes("inactive")));
-  assert.equal(rows(workbook.worksheets[0]).find(r => r.getCell(2).text === "=1+1")!.getCell(6).value, 0);
-  assert.ok(rows(workbook.getWorksheet("Диагностика")!).some(r => r.getCell(3).text.includes("inactive")));
+  const summary = workbook.getWorksheet("Компенсации")!;
+  assert.ok(!rows(summary).some(row => row.getCell(1).text === "Нет движений"));
+  assert.equal(rows(workbook.getWorksheet("Детализация")!).find(row => row.getCell(2).text === "=1+1")!.getCell(6).value, 0);
+  const excluded = rows(workbook.getWorksheet("Диагностика")!).find(row => row.getCell(6).text === "no_movements")!;
+  assert.ok(excluded.getCell(3).text.includes("inactive"));
   report.activities = [];
   report.issues = [{ code: "missing_source", message: "Нет источника" }];
   report.totals = { compensation: null, knownCompensation: 0, incompleteRows: 0 };
-  const unknown = (await load(report)).worksheets[0];
-  unavailable(rows(unknown).find(r => r.getCell(1).text === "ОБЩИЙ ИТОГ с корректировками")!.getCell(7));
-  assert.ok(!rows(unknown).some(r => r.getCell(1).text === "Нет продаж за выбранный период"));
+  const unknown = (await load(report)).getWorksheet("Компенсации")!;
+  const total = rows(unknown).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!;
+  assert.deepEqual(values(total).slice(3, 6), ["Нужна проверка", "Не рассчитано", 0]);
+  assert.ok(rows(unknown).some(row => row.getCell(1).text === "Не удалось полностью рассчитать"));
+  assert.ok(!rows(unknown).some(row => row.getCell(1).text === "За выбранный период продаж и возвратов не было"));
 });
 
 test("compensation XLSX exports an empty report with known zero totals and a diagnostic sheet", async () => {
@@ -183,10 +247,13 @@ test("compensation XLSX exports an empty report with known zero totals and a dia
   report.activities = [];
   report.totals = complete(0);
   const workbook = await load(report);
-  assert.equal(workbook.worksheets.length, 2);
-  assert.equal(workbook.worksheets[0].lastRow!.getCell(7).value, 0);
-  assert.ok(rows(workbook.worksheets[0]).some(r => r.getCell(1).text === "Нет продаж за выбранный период"));
-  assert.equal(workbook.worksheets[1].columnCount, 7);
+  assert.deepEqual(workbook.worksheets.map(sheet => sheet.name), ["Компенсации", "Детализация", "Диагностика"]);
+  const summary = workbook.getWorksheet("Компенсации")!;
+  const total = rows(summary).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!;
+  assert.equal(total.getCell(5).value, 0);
+  assert.equal(total.getCell(6).value, null);
+  assert.ok(rows(summary).some(row => row.getCell(1).text === "За выбранный период продаж и возвратов не было"));
+  assert.equal(workbook.getWorksheet("Диагностика")!.columnCount, 7);
 });
 
 test("compensation XLSX keeps known money available when only the barcode is missing", async () => {
@@ -200,7 +267,146 @@ test("compensation XLSX keeps known money available when only the barcode is mis
   unavailable(detail.getCell(1));
   assert.equal(detail.getCell(7).value, -126.2);
   assert.equal(sheet.lastRow!.getCell(7).value, -126.2);
-  assert.equal(workbook.worksheets[0].lastRow!.getCell(7).value, 366.2);
+  const summary = workbook.getWorksheet("Компенсации")!;
+  assert.equal(rows(summary).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!.getCell(5).value, 366.2);
+});
+
+test("compensation XLSX retains false movement flags with unknown quantity in review details", async () => {
+  const report = fixture();
+  const branch = report.activities[0].branches[0];
+  branch.hasSales = false;
+  branch.hasReturns = false;
+  branch.rows = [item({
+    name: "Количество неизвестно", quantity: null, price: null, compensation: null,
+    issues: [{ code: "missing_quantity", message: "Количество движения не определено" }]
+  })];
+  branch.totals = { compensation: null, knownCompensation: 0, incompleteRows: 1 };
+  report.activities[0].totals = { compensation: null, knownCompensation: -126.2, incompleteRows: 1 };
+  report.totals = { compensation: null, knownCompensation: 113.8, incompleteRows: 1 };
+  const workbook = await load(report);
+  const summary = rows(workbook.getWorksheet("Компенсации")!);
+  const block = summary.find(row => row.getCell(1).text === "Филиал А" && row.getCell(2).text === "Маркетинг А")!;
+  assert.deepEqual(values(block).slice(3, 6), ["Нужна проверка", "Не рассчитано", 0]);
+  assert.match(block.getCell(7).text, /Детализация/);
+  const detail = rows(workbook.getWorksheet("Детализация")!);
+  assert.ok(detail.some(row => row.getCell(1).text === "Требует проверки"));
+  const source = detail.find(row => row.getCell(2).text === "Количество неизвестно")!;
+  unavailable(source.getCell(3));
+  unavailable(source.getCell(6));
+  const unresolved = rows(workbook.getWorksheet("Диагностика")!).find(row => row.getCell(6).text === "unresolved_movements")!;
+  assert.match(unresolved.getCell(7).text, /включён.*сводку.*детализац/i);
+  assert.doesNotMatch(unresolved.getCell(7).text, /не включён/i);
+});
+
+test("compensation XLSX shows activity-only and report blockers without inventing a store", async () => {
+  const report = fixture();
+  report.activities = [{
+    ...report.activities[0], branches: [],
+    issues: [{ code: "missing_branch", message: "Не определён филиал активности" }],
+    totals: { compensation: null, knownCompensation: 0, incompleteRows: 0 }
+  }];
+  report.issues = [{ code: "missing_source", message: "Нет источника" }];
+  report.totals = { compensation: null, knownCompensation: 0, incompleteRows: 0 };
+  const workbook = await load(report);
+  const summary = rows(workbook.getWorksheet("Компенсации")!);
+  assert.ok(summary.some(row => row.getCell(1).text === "Не удалось полностью рассчитать"));
+  const scope = summary.find(row => row.getCell(2).text === "Маркетинг А")!;
+  assert.equal(scope.getCell(1).value, null);
+  assert.equal(scope.getCell(4).value, "Нужна проверка");
+  assert.match(scope.getCell(7).text, /Диагностика/);
+  const total = summary.find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!;
+  assert.deepEqual(values(total).slice(4, 6), ["Не рассчитано", 0]);
+  const diagnostics = rows(workbook.getWorksheet("Диагностика")!);
+  assert.ok(diagnostics.some(row => row.getCell(6).text === "missing_branch"));
+  assert.ok(diagnostics.some(row => row.getCell(6).text === "missing_source"));
+});
+
+test("compensation XLSX does not hide an inactive-looking branch under unresolved activity scope", async () => {
+  const report = fixture();
+  const activity = report.activities[0];
+  activity.branches = [{
+    ...activity.branches[0], name: "Проверяемый магазин", hasSales: false, hasReturns: false,
+    rows: [], issues: [], totals: complete(0)
+  }];
+  activity.issues = [{ code: "missing_rule", message: "Нет правила" }];
+  activity.totals = { compensation: null, knownCompensation: 0, incompleteRows: 0 };
+  report.activities = [activity];
+  report.totals = { compensation: null, knownCompensation: 0, incompleteRows: 0 };
+  const workbook = await load(report);
+  const block = rows(workbook.getWorksheet("Компенсации")!).find(row => row.getCell(1).text === "Проверяемый магазин")!;
+  assert.equal(block.getCell(4).value, "Нужна проверка");
+  assert.ok(!rows(workbook.getWorksheet("Диагностика")!).some(row => row.getCell(6).text === "no_movements"));
+});
+
+test("compensation XLSX retains a coverage issue even when movement flags and totals look empty", async () => {
+  const report = fixture();
+  const activity = report.activities[0];
+  activity.branches = [{
+    ...activity.branches[0], hasSales: false, hasReturns: false, rows: [], totals: complete(0),
+    issues: [{ code: "missing_quantity", message: "Нет отчётов продаж; отсутствие движений не подтверждено" }]
+  }];
+  activity.totals = complete(0);
+  report.activities = [activity];
+  report.totals = complete(0);
+  const workbook = await load(report);
+  const block = rows(workbook.getWorksheet("Компенсации")!).find(row => row.getCell(2).text === "Маркетинг А")!;
+  assert.equal(block.getCell(4).value, "Нужна проверка");
+  const diagnostics = rows(workbook.getWorksheet("Диагностика")!);
+  assert.ok(diagnostics.some(row => row.getCell(6).text === "missing_quantity"));
+  assert.ok(diagnostics.some(row => row.getCell(6).text === "unresolved_movements"));
+  const total = rows(workbook.getWorksheet("Компенсации")!).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!;
+  assert.equal(total.getCell(4).value, "Нужна проверка");
+  assert.ok(!diagnostics.some(row => row.getCell(6).text === "no_movements"));
+});
+
+test("compensation XLSX keeps fallback identifiers and document numbers out of readable names", async () => {
+  for (const fallback of ["key", "number"] as const) {
+    const report = fixture();
+    const activity = report.activities[0];
+    activity.name = fallback === "key" ? activity.key : activity.number!;
+    activity.branches = [activity.branches[0]];
+    activity.branches[0].rows = [item({ name: "same-item" })];
+    activity.totals = complete(252.4);
+    report.activities = [activity];
+    report.totals = complete(252.4);
+    const workbook = await load(report);
+    const summary = rows(workbook.getWorksheet("Компенсации")!);
+    assert.ok(summary.some(row => row.getCell(2).text === "Акция без названия"));
+    assert.ok(!summary.some(row => row.getCell(2).text === activity.name));
+    const detail = rows(workbook.getWorksheet("Детализация")!);
+    assert.ok(detail.some(row => row.getCell(2).text === "Товар не определён"));
+    const diagnostics = rows(workbook.getWorksheet("Диагностика")!);
+    assert.ok(diagnostics.some(row => row.getCell(2).text.includes("activity-a") && row.getCell(2).text.includes("001")));
+    assert.ok(diagnostics.some(row => row.getCell(4).text.includes("same-item")));
+  }
+});
+
+test("compensation XLSX gives incomplete return-only totals review priority and keeps known zero numeric", async () => {
+  const report = fixture();
+  const returned = report.activities[0].branches[1];
+  returned.totals = { compensation: -80, knownCompensation: 0, incompleteRows: 1 };
+  report.activities[0].totals = { compensation: null, knownCompensation: 252.4, incompleteRows: 1 };
+  report.totals = { compensation: null, knownCompensation: 492.4, incompleteRows: 1 };
+  const summary = rows((await load(report)).getWorksheet("Компенсации")!);
+  const block = summary.find(row => row.getCell(1).text === "Филиал Б" && row.getCell(2).text === "Маркетинг А")!;
+  assert.deepEqual(values(block).slice(3, 6), ["Нужна проверка", "Не рассчитано", 0]);
+  assert.match(block.getCell(7).text, /Корректировки.*возврат/i);
+});
+
+test("compensation XLSX preserves numeric-zero sales and an all-inactive report remains a known empty result", async () => {
+  const report = fixture();
+  const activity = report.activities[0];
+  activity.branches = [{ ...activity.branches[0], rows: [item({ compensation: 0 })], totals: complete(0) }];
+  activity.totals = complete(0);
+  report.activities = [activity];
+  report.totals = complete(0);
+  const sales = rows((await load(report)).getWorksheet("Компенсации")!);
+  assert.ok(sales.some(row => row.getCell(2).text === "Маркетинг А" && row.getCell(5).value === 0));
+  activity.branches[0].hasSales = false;
+  activity.branches[0].rows = [];
+  const empty = rows((await load(report)).getWorksheet("Компенсации")!);
+  assert.ok(!empty.some(row => row.getCell(2).text === "Маркетинг А"));
+  assert.ok(empty.some(row => row.getCell(1).text === "За выбранный период продаж и возвратов не было"));
 });
 
 test("compensation XLSX rejects an already closed download", async () => {

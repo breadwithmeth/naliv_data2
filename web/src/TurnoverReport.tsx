@@ -10,8 +10,8 @@ import { turnoverCoefficientBand } from "../../api/src/services/turnover-domain"
 
 const DAY_MS = 86_400_000;
 const MODE_LABELS: Record<"quantity" | "money", string> = {
-  quantity: "Товараоборот в шт.",
-  money: "Товараоборот в деньгах"
+  quantity: "Количество",
+  money: "Деньги"
 };
 type SampleMode = keyof typeof MODE_LABELS;
 type ReportFormat = "sample" | "stores";
@@ -31,7 +31,7 @@ type Filters = {
 type PreparedRequest = { valid: true; request: TurnoverRequest } | { valid: false; error: string };
 type DownloadState = {
   status: "idle" | "loading" | "success" | "error";
-  requestKey?: string; message?: string; rows?: number | null; cache?: string | null; seconds?: number;
+  requestKey?: string; message?: string;
 };
 type PreviewState =
   | { requestKey: string; status: "loading" }
@@ -79,7 +79,7 @@ function presetRange(preset: PeriodPreset, now = new Date()): InclusiveDateRange
 
 function selectedNames(values: string[], options: TurnoverOption[]): string {
   const names = new Map(options.map((option) => [option.key, option.name]));
-  return values.map((key) => names.get(key) ?? key).join(", ");
+  return values.map((key) => names.get(key) ?? "Выбранное значение отсутствует в справочнике").join(", ");
 }
 
 
@@ -129,21 +129,20 @@ function OptionSelect({ label, value, options, disabled, onChange, placeholder =
   return <label className="turnover-field"><span id={`${hintId}-label`}>{label}</span>
     <select value={value} disabled={disabled} aria-labelledby={`${hintId}-label`} aria-describedby={hint ? hintId : undefined} onChange={(event) => onChange(event.target.value)}>
       <option value="">{placeholder}</option>
-      {value && !options.some((option) => option.key === value) ? <option value={value}>{value}</option> : null}
+      {value && !options.some((option) => option.key === value) ? <option value={value}>Выбранное значение отсутствует в справочнике</option> : null}
       {options.map((option) => <option value={option.key} key={option.key}>{option.name}</option>)}
     </select>
     {hint ? <span className="turnover-note" id={hintId}>{hint}</span> : null}
   </label>;
 }
 
-function CheckboxSelect({ label, values, options, allLabel, searchLabel, clearLabel, onChange, pending, unavailable, showSelected = false }: {
+function CheckboxSelect({ label, values, options, allLabel, searchLabel, clearLabel, onChange, pending, unavailable }: {
   label: string; values: string[]; options: TurnoverOption[]; allLabel: string;
   searchLabel: string; clearLabel: string; onChange: (values: string[]) => void;
-  pending: boolean; unavailable: boolean; showSelected?: boolean;
+  pending: boolean; unavailable: boolean;
 }) {
   const searchId = useId();
   const [search, setSearch] = useState("");
-  const names = useMemo(() => new Map(options.map((option) => [option.key, option.name])), [options]);
   const term = search.trim().toLocaleLowerCase("ru-RU");
   const visibleOptions = options.filter((option) => `${option.name} ${option.key}`.toLocaleLowerCase("ru-RU").includes(term));
   return <div className="turnover-multiselect">
@@ -170,15 +169,12 @@ function CheckboxSelect({ label, values, options, allLabel, searchLabel, clearLa
           : !visibleOptions.length ? <p className="turnover-note">Ничего не найдено. Измените поиск — выбранные значения сохранятся.</p> : null}
       </div>
     </details>
-    {showSelected && values.length ? <ul className="turnover-selected" aria-label={`Выбрано: ${label.toLocaleLowerCase("ru-RU")}`}>
-      {values.map((key) => <li key={key}><span>{names.get(key) ?? key}</span>
-        <button type="button" aria-label={`Убрать: ${names.get(key) ?? key}`} onClick={() => onChange(values.filter((value) => value !== key))}>×</button>
-      </li>)}
-    </ul> : null}
   </div>;
 }
-function previewNumber(value: number | null): string {
-  return value !== null && Number.isFinite(value) ? formatDecimal(value, 2) : "n/a";
+function PreviewNumber({ value }: { value: number | null }) {
+  return value !== null && Number.isFinite(value)
+    ? <>{formatDecimal(value, 2)}</>
+    : <span aria-label="Показатель не рассчитан" title="Показатель не рассчитан"><span aria-hidden="true">—</span><span className="turnover-visually-hidden">Показатель не рассчитан</span></span>;
 }
 
 function previewDate(value: string, exclusive = false): string {
@@ -189,42 +185,64 @@ function previewDate(value: string, exclusive = false): string {
 function CoefficientCell({ value }: { value: number | null }) {
   const band = turnoverCoefficientBand(value);
   return <td className={`turnover-numeric${band ? ` turnover-coefficient-${band}` : ""}`}>
-    {previewNumber(value)}{band ? <span className="turnover-visually-hidden"> — {COEFFICIENT_LABELS[band]}</span> : null}
+    <PreviewNumber value={value} />{band ? <span className="turnover-visually-hidden"> — {COEFFICIENT_LABELS[band]}</span> : null}
   </td>;
 }
 
-function PreviewMetricCells({ metrics, quantity, money }: { metrics: PreviewMetrics; quantity: boolean; money: boolean }) {
+function PreviewMetricCells({ metrics, quantity, money, detailed }: {
+  metrics: PreviewMetrics; quantity: boolean; money: boolean; detailed: boolean;
+}) {
   return <>
     {quantity ? <>
-      <td className="turnover-numeric">{previewNumber(metrics.openingQty)}</td>
-      <td className="turnover-numeric">{previewNumber(metrics.closingQty)}</td>
-      <td className="turnover-numeric">{previewNumber(metrics.averageQty)}</td>
-      <td className="turnover-numeric">{previewNumber(metrics.periodSales.quantity)}</td>
+      <td className="turnover-numeric"><PreviewNumber value={metrics.periodSales.quantity} /></td>
+      <td className="turnover-numeric"><PreviewNumber value={metrics.closingQty} /></td>
       <CoefficientCell value={metrics.turnoverQty} />
-      <td className="turnover-numeric">{previewNumber(metrics.turnoverQtyDays)}</td>
+      <td className="turnover-numeric"><PreviewNumber value={metrics.turnoverQtyDays} /></td>
+      {detailed ? <>
+        <td className="turnover-numeric"><PreviewNumber value={metrics.openingQty} /></td>
+        <td className="turnover-numeric"><PreviewNumber value={metrics.averageQty} /></td>
+      </> : null}
     </> : null}
     {money ? <>
-      <td className="turnover-numeric">{previewNumber(metrics.openingCost)}</td>
-      <td className="turnover-numeric">{previewNumber(metrics.closingCost)}</td>
-      <td className="turnover-numeric">{previewNumber(metrics.averageCost)}</td>
-      <td className="turnover-numeric">{previewNumber(metrics.periodSales.cost)}</td>
+      <td className="turnover-numeric"><PreviewNumber value={metrics.periodSales.cost} /></td>
+      <td className="turnover-numeric"><PreviewNumber value={metrics.closingCost} /></td>
       <CoefficientCell value={metrics.turnoverCost} />
-      <td className="turnover-numeric">{previewNumber(metrics.turnoverCostDays)}</td>
-      <td className="turnover-numeric">{previewNumber(metrics.periodSales.revenue)}</td>
+      <td className="turnover-numeric"><PreviewNumber value={metrics.turnoverCostDays} /></td>
+      {detailed ? <>
+        <td className="turnover-numeric"><PreviewNumber value={metrics.openingCost} /></td>
+        <td className="turnover-numeric"><PreviewNumber value={metrics.averageCost} /></td>
+        <td className="turnover-numeric"><PreviewNumber value={metrics.periodSales.revenue} /></td>
+      </> : null}
     </> : null}
   </>;
 }
 
-export function TurnoverPreviewTable({ report, page, onPageChange }: {
-  report: TurnoverPreview; page: number; onPageChange: (page: number) => void;
+function PreviewTotal({ total, money = false }: { total: TurnoverPreview["totals"]["overall"]; money?: boolean }) {
+  const coefficient = money ? total.turnoverCost : total.turnoverQty;
+  const band = turnoverCoefficientBand(coefficient);
+  return <div className="turnover-total-block">
+    <h4>{money ? "По себестоимости, ₸" : `Количество · ${total.unit ?? "Единица не указана"}`}</h4>
+    <dl className="turnover-total-metrics">
+      <div><dt>{money ? "Продажи по себестоимости, ₸" : "Продажи с учётом возвратов"}</dt><dd><PreviewNumber value={money ? total.periodSales.cost : total.periodSales.quantity} /></dd></div>
+      <div><dt>{money ? "Остаток на конец, ₸" : "Остаток на конец"}</dt><dd><PreviewNumber value={money ? total.closingCost : total.closingQty} /></dd></div>
+      <div><dt>Оборотов за период</dt><dd className={band ? `turnover-coefficient-${band}` : undefined}>
+        <PreviewNumber value={coefficient} />{band ? <span className="turnover-visually-hidden"> — {COEFFICIENT_LABELS[band]}</span> : null}
+      </dd></div>
+      <div><dt>Дней на оборот</dt><dd><PreviewNumber value={money ? total.turnoverCostDays : total.turnoverQtyDays} /></dd></div>
+    </dl>
+  </div>;
+}
+
+export function TurnoverPreviewTable({ report, page, onPageChange, detailed = false }: {
+  report: TurnoverPreview; page: number; onPageChange: (page: number) => void; detailed?: boolean;
 }) {
   const headingId = useId();
   const noteId = useId();
   const quantity = report.params.mode !== "money";
   const money = report.params.mode === "money" || report.params.mode === "both";
   const stores = report.params.profile !== "sample";
-  const identityColumns = stores ? 4 : 3;
-  const columnCount = identityColumns + (quantity ? 6 : 0) + (money ? 7 : 0);
+  const identityColumns = 1 + Number(stores) + Number(quantity) + Number(detailed);
+  const columnCount = identityColumns + (quantity ? detailed ? 6 : 4 : 0) + (money ? detailed ? 7 : 4 : 0);
   const pageCount = Math.max(1, Math.ceil(report.rows.length / PREVIEW_PAGE_SIZE));
   const currentPage = Math.min(Math.max(0, page), pageCount - 1);
   const start = currentPage * PREVIEW_PAGE_SIZE;
@@ -232,83 +250,94 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
   const period = `${previewDate(report.params.from)} — ${previewDate(report.params.to, true)}`;
   const footer = (label: string, total: TurnoverPreview["totals"]["overall"], key: string, overall = false) =>
     <tr key={key} className={overall ? "turnover-overall-total" : "turnover-unit-total"}>
-      <th scope="row" colSpan={identityColumns - 1}>{label}</th>
-      <td>{total.unit ?? "n/a"}</td>
-      <PreviewMetricCells metrics={total} quantity={quantity} money={money} />
+      <th scope="row" colSpan={identityColumns - Number(quantity)}>{label}</th>
+      {quantity ? <td>{total.unit ?? "Единица не указана"}</td> : null}
+      <PreviewMetricCells metrics={total} quantity={quantity} money={money} detailed={detailed} />
     </tr>;
   return <section className="turnover-preview-results" aria-labelledby={headingId}>
     <div className="turnover-preview-heading">
-      <h3 id={headingId}>Предпросмотр отчёта</h3>
-      <p>{period} · {stores ? "По магазинам" : "Сводно по товарам"} · {money && quantity ? "Количество и деньги" : money ? "В деньгах" : "В единицах товара"}</p>
+      <h3 id={headingId}>Результат</h3>
+      <p>{period} · строк: {formatNumber(report.rows.length)} · {stores ? "По магазинам" : "Сводно по товарам"}</p>
     </div>
     {report.coverage.requestedTo ? <p className="turnover-message">
       Период сокращён до последнего проверенного дня. Запрошено по {previewDate(report.coverage.requestedTo, true)} включительно; фактический период: {period}.
     </p> : null}
-    {report.warnings.length ? <div className="turnover-message turnover-preview-warnings">
-      <strong>Ограничения данных</strong>
-      <ul>{report.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+    {report.rows.length ? <div className="turnover-result-summary" aria-label="Итог по всему отбору">
+      <p className="turnover-note">По всему отбору, не только этой странице.</p>
+      {quantity ? report.totals.overall.unit !== null
+        ? <PreviewTotal total={report.totals.overall} />
+        : <>
+          <p className="turnover-note">Общий итог количества не рассчитан.{!report.totals.byUnit.length ? " Единица не указана." : " Подытоги по известным единицам:"}</p>
+          {report.totals.byUnit.map((total) => <PreviewTotal key={total.unitKey} total={total} />)}
+        </> : null}
+      {money ? <PreviewTotal total={report.totals.overall} money /> : null}
     </div> : null}
-    <p className="turnover-note" id={noteId}>По всему отбору, не только этой странице. Нет данных — n/a, не ноль.
-      {money ? " Нетто продажи показаны по себестоимости. Розничная выручка — отдельно, не числитель оборачиваемости." : ""}
-    </p>
-    <p className="turnover-note">Таблицу можно прокручивать по горизонтали.</p>
+    {report.warnings.length ? <details className="turnover-message turnover-preview-warnings">
+      <summary>Подробности проверки ({formatNumber(report.warnings.length)})</summary>
+      <ul>{report.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+    </details> : null}
+    <p className="turnover-note" id={noteId}>—: показатель не рассчитан. Ограничения данных — в подробностях.</p>
     <div className="turnover-preview-scroll" role="region" aria-label="Таблица оборачиваемости" tabIndex={0} aria-describedby={noteId}>
-      <table className="turnover-preview-table">
+      <table className={`turnover-preview-table${detailed ? " turnover-preview-detailed" : " turnover-preview-compact"}`}>
         <caption>Оборачиваемость за {period} · строк: {formatNumber(report.rows.length)}</caption>
         <thead>
           <tr>
             <th scope="col" rowSpan={2}>Товар</th>
-            <th scope="col" rowSpan={2}>SKU / артикул</th>
+            {detailed ? <th scope="col" rowSpan={2}>SKU / артикул</th> : null}
             {stores ? <th scope="col" rowSpan={2}>Магазин</th> : null}
-            <th scope="col" rowSpan={2}>Единица</th>
-            {quantity ? <th scope="colgroup" colSpan={6}>Количество</th> : null}
-            {money ? <><th scope="colgroup" colSpan={6}>По себестоимости, ₸</th>
-              <th scope="col" rowSpan={2}>Розничная выручка, ₸</th></> : null}
+            {quantity ? <th scope="col" rowSpan={2}>Единица</th> : null}
+            {quantity ? <th scope="colgroup" colSpan={detailed ? 6 : 4}>Количество, в единицах товара</th> : null}
+            {money ? <><th scope="colgroup" colSpan={detailed ? 6 : 4}>По себестоимости, ₸</th>
+              {detailed ? <th scope="col" rowSpan={2}>Розничная выручка, ₸</th> : null}</> : null}
           </tr>
           <tr>
             {quantity ? <>
-              <th scope="col">Начало</th><th scope="col">Конец</th><th scope="col">Средний запас</th>
-              <th scope="col">Нетто продажи</th><th scope="col">Коэффициент, раз</th><th scope="col">Дни оборота</th>
+              <th scope="col">Продажи с учётом возвратов</th><th scope="col">Остаток на конец</th>
+              <th scope="col">Оборотов за период</th><th scope="col">Дней на оборот</th>
+              {detailed ? <><th scope="col">Остаток на начало</th><th scope="col">Средний запас</th></> : null}
             </> : null}
             {money ? <>
-              <th scope="col">Начало</th><th scope="col">Конец</th><th scope="col">Средний запас</th>
-              <th scope="col">Нетто продажи по себестоимости</th><th scope="col">Коэффициент, раз</th><th scope="col">Дни оборота</th>
+              <th scope="col">Продажи по себестоимости, ₸</th><th scope="col">Остаток на конец, ₸</th>
+              <th scope="col">Оборотов за период</th><th scope="col">Дней на оборот</th>
+              {detailed ? <><th scope="col">Остаток на начало, ₸</th><th scope="col">Средний запас, ₸</th></> : null}
             </> : null}
           </tr>
         </thead>
         <tbody>
           {rows.length ? rows.map((row) => <tr key={row.key}>
             <th scope="row" className="turnover-preview-product">{row.name}</th>
-            <td className="turnover-preview-identifiers">
-              <span>SKU: {row.sku || "n/a"}</span><span>Артикул: {row.article || "n/a"}</span>
-            </td>
-            {stores ? <td>{row.storeName || "n/a"}</td> : null}
-            <td>{row.unit || "n/a"}</td>
-            <PreviewMetricCells metrics={row} quantity={quantity} money={money} />
+            {detailed ? <td className="turnover-preview-identifiers">
+              {row.sku ? <span>SKU: {row.sku}</span> : null}{row.article ? <span>Артикул: {row.article}</span> : null}
+            </td> : null}
+            {stores ? <td>{row.storeName || "Магазин не определён"}</td> : null}
+            {quantity ? <td>{row.unit || "Единица не указана"}</td> : null}
+            <PreviewMetricCells metrics={row} quantity={quantity} money={money} detailed={detailed} />
           </tr>) : <tr><td colSpan={columnCount} className="turnover-preview-empty">
             По выбранным условиям товаров нет. Измените отбор и нажмите «Показать отчёт».
           </td></tr>}
         </tbody>
-        <tfoot>
-          {report.totals.byUnit.map((total) => footer(`Итого · ${total.unit ?? "n/a"}`, total, total.unitKey))}
+        {report.rows.length ? <tfoot>
+          {quantity ? report.totals.byUnit.map((total) => footer(`Итого · ${total.unit ?? "Единица не указана"}`, total, total.unitKey)) : null}
           {footer("ИТОГО", report.totals.overall, "overall", true)}
-        </tfoot>
+        </tfoot> : null}
       </table>
     </div>
-    <p className="turnover-note turnover-coefficient-legend">
-      Коэффициент: <span className="turnover-coefficient-red">Плохо — меньше 2</span>;
-      {" "}<span className="turnover-coefficient-orange">Средне — от 2 до 3 (не включая 3)</span>;
-      {" "}<span className="turnover-coefficient-green">Хорошо — от 3</span>. n/a — без оценки.
-    </p>
-    <nav className="turnover-preview-pagination" aria-label="Страницы отчёта">
-      <p className="turnover-note" role="status">Страница {currentPage + 1} из {pageCount} · Всего строк: {formatNumber(report.rows.length)}
-        {report.rows.length ? ` · ${formatNumber(start + 1)}–${formatNumber(Math.min(start + PREVIEW_PAGE_SIZE, report.rows.length))}` : ""}
+    {report.rows.length ? <>
+      <p className="turnover-note turnover-coefficient-legend">
+        Оборотов за период: <span className="turnover-coefficient-red">Плохо — меньше 2</span>;
+        {" "}<span className="turnover-coefficient-orange">Средне — от 2 до 3 (не включая 3)</span>;
+        {" "}<span className="turnover-coefficient-green">Хорошо — от 3</span>. —: без оценки.
       </p>
-      <div>
-        <button type="button" className="turnover-button" disabled={currentPage === 0} onClick={() => onPageChange(currentPage - 1)}>Предыдущая</button>
-        <button type="button" className="turnover-button" disabled={currentPage + 1 >= pageCount} onClick={() => onPageChange(currentPage + 1)}>Следующая</button>
-      </div>
-    </nav>
+      <nav className="turnover-preview-pagination" aria-label="Страницы отчёта">
+        <p className="turnover-note" role="status">Страница {currentPage + 1} из {pageCount} · Всего строк: {formatNumber(report.rows.length)}
+          {` · ${formatNumber(start + 1)}–${formatNumber(Math.min(start + PREVIEW_PAGE_SIZE, report.rows.length))}`}
+        </p>
+        <div>
+          <button type="button" className="turnover-button" disabled={currentPage === 0} onClick={() => onPageChange(currentPage - 1)}>Предыдущая</button>
+          <button type="button" className="turnover-button" disabled={currentPage + 1 >= pageCount} onClick={() => onPageChange(currentPage + 1)}>Следующая</button>
+        </div>
+      </nav>
+    </> : null}
   </section>;
 }
 
@@ -318,7 +347,6 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   const headingId = useId();
   const reportName = useId();
   const formatName = useId();
-  const summaryId = useId();
   const periodHintId = useId();
   const periodErrorId = useId();
   const categoryHintId = useId();
@@ -331,10 +359,10 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [optionsAttempt, setOptionsAttempt] = useState(0);
   const [state, setState] = useState<DownloadState>({ status: "idle" });
-  const [elapsed, setElapsed] = useState(0);
   const controller = useRef<AbortController | null>(null);
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
   const [previewPage, setPreviewPage] = useState(0);
+  const [detailed, setDetailed] = useState(false);
   const previewController = useRef<AbortController | null>(null);
   const prepared = useMemo(() => prepareRequest(dateRange, filters), [dateRange.from, dateRange.to, filters]);
   const requestKey = JSON.stringify(prepared.valid ? prepared.request : {
@@ -359,6 +387,7 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
     previewController.current = null;
     setPreviewState(null);
     setPreviewPage(0);
+    setDetailed(false);
   }, [requestKey]);
 
   useEffect(() => {
@@ -372,12 +401,6 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
     return () => requestController.abort();
   }, [optionsAttempt]);
 
-  useEffect(() => {
-    if (!downloading) { setElapsed(0); return; }
-    const started = Date.now();
-    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => window.clearInterval(timer);
-  }, [downloading]);
 
   const stores = options?.stores ?? EMPTY_OPTIONS;
   const categories = options?.categories ?? EMPTY_OPTIONS;
@@ -388,10 +411,18 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   const from = dateNumber(dateRange.from);
   const to = dateNumber(dateRange.to);
   const days = from !== null && to !== null && to >= from ? (to - from) / DAY_MS + 1 : null;
-  const period = [
-    from === null ? "Не выбрана" : dateRange.from.split("-").reverse().join("."),
-    to === null ? "Не выбрана" : dateRange.to.split("-").reverse().join(".")
-  ].join(" — ");
+  const advancedCount = Number(filters.category.length > 0) + Number(!!filters.warehouse) + Number(!!filters.brand)
+    + Number(filters.format === "stores") + Number(filters.includeNonRetail) + Number(filters.excludeZero);
+  const selectedFilters = [
+    ...(filters.store.length ? [`Магазины: ${selectedNames(filters.store, stores)}`] : []),
+    ...(filters.search.trim() ? [`Товар: ${filters.search.trim()}`] : []),
+    ...(filters.category.length ? [`Категории: ${selectedNames(filters.category, categories)}`] : []),
+    ...(filters.warehouse ? [`Склад: ${selectedNames([filters.warehouse], warehouses)}`] : []),
+    ...(filters.brand ? [`Бренд: ${selectedNames([filters.brand], brands)}`] : []),
+    ...(filters.format === "stores" ? ["По магазинам"] : []),
+    ...(filters.includeNonRetail ? ["Включены офисы и отделы"] : []),
+    ...(filters.excludeZero ? ["Нулевые товары исключены"] : [])
+  ];
 
   function update<K extends keyof Filters>(key: K, value: Filters[K]) {
     if (!downloading) setFilters((previous) => ({ ...previous, [key]: value }));
@@ -405,14 +436,12 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
     if (!downloading && (range.from !== dateRange.from || range.to !== dateRange.to)) onDateRangeChange(range);
   }
 
-  async function download(event?: FormEvent<HTMLFormElement>) {
-    event?.preventDefault();
+  async function download() {
     if (downloading) return;
     if (!prepared.valid) { setState({ status: "error", requestKey, message: prepared.error }); return; }
     controller.current?.abort();
     const requestController = new AbortController();
     controller.current = requestController;
-    const started = performance.now();
     setState({ status: "loading", requestKey });
     try {
       const result = await api.turnoverWorkbook(prepared.request, requestController.signal);
@@ -425,13 +454,7 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setState({
-        status: "success", requestKey,
-        message: `Файл ${result.filename} скачан.`,
-        rows: result.rows,
-        cache: result.cache,
-        seconds: Math.max(1, Math.round((performance.now() - started) / 1000))
-      });
+      setState({ status: "success", requestKey, message: `Файл ${result.filename} скачан.` });
     } catch (caught) {
       if (!requestController.signal.aborted) {
         setState({ status: "error", requestKey, message: caught instanceof Error ? caught.message : "Не удалось сформировать Excel. Повторите выгрузку." });
@@ -446,7 +469,8 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
     controller.current = null;
     setState({ status: "idle" });
   }
-  async function showReport() {
+  async function showReport(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
     if (previewing) return;
     if (!prepared.valid) {
       setPreviewState({ status: "error", requestKey, message: prepared.error });
@@ -474,157 +498,141 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
     }
   }
 
+  function cancelPreview() {
+    previewController.current?.abort();
+    previewController.current = null;
+    setPreviewState(null);
+  }
+
   return <section className="reports-section turnover-workspace" aria-labelledby={headingId}>
     <div className="turnover-heading">
       <div><h2 id={headingId}>Оборачиваемость</h2>
-        <p className="turnover-intro">Выберите отчёт, детализацию, период и отбор, затем покажите отчёт или скачайте Excel.</p>
+        <p className="turnover-intro">Выберите период и товары, чтобы увидеть продажи, остатки и скорость оборота.</p>
       </div>
-      <span className="turnover-excel-label">Excel</span>
     </div>
 
-    <form className="turnover-form" noValidate onSubmit={download}>
-      <fieldset className="turnover-fieldset turnover-report-types" disabled={downloading}>
-        <legend>Отчёт</legend>
-        <div className="turnover-report-options">
-          {(Object.entries(MODE_LABELS) as [SampleMode, string][]).map(([mode, label]) => <label className="turnover-report-choice" key={mode}>
-            <input type="radio" name={reportName} value={mode} checked={filters.mode === mode} aria-labelledby={`${reportName}-${mode}`} aria-describedby={`${reportName}-${mode}-description`} onChange={() => update("mode", mode)} />
-            <span><strong id={`${reportName}-${mode}`}>{label}</strong><span id={`${reportName}-${mode}-description`}>{mode === "quantity" ? "Остатки и продажи в единицах товара" : "Остатки и продажи по себестоимости"}</span></span>
-          </label>)}
+    <form className="turnover-form" noValidate onSubmit={showReport}>
+      <fieldset className="turnover-configuration" disabled={downloading}>
+        <legend className="turnover-visually-hidden">Параметры отчёта</legend>
+        <fieldset className="turnover-fieldset" aria-describedby={periodHintId}>
+          <legend>Период</legend>
+          <div className="turnover-period-inputs">
+            <label className="turnover-field"><span>С</span><input type="date" value={dateRange.from} onChange={(event) => updateDates({ ...dateRange, from: event.target.value })} aria-invalid={!prepared.valid} aria-describedby={!prepared.valid ? periodErrorId : undefined} /></label>
+            <label className="turnover-field"><span>По включительно</span><input type="date" value={dateRange.to} onChange={(event) => updateDates({ ...dateRange, to: event.target.value })} aria-invalid={!prepared.valid} aria-describedby={!prepared.valid ? periodErrorId : undefined} /></label>
+          </div>
+          <div className="turnover-presets" aria-label="Быстрый выбор периода">
+            {PERIOD_PRESETS.map((preset) => {
+              const range = presetRange(preset.key);
+              return <button type="button" className="turnover-button turnover-preset" key={preset.key} aria-pressed={dateRange.from === range.from && dateRange.to === range.to} onClick={() => updateDates(presetRange(preset.key))}>{preset.label}</button>;
+            })}
+          </div>
+          <p className="turnover-note" id={periodHintId}>
+            Обе даты включены · {days !== null ? `${formatNumber(days)} дн. · ` : ""}{filters.format === "sample" ? "от 2 до 366 дней" : "от 1 до 366 дней"}.
+          </p>
+          {!prepared.valid ? <p className="turnover-validation" id={periodErrorId} role="status">{prepared.error}</p> : null}
+        </fieldset>
+
+        <fieldset className="turnover-fieldset">
+          <legend>Показатели</legend>
+          <div className="turnover-report-options">
+            {(Object.entries(MODE_LABELS) as [SampleMode, string][]).map(([mode, label]) => <label className="turnover-report-choice" key={mode}>
+              <input type="radio" name={reportName} value={mode} checked={filters.mode === mode} aria-labelledby={`${reportName}-${mode}`} onChange={() => update("mode", mode)} />
+              <span><strong id={`${reportName}-${mode}`}>{label}</strong></span>
+            </label>)}
+          </div>
+        </fieldset>
+
+        <div className="turnover-filter-grid">
+          <div className="turnover-store-filter">
+            <CheckboxSelect label="Магазины" values={filters.store} options={stores} allLabel="Вся сеть" searchLabel="Найти магазин" clearLabel="Вся сеть" onChange={updateStores} pending={optionsPending} unavailable={optionsUnavailable} />
+          </div>
+          <label className="turnover-field turnover-product-search"><span>Товар</span><input type="search" value={filters.search} onChange={(event) => update("search", event.target.value)} placeholder="Название, артикул, код или SKU" /></label>
         </div>
-      </fieldset>
 
-      <fieldset className="turnover-fieldset turnover-format-types" disabled={downloading}>
-        <legend>Детализация</legend>
-        <div className="turnover-report-options">
-          {([
-            ["sample", "Сводно по товарам", "Одна строка на товар. Остатки и продажи по всей сети."],
-            ["stores", "По магазинам", "Одна строка на магазин и товар. Остатки, продажи и показатели по магазинам."]
-          ] as [ReportFormat, string, string][]).map(([value, label, description]) => <label className="turnover-report-choice" key={value}>
-            <input type="radio" name={formatName} value={value} checked={filters.format === value} aria-labelledby={`${formatName}-${value}`} aria-describedby={`${formatName}-${value}-description`} onChange={() => update("format", value)} />
-            <span><strong id={`${formatName}-${value}`}>{label}</strong><span id={`${formatName}-${value}-description`}>{description}</span></span>
-          </label>)}
-        </div>
-      </fieldset>
-
-      <div className="turnover-builder-grid">
-        <fieldset className="turnover-configuration" disabled={downloading}>
-          <legend className="turnover-visually-hidden">Параметры отчёта</legend>
-          <fieldset className="turnover-fieldset" aria-describedby={periodHintId}>
-            <legend>Период</legend>
-            <div className="turnover-period-inputs">
-              <label className="turnover-field"><span>С</span><input type="date" value={dateRange.from} onChange={(event) => updateDates({ ...dateRange, from: event.target.value })} aria-invalid={!prepared.valid} aria-describedby={!prepared.valid ? periodErrorId : undefined} /></label>
-              <label className="turnover-field"><span>По включительно</span><input type="date" value={dateRange.to} onChange={(event) => updateDates({ ...dateRange, to: event.target.value })} aria-invalid={!prepared.valid} aria-describedby={!prepared.valid ? periodErrorId : undefined} /></label>
-            </div>
-            <div className="turnover-presets" aria-label="Быстрый выбор периода">
-              {PERIOD_PRESETS.map((preset) => {
-                const range = presetRange(preset.key);
-                return <button type="button" className="turnover-button turnover-preset" key={preset.key} aria-pressed={dateRange.from === range.from && dateRange.to === range.to} onClick={() => updateDates(presetRange(preset.key))}>{preset.label}</button>;
-              })}
-            </div>
-            <p className="turnover-period-caption">{period}{days !== null ? ` · ${formatNumber(days)} календ. дн.` : ""}</p>
-            <p className="turnover-note" id={periodHintId}>
-              {filters.format === "sample"
-                ? "Обе даты включены. Для сводного отчёта — от 2 до 366 дней."
-                : "Обе даты включены. Для отчёта по магазинам — от 1 до 366 дней."} «Последние 30 дней» — по вчерашний день; «Текущий месяц» — с 1-го числа. Сегодняшний и будущие дни, по которым ещё нет загруженных отчётов и остатков, в расчёт не входят: отчёт строится по последний проверенный день и сообщает об этом.
-            </p>
-            {!prepared.valid ? <p className="turnover-validation" id={periodErrorId} role="status">{prepared.error}</p> : null}
-          </fieldset>
-
-          <fieldset className="turnover-fieldset" aria-describedby={categoryHintId}>
-            <legend>Категории</legend>
-            <CheckboxSelect label="Категории / группы товаров" values={filters.category} options={categories} allLabel="Все категории" searchLabel="Найти категорию" clearLabel="Очистить выбор" onChange={(value) => update("category", value)} pending={optionsPending} unavailable={optionsUnavailable} showSelected />
-            <p className="turnover-note turnover-field-hint" id={categoryHintId}>Можно выбрать несколько. Учитываются все выбранные группы и их вложенные категории; пересечения не дублируют товары. Без выбора — все категории.</p>
-          </fieldset>
-
-          <fieldset className="turnover-fieldset">
-            <legend>Дополнительный отбор</legend>
+        <details className="turnover-advanced">
+          <summary>Дополнительные настройки{advancedCount ? ` (${advancedCount})` : ""}</summary>
+          <div className="turnover-advanced-content">
+            <fieldset className="turnover-fieldset" aria-describedby={categoryHintId}>
+              <legend className="turnover-visually-hidden">Категории</legend>
+              <CheckboxSelect label="Категории / группы товаров" values={filters.category} options={categories} allLabel="Все категории" searchLabel="Найти категорию" clearLabel="Очистить выбор" onChange={(value) => update("category", value)} pending={optionsPending} unavailable={optionsUnavailable} />
+              <p className="turnover-note" id={categoryHintId}>Включая вложенные категории; пересечения не дублируют товары.</p>
+            </fieldset>
             <div className="turnover-filter-grid">
-              <div className="turnover-store-filter">
-                <CheckboxSelect label="Магазины" values={filters.store} options={stores} allLabel="Вся сеть" searchLabel="Найти магазин" clearLabel="Вся сеть" onChange={updateStores} pending={optionsPending} unavailable={optionsUnavailable} />
-              </div>
               <OptionSelect label="Склад" value={filters.warehouse} options={warehouses} disabled={!options} onChange={(value) => update("warehouse", value)} placeholder="Все склады" />
-              <OptionSelect label="Бренд" value={filters.brand} options={brands} disabled={!brands.length} onChange={(value) => update("brand", value)} placeholder="Все бренды" hint={!brands.length ? optionsPending ? "Загружаем справочник брендов…" : optionsUnavailable ? "Справочник недоступен. Повторите загрузку ниже." : "Справочник брендов пока не заполнен. В отбор входят все бренды." : undefined} />
-              <label className="turnover-field turnover-product-search"><span>Товар</span><input type="search" value={filters.search} onChange={(event) => update("search", event.target.value)} placeholder="Название, артикул, код или SKU" /></label>
+              <OptionSelect label="Бренд" value={filters.brand} options={brands} disabled={!brands.length} onChange={(value) => update("brand", value)} placeholder="Все бренды" />
             </div>
+            <fieldset className="turnover-fieldset">
+              <legend>Детализация</legend>
+              <div className="turnover-report-options">
+                {([["sample", "Сводно по товарам"], ["stores", "По магазинам"]] as [ReportFormat, string][]).map(([value, label]) => <label className="turnover-report-choice" key={value}>
+                  <input type="radio" name={formatName} value={value} checked={filters.format === value} onChange={() => update("format", value)} />
+                  <span>{label}</span>
+                </label>)}
+              </div>
+            </fieldset>
             <label className="turnover-check turnover-scope-check">
               <input type="checkbox" checked={filters.includeNonRetail} onChange={(event) => update("includeNonRetail", event.target.checked)} />
               <span>Включать офисы и отделы</span>
             </label>
-            <p className="turnover-note">Их остатки войдут в отчёт; продажи будут <strong>n/a</strong>, потому что розничных отчётов нет.</p>
             <label className="turnover-check turnover-zero-check">
               <input type="checkbox" checked={filters.excludeZero} onChange={(event) => update("excludeZero", event.target.checked)} />
               <span>Исключить нулевые товары</span>
             </label>
-            <p className="turnover-note">Только если остаток и продажи равны нулю каждый день периода. Товары с нулевой продажей, но ненулевым остатком остаются.</p>
-          </fieldset>
-
-          {optionsError ? <div className="turnover-message turnover-error" role="alert">
-            <strong>Справочники не загрузились</strong><p>{optionsError}</p>
-            <button type="button" className="turnover-button" onClick={() => setOptionsAttempt((attempt) => attempt + 1)}>Повторить загрузку</button>
-          </div> : null}
-        </fieldset>
-
-        <aside className="turnover-file-summary" aria-labelledby={summaryId}>
-          <div className="turnover-file-heading"><Download size={20} aria-hidden="true" /><h3 id={summaryId}>Ваш Excel</h3></div>
-          <dl className="turnover-file-parameters">
-            <div><dt>Отчёт</dt><dd className="turnover-summary-report">{MODE_LABELS[filters.mode]}</dd></div>
-            <div><dt>Детализация</dt><dd>{filters.format === "sample" ? "Сводно по товарам" : "По магазинам"}</dd></div>
-            <div><dt>Период</dt><dd className="turnover-summary-period">{period}{days !== null ? <span>{formatNumber(days)} календ. дн., обе даты включены</span> : null}</dd></div>
-            <div><dt>Строки</dt><dd>{filters.format === "sample"
-              ? "Одна строка на товар. Количество и суммы по всем выбранным магазинам и складам."
-              : "Одна строка на магазин и товар."}</dd></div>
-            <div><dt>Магазины{filters.store.length ? `: ${formatNumber(filters.store.length)}` : ""}</dt><dd>{filters.store.length ? selectedNames(filters.store, stores) : `Вся сеть${stores.length ? ` · ${formatNumber(stores.length)} магазинов` : ""}`}</dd></div>
-            <div><dt>Категории{filters.category.length ? `: ${formatNumber(filters.category.length)}` : ""}</dt><dd>{filters.category.length ? selectedNames(filters.category, categories) : "Все категории"}</dd></div>
-            <div><dt>Склады</dt><dd>{filters.warehouse ? selectedNames([filters.warehouse], warehouses) : "Все склады"}</dd></div>
-            {filters.includeNonRetail ? <div><dt>Офисы и отделы</dt><dd>Включены в остатки; продажи — n/a</dd></div> : null}
-            {filters.excludeZero ? <div><dt>Нулевые товары</dt><dd>Исключены</dd></div> : null}
-            {filters.brand ? <div><dt>Бренд</dt><dd>{selectedNames([filters.brand], brands)}</dd></div> : null}
-            {filters.search.trim() ? <div><dt>Товар</dt><dd>{filters.search.trim()}</dd></div> : null}
-          </dl>
-
-          <div className="turnover-file-description">
-            <strong>{filters.format === "sample" ? "XLSX · 2 листа" : "XLSX · полный отчёт"}</strong>
-            {filters.format === "sample" ? <>
-              <p>«рассчет оборачиваемости» — дневные остатки и оборачиваемость.</p>
-              <p>«Продажи за период» — {filters.mode === "quantity" ? "количество проданных товаров." : "количество и себестоимость продаж с итоговой строкой."}</p>
-              <p>Формулы и оформление фиксированы. Все товары выбранного отбора, без ограничения страницей. Нет данных — «n/a», не ноль.</p>
-            </> : <>
-              <p>«Оборачиваемость» — магазин, SKU, остатки, продажи, коэффициенты и риски.</p>
-              <p>Дополнительно: динамика 7/14/30, ежедневные остатки, перемещения и параметры расчёта.</p>
-              <p>Полный отчёт по магазинам. Нет данных — «n/a», не ноль.</p>
-            </>}
+            <p className="turnover-note">Только если остаток и продажи равны нулю каждый день периода. Запас без продаж остаётся в отчёте.</p>
           </div>
+        </details>
 
-          <div className="turnover-download-actions" aria-busy={downloading}>
-            <button type="submit" className="turnover-button turnover-primary" disabled={downloading || !prepared.valid} aria-describedby={!prepared.valid ? periodErrorId : undefined}>
-              <Download size={17} aria-hidden="true" />{downloading ? "Формируем Excel…" : "Скачать Excel"}
-            </button>
-            <button type="button" className="turnover-button" disabled={previewing || !prepared.valid}
-              aria-describedby={!prepared.valid ? periodErrorId : undefined}
-              aria-controls={currentPreview ? previewId : undefined} onClick={showReport}>
-              Показать отчёт
-            </button>
-            {downloading ? <>
-              <p className="turnover-note" role="status">Формируем файл: {elapsed} с. Параметры временно недоступны.</p>
-              <button type="button" className="turnover-button" onClick={cancel}>Отменить</button>
-            </> : null}
-          </div>
-          {currentState.status === "error" ? <div className="turnover-message turnover-error" role="alert"><strong>Excel не сформирован</strong><p>{currentState.message}</p><p>Проверьте параметры и нажмите «Скачать Excel» ещё раз.</p></div> : null}
-          {currentState.status === "success" ? <div className="turnover-message turnover-success" role="status">
-            <strong>{currentState.message}</strong>
-            <p>{currentState.rows !== null && currentState.rows !== undefined ? `Строк в файле: ${formatNumber(currentState.rows)}. ` : ""}{currentState.cache === "hit" || currentState.cache === "shared" ? "Ответ из кэша. " : ""}Время: {currentState.seconds} с.</p>
-          </div> : null}
-        </aside>
+        {selectedFilters.length ? <ul className="turnover-selected" aria-label="Выбранные условия">
+          {selectedFilters.map((condition) => <li key={condition}><span>{condition}</span></li>)}
+        </ul> : null}
+        {optionsError ? <div className="turnover-message turnover-error" role="alert">
+          <strong>Не удалось загрузить список магазинов и товаров.</strong>
+          <button type="button" className="turnover-button" onClick={() => setOptionsAttempt((attempt) => attempt + 1)}>Повторить</button>
+          <details><summary>Подробности ошибки</summary><p>{optionsError}</p></details>
+        </div> : null}
+      </fieldset>
+
+      <div className="turnover-download-actions" aria-busy={downloading || previewing}>
+        <button type="submit" className="turnover-button turnover-primary" disabled={downloading || previewing || !prepared.valid}
+          aria-describedby={!prepared.valid ? periodErrorId : undefined} aria-controls={currentPreview ? previewId : undefined}>Показать отчёт</button>
+        <button type="button" className="turnover-button" disabled={downloading || !prepared.valid}
+          aria-describedby={!prepared.valid ? periodErrorId : undefined} onClick={() => void download()}>
+          <Download size={17} aria-hidden="true" />{downloading ? "Формируем Excel…" : "Скачать Excel"}
+        </button>
+        {downloading ? <>
+          <p className="turnover-note" role="status">Формируем файл… Параметры временно недоступны.</p>
+          <button type="button" className="turnover-button" onClick={cancel}>Отменить</button>
+        </> : null}
       </div>
+      {currentState.status === "error" ? <div className="turnover-message turnover-error" role="alert">
+        <strong>Не удалось сформировать Excel.</strong>
+        <button type="button" className="turnover-button" disabled={!prepared.valid} onClick={() => void download()}>Повторить</button>
+        <details><summary>Подробности ошибки</summary><p>{currentState.message}</p></details>
+      </div> : null}
+      {currentState.status === "success" ? <p className="turnover-message turnover-success" role="status">{currentState.message}</p> : null}
     </form>
+    <details className="turnover-methodology">
+      <summary>Как считается</summary>
+      <p className="turnover-note">Оборотов за период = продажи с учётом возвратов / средний запас. Дней на оборот = календарные дни периода / число оборотов. Денежные показатели рассчитываются по себестоимости; розничная выручка доступна только в подробных столбцах и не используется как числитель.</p>
+      <p className="turnover-note">Если выбранный период выходит за пределы доступных данных, фактические даты будут указаны в результате. «Последние 30 дней» — по вчерашний день.</p>
+    </details>
     {currentPreview ? <div className="turnover-preview" id={previewId} aria-busy={previewing}>
-      {currentPreview.status === "loading" ? <p className="turnover-message" role="status">Загружаем отчёт… Параметры можно менять — предыдущий запрос будет отменён.</p>
+      {currentPreview.status === "loading" ? <div className="turnover-message">
+        <p role="status">Загружаем отчёт… При смене параметров предыдущий запрос отменится.</p>
+        <button type="button" className="turnover-button" onClick={cancelPreview}>Отменить загрузку</button>
+      </div>
         : currentPreview.status === "error" ? <div className="turnover-message turnover-error" role="alert">
-          <strong>Отчёт не загружен</strong><p>{currentPreview.message}</p>
-          <p>Проверьте параметры и нажмите «Показать отчёт» ещё раз.</p>
-          <button type="button" className="turnover-button" disabled={!prepared.valid} onClick={showReport}>Показать отчёт</button>
+          <strong>Не удалось загрузить отчёт.</strong>
+          <button type="button" className="turnover-button" disabled={!prepared.valid} onClick={() => void showReport()}>Повторить</button>
+          <details><summary>Подробности ошибки</summary><p>{currentPreview.message}</p></details>
         </div>
-          : <TurnoverPreviewTable report={currentPreview.report} page={previewPage} onPageChange={setPreviewPage} />}
+          : <>
+            <label className="turnover-check turnover-detail-toggle">
+              <input type="checkbox" checked={detailed} onChange={(event) => setDetailed(event.target.checked)} />
+              <span>Подробные столбцы</span>
+            </label>
+            <TurnoverPreviewTable report={currentPreview.report} page={previewPage} onPageChange={setPreviewPage} detailed={detailed} />
+          </>}
     </div> : null}
   </section>;
 }
