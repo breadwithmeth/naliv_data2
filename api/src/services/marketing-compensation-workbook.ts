@@ -13,9 +13,9 @@ const unavailable = "n/a";
 const moneyFormat = '#,##0.00;[Red](#,##0.00);0.00';
 const quantityFormat = '#,##0.###;[Red](#,##0.###);0';
 const percentFormat = '0.##%;[Red](0.##%);0%';
-const summaryName = "Сводка";
+const mainName = "Компенсации";
 const diagnosticsName = "Диагностика";
-const headings = ["Штрихкод", "Наименование", "Цена, ₸", "Скидка, %", "Скидка на единицу, ₸", "Нетто количество", "Компенсация, ₸"];
+const headings = ["Штрихкод", "Наименование", "Розничная цена до скидки, ₸", "Компенсация, %", "Компенсация на единицу, ₸", "Нетто количество", "Компенсация, ₸"];
 const border: Partial<ExcelJS.Borders> = {
   top: { style: "thin", color: { argb: "FFD9D9D9" } },
   bottom: { style: "thin", color: { argb: "FFD9D9D9" } },
@@ -37,22 +37,6 @@ function activityPeriod(activity: CompensationActivity): string {
 }
 function branchLabel(branch: CompensationBranch): string {
   return `${branch.name} [${branch.key ?? unavailable}]`;
-}
-
-function worksheetName(name: string, used: Set<string>): string {
-  const base = name.replace(/[\p{Cc}\p{Cs}\u2028\u2029\uFFFE\uFFFF\\/*?:[\]]/gu, " ")
-    .trim().replace(/^'+|'+$/g, "").trim() || "Филиал";
-  let suffix = "";
-  let candidate: string;
-  let index = 1;
-  do {
-    // Excel limits names to 31 UTF-16 units; never cut an astral character in half.
-    const stem = base.slice(0, 31 - suffix.length).replace(/[\uD800-\uDBFF]$/, "").replace(/'+$/g, "").trimEnd();
-    candidate = `${stem || "Филиал"}${suffix}`;
-    suffix = ` (${++index})`;
-  } while (used.has(candidate.toLowerCase()));
-  used.add(candidate.toLowerCase());
-  return candidate;
 }
 
 function sheet(workbook: StreamingWorkbook, name: string, widths: number[], formats: string[]): StreamingSheet {
@@ -139,7 +123,7 @@ function itemRow(worksheet: ExcelJS.Worksheet, item: CompensationRow): void {
   styleRow(row);
   row.getCell(1).numFmt = "@";
   row.getCell(2).note = `Товар: ${item.itemKey}\nХарактеристика: ${item.characteristicKey ?? unavailable}\nПериод строки: ${period(item.from, item.to)}${item.issues.length ? `\n${item.issues.map(issue => `${issue.code}: ${issue.message}`).join("\n")}` : ""}`;
-  row.getCell(3).note = `Дата установки закупочной цены филиала: ${item.priceDate ?? unavailable}\nПериод строки: ${period(item.from, item.to)}`;
+  row.getCell(3).note = `Цена до скидки из строки продажи/возврата 1С\nПериод строки: ${period(item.from, item.to)}`;
   row.commit();
 }
 
@@ -169,55 +153,58 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
   let written = 0;
   const checkpoint = async () => { await setImmediate(); signal.throwIfAborted(); };
   workbook.creator = "Налив — аналитика";
-  const usedNames = new Set([summaryName.toLowerCase(), diagnosticsName.toLowerCase(), "history"]);
-  const summary = sheet(workbook, summaryName, [58, 30, 34, 20, 25, 25, 19], ["@", "@", "@", "0", moneyFormat, moneyFormat, "0"]);
-  topRows(summary, "Маркетинговые компенсации · сводка", reportNote(report), [
-    "Маркетинг", "Период расчёта [с, по)", "Период активности", "Филиалов",
-    "Полная компенсация, ₸", "Известная часть, ₸", "Неполных строк"
-  ]);
-  const branches = new Map<string | null, { name: string; blocks: BranchBlock[] }>();
-  for (const activity of report.activities) {
-    const totals = activity.totals;
-    const row = summary.addRow([
-      activityLabel(activity), period(activity.from, activity.to), activityPeriod(activity),
-      activity.branches.length, totals.compensation ?? unavailable, totals.knownCompensation, totals.incompleteRows
-    ]);
-    styleRow(row);
-    row.commit();
-    for (const branch of activity.branches) {
-      const existing = branches.get(branch.key);
-      const block = { activity, branch };
-      if (existing) existing.blocks.push(block);
-      else branches.set(branch.key, { name: branch.name, blocks: [block] });
-    }
+  const mainBlocks: BranchBlock[] = [];
+  const correctionBlocks: BranchBlock[] = [];
+  for (const activity of report.activities) for (const branch of activity.branches) {
+    if (branch.hasSales) mainBlocks.push({ activity, branch });
+    else if (branch.hasReturns) correctionBlocks.push({ activity, branch });
   }
-  const grandTotal = summary.addRow([
-    "Общий итог", null, null, branches.size,
-    report.totals.compensation ?? unavailable, report.totals.knownCompensation, report.totals.incompleteRows
-  ]);
-  summary.mergeCells(grandTotal.number, 1, grandTotal.number, 3);
-  styleRow(grandTotal, "total");
-  grandTotal.commit();
-  await finishSheet(workbook, summary, signal);
-
-  for (const { name, blocks } of branches.values()) {
-    // The example's wide identity columns, Calibri headings, pale fill and thin grid
-    // are retained; numeric columns are widened to fit explicit units and no blanks are padded.
-    const branchSheet = sheet(workbook, worksheetName(name, usedNames), [28.7109375, 66.140625, 16, 14, 22, 22, 25], [
+  const createDetailSheet = (name: string, note = "") => {
+    const detail = sheet(workbook, name, [28.7109375, 66.140625, 24, 18, 24, 22, 25], [
       "@", "@", moneyFormat, percentFormat, moneyFormat, quantityFormat, moneyFormat
     ]);
-    topRows(branchSheet, branchLabel(blocks[0].branch), reportNote(report), headings);
-    for (const { activity, branch } of blocks) {
-      mergedRow(branchSheet, activityLabel(activity), true);
-      mergedRow(branchSheet, `Период активности: ${activityPeriod(activity)}; расчёт ${period(activity.from, activity.to)}.`);
-      for (const item of branch.rows) {
-        itemRow(branchSheet, item);
-        if (++written % 256 === 0) await checkpoint();
-      }
-      totalRows(branchSheet, "Итого по маркетингу в филиале", branch.totals);
+    topRows(detail, `Маркетинговые компенсации${name === mainName ? "" : " · корректировки"}`, `${reportNote(report)}${note ? ` ${note}` : ""}`, headings);
+    return detail;
+  };
+  const writeStoreBlocks = async (detail: StreamingSheet, blocks: BranchBlock[]) => {
+    const stores = new Map<string | null, BranchBlock[]>();
+    for (const block of blocks) {
+      const list = stores.get(block.branch.key) ?? [];
+      list.push(block);
+      stores.set(block.branch.key, list);
     }
-    totalRows(branchSheet, "Итого по филиалу · все показанные маркетинги", branchTotals(blocks));
-    await finishSheet(workbook, branchSheet, signal, blocks.some(block => block.branch.rows.length > 0));
+    const ordered = [...stores.values()].sort((a, b) => a[0].branch.name.localeCompare(b[0].branch.name, "ru")
+      || (a[0].branch.key ?? "").localeCompare(b[0].branch.key ?? ""));
+    for (const storeBlocks of ordered) {
+      mergedRow(detail, branchLabel(storeBlocks[0].branch), true);
+      storeBlocks.sort((a, b) => a.activity.name.localeCompare(b.activity.name, "ru") || a.activity.key.localeCompare(b.activity.key));
+      for (const { activity, branch } of storeBlocks) {
+        mergedRow(detail, activityLabel(activity), true);
+        mergedRow(detail, `Период акции: ${activityPeriod(activity)}; расчёт ${period(activity.from, activity.to)}.`);
+        for (const item of branch.rows) {
+          itemRow(detail, item);
+          if (++written % 256 === 0) await checkpoint();
+        }
+        totalRows(detail, "Итого по акции в магазине", branch.totals);
+      }
+      totalRows(detail, "Итого по магазину · показанные акции", branchTotals(storeBlocks));
+    }
+  };
+  const main = createDetailSheet(mainName);
+  await writeStoreBlocks(main, mainBlocks);
+  if (!mainBlocks.length) mergedRow(main, report.totals.compensation === null
+    ? "Данные неполны; проверьте лист «Диагностика». Отсутствие продаж не подтверждено."
+    : correctionBlocks.length ? "Нет акций с продажами; возвраты показаны на листе «Корректировки»."
+      : "Нет продаж за выбранный период");
+  totalRows(main, "ИТОГО по акциям с продажами", branchTotals(mainBlocks));
+  if (correctionBlocks.length) totalRows(main, "Корректировки по возвратам", branchTotals(correctionBlocks));
+  totalRows(main, "ОБЩИЙ ИТОГ с корректировками", report.totals);
+  await finishSheet(workbook, main, signal, mainBlocks.some(b => b.branch.rows.length > 0));
+  if (correctionBlocks.length) {
+    const corrections = createDetailSheet("Корректировки", "Акции только с возвратами; суммы включены в общий итог.");
+    await writeStoreBlocks(corrections, correctionBlocks);
+    totalRows(corrections, "ИТОГО корректировок по возвратам", branchTotals(correctionBlocks));
+    await finishSheet(workbook, corrections, signal, correctionBlocks.some(b => b.branch.rows.length > 0));
   }
 
   const diagnostics = sheet(workbook, diagnosticsName, [18, 52, 45, 60, 64, 32, 85], []);
@@ -242,11 +229,17 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
     for (const branch of activity.branches) {
       const branchIdentity = branchLabel(branch);
       addIssues(branch.issues, "Филиал", label, branchIdentity, null, dates);
+      if (!branch.hasSales && !branch.hasReturns) addIssues([{
+        code: branch.totals.compensation === null ? "unresolved_movements" : "no_movements",
+        message: branch.totals.compensation === null
+          ? "Блок не включён в таблицы: наличие движений не определено. Полный итог недоступен."
+          : "Блок не включён в таблицы: нет положительных продаж или корректировок."
+      }], "Филиал", label, branchIdentity, null, dates);
       for (const item of branch.rows) {
         if (item.issues.length) {
           addIssues(item.issues, "Строка", label, branchIdentity,
             `${item.name} [${item.itemKey}]; характеристика: ${item.characteristicKey ?? unavailable}; штрихкод: ${item.barcode ?? unavailable}`,
-            `Расчёт ${period(item.from, item.to)}; дата цены: ${item.priceDate ?? unavailable}`);
+            `Расчёт ${period(item.from, item.to)}; цена до скидки из строки движения 1С`);
         }
         if (++written % 256 === 0) await checkpoint();
       }

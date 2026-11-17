@@ -13,6 +13,7 @@ import { writeMarketingCompensationWorkbook } from "../services/marketing-compen
 import { writeTurnoverWorkbook } from "../services/turnover-workbook.js";
 import type { MarketingCompensationReport } from "../services/marketing-compensation-types.js";
 import type { TurnoverReport } from "../services/turnover-types.js";
+import { validReturnPriceUpgrade } from "../services/return-price-upgrade.js";
 /** Mirrors naliv_data1 analytics_reload.PAUSE_AT_BYTES; kept local to avoid service side effects. */
 const RELOAD_PAUSE_AT_BYTES = 12_000_000_000;
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -293,7 +294,7 @@ const reloadPlanSchema = z.object({
 }).passthrough().refine((plan) => plan.from < plan.toExclusive, "Reload horizon must be nonempty");
 type ReloadPlan = z.infer<typeof reloadPlanSchema>;
 type ReadinessBinding = ReloadPlan & { planSha256: string };
-type LedgerBinding = { planSha256: string; contractSha256: string; indexManifestSha256: string };
+type LedgerBinding = { planSha256: string; contractSha256: string; indexManifestSha256: string; manifest?: unknown; returnPriceUpgrade?: unknown };
 type ReadinessResponse = { status: number; value: Json; ms: number; uncached: boolean };
 type ReadinessHttp = (entry: RequestCase) => Promise<ReadinessResponse>;
 type ReadinessStatus = "passed" | "incomplete" | "failed";
@@ -308,12 +309,19 @@ const dayAfter = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) + 86_4
 
 export function parseReloadPlan(value: unknown): ReloadPlan { return reloadPlanSchema.parse(value); }
 
-/** The challenged layout binds the plan SHA; its immutable plan binds the manifest SHA.
- * The independently read ledger must repeat both hashes; no new HTTP identity fields are assumed. */
+/** The challenged layout binds the original plan; only the explicit additive return-price
+ * extension may change its effective contract. Immutable plan/contract/index hashes stay exact. */
 export function validateReadinessIdentity(value: unknown, binding: ReadinessBinding, challenge: string, ledger: LedgerBinding | null) {
-  const identity = validateApiIdentity(value, binding, challenge, true);
-  if (identity.layout?.compactionActive) throw new Error("HTTP API layout is frozen/compaction active");
   if (!ledger || ledger.planSha256 !== binding.planSha256 || ledger.contractSha256 !== binding.contractSha256 || ledger.indexManifestSha256 !== binding.indexManifestSha256) throw new Error("Reload ledger plan/contract/index manifest binding mismatch");
+  const candidate = apiIdentitySchema.parse(value);
+  const effectiveHash = candidate.layout?.contractSha256 ?? "";
+  if (effectiveHash !== binding.contractSha256) {
+    if (!validReturnPriceUpgrade(ledger.manifest, binding.contractSha256, effectiveHash)) throw new Error("Invalid return price upgrade transition binding");
+    const manifest = z.object({ reloadId: z.string(), planSha256: z.string(), targetDatabase: z.unknown(), sourceSchema: z.unknown(), returnPriceUpgrade: z.unknown() }).parse(ledger.manifest);
+    if (manifest.reloadId !== binding.migrationId || manifest.planSha256 !== binding.planSha256 || canonicalJson(manifest.targetDatabase) !== canonicalJson(binding.targetDatabase) || canonicalJson(manifest.sourceSchema) !== canonicalJson(binding.sourceSchema) || canonicalJson(manifest.returnPriceUpgrade) !== canonicalJson(ledger.returnPriceUpgrade)) throw new Error("Return price upgrade parent identity binding mismatch");
+  }
+  const identity = validateApiIdentity(value, { ...binding, contractSha256: effectiveHash }, challenge, true);
+  if (identity.layout?.compactionActive) throw new Error("HTTP API layout is frozen/compaction active");
   return identity;
 }
 
@@ -634,7 +642,7 @@ async function readiness(args: ParityArguments) {
       return { ...row, databaseBytes: Number(row.databaseBytes) };
     };
     const before = await measurement();
-    const ledgerSql = `SELECT plan_sha256 AS "planSha256", contract_sha256 AS "contractSha256", index_manifest_sha256 AS "indexManifestSha256"
+    const ledgerSql = `SELECT plan_sha256 AS "planSha256", contract_sha256 AS "contractSha256", index_manifest_sha256 AS "indexManifestSha256", manifest, manifest->'returnPriceUpgrade' AS "returnPriceUpgrade"
        FROM ops.analytics_reload_plans WHERE reload_id=$1::uuid AND table_schema=$2`;
     const ledgerRows = before.hasLedger ? await db.$queryRawUnsafe<LedgerBinding[]>(ledgerSql, plan.migrationId, plan.sourceSchema.name) : [];
     const http = await readinessLogin(args.base);

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { verifyReloadConsumer } from "./reload-consumer-fixture.js";
 
 // Real PostgreSQL TEMP fixtures only: source records are never changed.
-test("compensations preserve source rates, purchase-price cutoff, returns, independent activities and incomplete totals", {
+test("compensations use rule prefixes and exact movement prices with certified returns", {
   skip: !process.env.ANALYTICS_TEST_DATABASE_URL
 }, async () => {
   process.env.DATABASE_URL = process.env.ANALYTICS_TEST_DATABASE_URL;
@@ -14,157 +14,146 @@ test("compensations preserve source rates, purchase-price cutoff, returns, indep
   process.env.APP_MARKETING_EMAIL ??= "marketing@test.local";
   process.env.APP_MARKETING_PASSWORD ??= "marketing-test-password";
   process.env.JWT_SECRET ??= "test-jwt-secret-with-at-least-24-characters";
-  // Configuration reads environment at module initialization; these imports intentionally exercise that boundary after the TEMP-database setup.
+  // Exercise configuration's module-loading boundary after selecting the connection-local TEMP schema.
   const { prisma } = await import("../src/prisma.js");
   const { config } = await import("../src/config.js");
   const { getMarketingCompensationReport, getMarketingCompensationActivities } = await import("../src/services/marketing-compensation.js");
   config.PGSCHEMA = "pg_temp";
   const original = prisma.$queryRaw;
+  const certified = async () => ({ returnPriceIntervals: [{ from: "2026-09-01", to: "2026-10-01" }] });
+  const unverified = async () => ({ returnPriceIntervals: [] });
   try {
     await prisma.$transaction(async tx => {
       for (const definition of [
         "document_marketingovaya_aktsiya (ref_key text, number text, naimenovanie_aktsii text, data_nachala_deystviya timestamp, data_okonchaniya_deystviya timestamp, dlya_vseh_magazinov boolean, posted boolean, deletion_mark boolean)",
         "document_marketingovaya_aktsiya_skidki_natsenki (_parent_ref_key text, ref_key text, skidka_natsenka_key text, magazin_key text, data_nachala timestamp, data_okonchaniya timestamp)",
         "document_marketingovaya_aktsiya_magaziny (_parent_ref_key text, ref_key text, magazin_key text)",
-        "catalog_skidki_natsenki (ref_key text, sposob_predostavleniya text, znachenie_skidki_natsenki numeric, segment_nomenklatury_predostavleniya_key text, deletion_mark boolean)",
+        "catalog_skidki_natsenki (ref_key text, description text, sposob_predostavleniya text, znachenie_skidki_natsenki numeric, segment_nomenklatury_predostavleniya_key text, deletion_mark boolean)",
         "catalog_segmenty_nomenklatury (ref_key text, description text, deletion_mark boolean)",
         "information_register_nomenklatura_segmenta (segment_key text, nomenklatura_key text, harakteristika_key text)",
-        "catalog_magaziny (ref_key text, description text, vid_tsen_zakupa_key text, deletion_mark boolean)",
+        "catalog_magaziny (ref_key text, description text, deletion_mark boolean)",
         "catalog_nomenklatura (ref_key text, description text, naimenovanie_polnoe text, shtrihkod text, deletion_mark boolean)",
         "document_otchet_o_roznichnyh_prodazhah (ref_key text, date timestamp, magazin_key text, posted boolean, deletion_mark boolean)",
-        "document_otchet_o_roznichnyh_prodazhah_tovary (_parent_ref_key text, ref_key text, nomenklatura_key text, harakteristika_key text, kolichestvo numeric)",
-        "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary (_parent_ref_key text, ref_key text, nomenklatura_key text, harakteristika_key text, kolichestvo numeric)",
-        "document_ustanovka_tsen_nomenklatury (ref_key text, date timestamp, posted boolean, deletion_mark boolean)",
-        "document_ustanovka_tsen_nomenklatury_tovary (_parent_ref_key text, ref_key text, nomenklatura_key text, harakteristika_key text, vid_tseny_key text, tsena numeric)"
+        "document_otchet_o_roznichnyh_prodazhah_tovary (_parent_ref_key text, ref_key text, nomenklatura_key text, harakteristika_key text, kolichestvo numeric, tsena numeric, summa numeric)",
+        "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary (_parent_ref_key text, ref_key text, nomenklatura_key text, harakteristika_key text, kolichestvo numeric, tsena numeric)"
       ]) await tx.$executeRawUnsafe(`create temp table ${definition} on commit drop`);
       await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya values
-        ('a','1','Название 20%','2026-09-02','2026-09-30',false,true,false),
+        ('a','26','Акция 26%','2026-09-02','2026-09-30',false,true,false),
         ('b','2','Вторая активность','2026-09-02','2026-09-30',false,true,false),
-        ('broken','3','Нет сегмента','2026-09-01','2026-09-30',false,true,false),
         ('outside','4','Другой период','2026-10-01','2026-10-31',false,true,false)`);
-      await tx.$executeRawUnsafe(`insert into catalog_magaziny values ('s1','Один','buy1',false),('s2','Два','buy2',false)`);
-      await tx.$executeRawUnsafe(`insert into catalog_nomenklatura values
-        ('i','Краткое','Полное имя','001234',false),('missing','Без цены','Без цены',null,false),('negative','Возврат','Возврат','009',false)`);
+      await tx.$executeRawUnsafe(`insert into catalog_magaziny values ('s1','Один',false),('s2','Два',false)`);
+      await tx.$executeRawUnsafe(`insert into catalog_nomenklatura values ('i','Краткое','Полное имя','001234',false)`);
       await tx.$executeRawUnsafe(`insert into catalog_segmenty_nomenklatury values ('seg','Состав',false)`);
-      await tx.$executeRawUnsafe(`insert into information_register_nomenklatura_segmenta values
-        ('seg','i',null),('seg','i',null),('seg','missing',null),('seg','negative',null)`);
-      await tx.$executeRawUnsafe(`insert into catalog_skidki_natsenki values ('d','Процент',11.11,'seg',false),('bad','Процент',null,'absent',false)`);
+      await tx.$executeRawUnsafe(`insert into information_register_nomenklatura_segmenta values ('seg','i',null),('seg','i',null)`);
+      await tx.$executeRawUnsafe(`insert into catalog_skidki_natsenki values ('d','10% в строке','Подарок',99,'seg',false)`);
       await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya_skidki_natsenki values
         ('a',null,'d',null,'2026-09-02','2026-09-30'),('a',null,'d',null,'2026-09-02','2026-09-30'),
-        ('b',null,'d','s1','2026-09-02','2026-09-30'),('broken',null,'bad','s1','2026-09-01','2026-09-30')`);
+        ('b',null,'d','s1','2026-09-02','2026-09-30')`);
       await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya_magaziny values ('a',null,'s1'),('a',null,'s2')`);
-      await tx.$executeRawUnsafe(`insert into document_ustanovka_tsen_nomenklatury values
-        ('old','2026-09-01',true,false),('last','2026-09-30 23:59:59',true,false),
-        ('future','2026-10-01',true,false),('unposted','2026-09-30 23:59:59.9',false,false),('deleted','2026-09-30 23:59:59.9',true,true)`);
-      // Legacy price rows store the document key in ref_key; price-type and characteristic must match.
-      await tx.$executeRawUnsafe(`insert into document_ustanovka_tsen_nomenklatury_tovary values
-        (null,'old','i',null,'buy1',100),(null,'last','i',null,'buy1',631),
-        (null,'last','i',null,'buy2',200),(null,'last','i',null,'retail',999),
-        (null,'last','i','variant','buy1',900),(null,'future','i',null,'buy1',5000),
-        (null,'unposted','i',null,'buy1',7000),(null,'deleted','i',null,'buy1',8000),
-        (null,'last','negative',null,'buy1',10),(null,'last','negative',null,'buy2',10)`);
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah values
         ('before','2026-09-01','s1',true,false),('r','2026-09-30 23:59:59','s1',true,false),
-        ('other','2026-09-10','s2',true,false),('end','2026-10-01','s1',true,false),
-        ('deleted','2026-09-20','s1',true,true),('nullqty','2026-09-20','s1',true,false)`);
+        ('other','2026-09-10','s2',true,false),('end','2026-10-01','s1',true,false),('deleted','2026-09-20','s1',true,true)`);
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
-        ('before',null,'i',null,1000),('r',null,'i',null,3),('other',null,'i',null,2),
-        ('end',null,'i',null,1000),('deleted',null,'i',null,1000),('nullqty',null,'missing',null,null)`);
-      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values
-        ('r',null,'i',null,1),('r',null,'negative',null,2)`);
+        ('before',null,'i',null,1000,1,1000),('r',null,'i',null,2,1000,1800),('other',null,'i',null,3,500,1500),
+        ('end',null,'i',null,1000,1,1000),('deleted',null,'i',null,1000,1,1000),('r',null,'i','other',1000,1,1000)`);
+      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values ('r',null,'i',null,1,800)`);
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
-      const params = { from: new Date('2026-09-01'), to: new Date('2026-10-01') };
-      const options = await getMarketingCompensationActivities(params);
-      assert.deepEqual(options.activities.map(a => a.key).sort(), ['a','b','broken']);
-      const result = await getMarketingCompensationReport(params);
-      const a = result.activities.find(a => a.key === 'a')!;
-      const s1 = a.branches.find(b => b.key === 's1')!;
-      const row = s1.rows.find(r => r.itemKey === 'i')!;
-      assert.equal(row.name, 'Полное имя');
-      assert.equal(row.barcode, '001234');
-      assert.equal(row.discountPct, 11.11);
-      assert.equal(row.price, 631);
-      assert.equal(row.unitCompensation, 70.1);
-      assert.equal(row.quantity, 2);
-      assert.equal(row.compensation, 140.2);
-      assert.equal(s1.rows.filter(r => r.itemKey === 'i').length, 1);
-      assert.equal(s1.rows.find(r => r.itemKey === 'negative')!.compensation, -2.22);
-      assert.equal(a.branches.find(b => b.key === 's2')!.rows.find(r => r.itemKey === 'i')!.compensation, 44.44);
-      assert.equal(result.activities.find(a => a.key === 'b')!.branches[0].rows.find(r => r.itemKey === 'i')!.compensation, 140.2);
-      assert.equal(s1.totals.compensation, null);
-      assert.equal(s1.totals.knownCompensation, 137.98);
-      const missing = s1.rows.find(r => r.itemKey === 'missing')!;
-      assert.equal(missing.quantity, null);
-      assert.equal(missing.compensation, null);
-      assert.ok(missing.issues.some(i => i.code === 'missing_price'));
-      assert.ok(missing.issues.some(i => i.code === 'missing_barcode'));
-      assert.ok(missing.issues.some(i => i.code === 'missing_quantity'));
-      assert.equal(result.activities.find(a => a.key === 'broken')!.totals.compensation, null);
-      assert.equal(result.totals.compensation, null);
-      // Gift/bonus/coupon rules never yield percentage compensation: no per-item rows, one activity issue.
-      await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya values ('gift','7','Подарок','2026-09-02','2026-09-30',false,true,false)`);
-      await tx.$executeRawUnsafe(`insert into catalog_skidki_natsenki values ('gift-d','Подарок',null,'seg',false)`);
-      await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya_skidki_natsenki values ('gift',null,'gift-d','s1','2026-09-02','2026-09-30')`);
-      const gift = await getMarketingCompensationReport({ ...params, activityKey: 'gift' });
-      assert.deepEqual(gift.activities[0].branches, []);
-      assert.equal(gift.activities[0].totals.compensation, null);
-      assert.equal(gift.totals.compensation, null);
-      assert.ok(gift.activities[0].issues.some(i => i.code === 'missing_percentage'));
-      const selected = await getMarketingCompensationReport({ ...params, activityKey: 'b' });
-      assert.deepEqual(selected.activities.map(a => a.key), ['b']);
-      assert.equal(a.branches.find(b => b.key === 's2')!.rows.find(r => r.itemKey === 'negative')!.quantity, 0);
-      await tx.$executeRawUnsafe(`delete from information_register_nomenklatura_segmenta where nomenklatura_key = 'missing'`);
-      await tx.$executeRawUnsafe(`update catalog_nomenklatura set shtrihkod = null where ref_key = 'i'`);
-      const barcodeOnly = await getMarketingCompensationReport({ ...params, activityKey: 'b' });
-      assert.equal(barcodeOnly.totals.compensation, 137.98);
-      assert.ok(barcodeOnly.activities[0].branches[0].rows.find(r => r.itemKey === 'i')!.issues.some(i => i.code === 'missing_barcode'));
-      await tx.$executeRawUnsafe(`update document_otchet_o_roznichnyh_prodazhah_tovary set kolichestvo = 0.1 where _parent_ref_key = 'r' and nomenklatura_key = 'i'`);
-      await tx.$executeRawUnsafe(`update document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary set kolichestvo = 0`);
-      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values ('r',null,'negative',null,0.2)`);
-      const fractional = await getMarketingCompensationReport({ ...params, activityKey: 'b' });
-      assert.equal(fractional.activities[0].branches[0].rows.find(r => r.itemKey === 'i')!.quantity, 0.1);
-      assert.equal(fractional.activities[0].branches[0].rows.find(r => r.itemKey === 'negative')!.quantity, 0.2);
-      assert.equal(fractional.totals.compensation, 7.23);
-      await tx.$executeRawUnsafe(`update document_otchet_o_roznichnyh_prodazhah_tovary set kolichestvo = 3 where _parent_ref_key = 'r' and nomenklatura_key = 'i'`);
-      await tx.$executeRawUnsafe(`delete from document_otchet_o_roznichnyh_prodazhah_tovary where nomenklatura_key = 'negative'`);
-      await tx.$executeRawUnsafe(`update document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary set kolichestvo = case when nomenklatura_key = 'i' then 1 else 2 end`);
-      await tx.$executeRawUnsafe(`insert into document_ustanovka_tsen_nomenklatury_tovary values (null,'last','i',null,'buy1',632)`);
-      const priceConflict = await getMarketingCompensationReport({ ...params, activityKey: 'b' });
-      assert.equal(priceConflict.activities[0].branches[0].rows.find(r => r.itemKey === 'i')!.price, null);
-      assert.ok(priceConflict.activities[0].branches[0].rows.find(r => r.itemKey === 'i')!.issues.some(i => i.code === 'conflicting_price'));
-      await tx.$executeRawUnsafe(`delete from document_ustanovka_tsen_nomenklatury_tovary where tsena = 632`);
-      await tx.$executeRawUnsafe(`insert into catalog_skidki_natsenki values ('conflict','Процент',20,'seg',false)`);
-      await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya_skidki_natsenki values ('a',null,'conflict','s1','2026-09-02','2026-09-30')`);
-      const conflict = await getMarketingCompensationReport({ ...params, activityKey: 'a' });
-      const conflictRow = conflict.activities[0].branches.find(b => b.key === 's1')!.rows.find(r => r.itemKey === 'i')!;
-      assert.equal(conflictRow.quantity, 2);
-      assert.equal(conflictRow.compensation, null);
-      assert.ok(conflictRow.issues.some(i => i.code === 'conflicting_percentage'));
-      await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya values ('short','5','Короткий период','2026-09-10','2026-09-20',false,true,false)`);
-      await tx.$executeRawUnsafe(`insert into catalog_segmenty_nomenklatury values ('short-seg','Один товар',false)`);
-      await tx.$executeRawUnsafe(`insert into information_register_nomenklatura_segmenta values ('short-seg','i',null)`);
-      await tx.$executeRawUnsafe(`insert into catalog_skidki_natsenki values ('short-d','Процент',11.11,'short-seg',false)`);
-      await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya_skidki_natsenki values ('short',null,'short-d','s1','2026-09-10','2026-09-20')`);
-      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah values ('unknown-outside','2026-09-25',null,true,false),('unknown-variant','2026-09-15',null,true,false)`);
-      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values ('unknown-outside',null,'i',null,500),('unknown-variant',null,'i','different-variant',500)`);
-      const unrelatedUnknown = await getMarketingCompensationReport({ ...params, activityKey: 'short' });
-      assert.equal(unrelatedUnknown.totals.compensation, 0);
-      assert.ok(!unrelatedUnknown.issues.some(i => i.code === 'missing_branch'));
-      await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values ('unknown-variant',null,'i',null,1)`);
-      const relevantUnknown = await getMarketingCompensationReport({ ...params, activityKey: 'short' });
-      assert.equal(relevantUnknown.totals.compensation, null);
-      assert.equal(relevantUnknown.activities[0].totals.compensation, null);
-      assert.ok(relevantUnknown.activities[0].issues.some(i => i.code === 'missing_branch'));
-      await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya values ('unset','6','Нет даты окончания','2026-09-01','0001-01-01',false,true,false)`);
-      const unsetOptions = await getMarketingCompensationActivities(params);
-      assert.ok(unsetOptions.activities.some(a => a.key === 'unset'));
-      const unset = await getMarketingCompensationReport({ ...params, activityKey: 'unset' });
-      assert.equal(unset.activities[0].totals.compensation, null);
-      assert.ok(unset.activities[0].issues.some(i => i.code === 'missing_activity_dates'));
-      await tx.$executeRawUnsafe('drop table information_register_nomenklatura_segmenta');
-      const unsynced = await getMarketingCompensationReport(params);
+      const params = { from: new Date("2026-09-01"), to: new Date("2026-10-01") };
+      const selected = { ...params, activityKey: "b" };
+      const read = () => getMarketingCompensationReport(selected, certified);
+      assert.deepEqual((await getMarketingCompensationActivities(params)).activities.map(a => a.key).sort(), ["a", "b"]);
+      const result = await getMarketingCompensationReport(params, certified);
+      const s1 = result.activities.find(a => a.key === "a")!.branches.find(b => b.key === "s1")!;
+      assert.deepEqual(s1.rows.map(r => [r.price, r.quantity, r.unitCompensation, r.compensation]), [[800, -1, 80, -80], [1000, 2, 100, 200]]);
+      assert.equal(s1.hasSales, true);
+      assert.equal(s1.hasReturns, true);
+      assert.equal(s1.rows[0].name, "Полное имя");
+      assert.equal(s1.rows[0].barcode, "001234");
+      assert.equal(s1.totals.compensation, 120);
+      assert.equal(result.totals.compensation, 390);
+      for (const [description, rate] of [[" 18,57% в строке", 18.57], ["10,5% правило", 10.5], ["10.5%", 10.5], ["0%", 0], ["100%", 100]] as const) {
+        await tx.$executeRawUnsafe("update catalog_skidki_natsenki set description=$1", description);
+        assert.equal((await read()).activities[0].branches[0].rows[0].discountPct, rate);
+      }
+      for (const description of ["процент 10%", "-5%", "+5%", "101%", "100.01%", "26", "NaN%", "Infinity%", null]) {
+        await tx.$executeRawUnsafe("update catalog_skidki_natsenki set description=$1", description);
+        const unknown = await read();
+        assert.equal(unknown.totals.compensation, null);
+        assert.ok(unknown.activities[0].branches[0].rows.every(r => r.discountPct === null && r.issues.some(i => i.code === "missing_percentage")));
+      }
+      await tx.$executeRawUnsafe("update catalog_skidki_natsenki set description='10% правило'");
+      const notCertified = await getMarketingCompensationReport(selected, unverified);
+      assert.equal(notCertified.totals.compensation, null);
+      assert.equal(notCertified.totals.knownCompensation, 200);
+      assert.ok(notCertified.activities[0].branches[0].rows.some(r => r.issues.some(i => i.code === "return_price_unverified")));
+      // Negative and positive source return quantities both mean a return.
+      await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary set kolichestvo=-1");
+      assert.equal((await read()).totals.compensation, 120);
+      // Same-price full return still belongs to the sales block, not return-only.
+      await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary set kolichestvo=2,tsena=1000");
+      const netZero = (await read()).activities[0].branches[0];
+      assert.deepEqual(netZero.rows.map(r => [r.quantity, r.compensation]), [[0, 0]]);
+      assert.equal(netZero.hasSales, true);
+      assert.equal(netZero.hasReturns, true);
+      await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_tovary set kolichestvo=0 where _parent_ref_key='r' and harakteristika_key is null");
+      const onlyReturn = (await read()).activities[0].branches[0];
+      assert.equal(onlyReturn.hasSales, false);
+      assert.equal(onlyReturn.hasReturns, true);
+      assert.equal(onlyReturn.totals.compensation, -200);
+      // Negative sale-table movements are adjustments with their original sign.
+      await tx.$executeRawUnsafe("delete from document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary");
+      await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_tovary set kolichestvo=-0.15,tsena=1 where _parent_ref_key='r' and harakteristika_key is null");
+      const fractional = (await read()).activities[0].branches[0];
+      assert.equal(fractional.hasReturns, true);
+      assert.equal(fractional.hasSales, false);
+      assert.equal(fractional.rows[0].compensation, -0.02);
+      await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_tovary set kolichestvo=2,tsena=0 where _parent_ref_key='r' and harakteristika_key is null");
+      assert.equal((await read()).totals.compensation, 0);
+      for (const price of [null, -1, "NaN", "Infinity"]) {
+        await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_tovary set tsena=$1::numeric where _parent_ref_key='r' and harakteristika_key is null", price);
+        const missing = (await read()).activities[0].branches[0].rows[0];
+        assert.equal(missing.price, null);
+        assert.equal(missing.compensation, null);
+        assert.ok(missing.issues.some(i => i.code === "missing_price"));
+      }
+      await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_tovary set tsena=1000,kolichestvo=null where _parent_ref_key='r' and harakteristika_key is null");
+      assert.equal((await read()).totals.compensation, null);
+      await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_tovary set kolichestvo=2 where _parent_ref_key='r' and harakteristika_key is null");
+      await tx.$executeRawUnsafe("update catalog_nomenklatura set shtrihkod=null");
+      const noBarcode = await read();
+      assert.equal(noBarcode.totals.compensation, 200);
+      assert.ok(noBarcode.activities[0].branches[0].rows[0].issues.some(i => i.code === "missing_barcode"));
+      // A later price must become another row, not overwrite the first group.
+      await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah_tovary values ('r',null,'i',null,1,800,720)");
+      assert.deepEqual((await read()).activities[0].branches[0].rows.map(r => r.compensation), [80, 200]);
+      await tx.$executeRawUnsafe("insert into catalog_skidki_natsenki values ('conflict','20%','Процент',10,'seg',false)");
+      await tx.$executeRawUnsafe("insert into document_marketingovaya_aktsiya_skidki_natsenki values ('b',null,'conflict','s1','2026-09-02','2026-09-30')");
+      const conflict = await read();
+      assert.equal(conflict.totals.compensation, null);
+      assert.equal(conflict.activities[0].branches[0].rows[0].quantity, 1);
+      assert.ok(conflict.activities[0].branches[0].rows[0].issues.some(i => i.code === "conflicting_percentage"));
+      await tx.$executeRawUnsafe("delete from document_marketingovaya_aktsiya_skidki_natsenki where skidka_natsenka_key='conflict'");
+      // No matching movements is known zero even with a malformed prefix.
+      await tx.$executeRawUnsafe("update catalog_skidki_natsenki set description='нет процента' where ref_key='d'");
+      await tx.$executeRawUnsafe("delete from document_otchet_o_roznichnyh_prodazhah_tovary where _parent_ref_key='r' and harakteristika_key is null");
+      const absent = await read();
+      assert.equal(absent.totals.compensation, 0);
+      assert.equal(absent.activities[0].branches[0].rows.length, 0);
+      assert.ok(absent.activities[0].issues.some(i => i.code === "missing_percentage"));
+      // Before deployment DDL, missing return column is safe and unknown.
+      await tx.$executeRawUnsafe("alter table document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary drop column tsena");
+      await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values ('r',null,'i',null,1)");
+      assert.equal((await getMarketingCompensationReport(selected, unverified)).totals.compensation, null);
+      // Unknown store of a relevant SKU blocks even an otherwise empty scope.
+      await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah values ('unknown','2026-09-15',null,true,false)");
+      await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah_tovary values ('unknown',null,'i',null,1,1000,900)");
+      const unknownStore = await read();
+      assert.equal(unknownStore.totals.compensation, null);
+      assert.ok(unknownStore.issues.some(i => i.code === "missing_branch"));
+      await tx.$executeRawUnsafe("drop table information_register_nomenklatura_segmenta");
+      const unsynced = await read();
       assert.equal(unsynced.totals.compensation, null);
-      assert.ok(unsynced.issues.some(i => i.code === 'missing_source'));
+      assert.ok(unsynced.issues.some(i => i.code === "missing_source"));
     }, { timeout: 60000 });
   } finally { prisma.$queryRaw = original; await prisma.$disconnect(); }
 });

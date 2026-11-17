@@ -57,7 +57,7 @@ function ItemRow({ row }: { row: CompensationRow }) {
       <span className="compensation-row-note">Расчёт: {periodLabel(row.from, row.to)}</span>
       <Issues issues={row.issues} label="Замечания к строке" />
     </th>
-    <td className="num">{money(row.price)}<span className="compensation-row-note">{row.priceDate ? `Установка: ${formatDate(row.priceDate)}` : "Дата установки неизвестна"}</span></td>
+    <td className="num">{money(row.price)}<span className="compensation-row-note">Цена до скидки из строки продажи/возврата 1С</span></td>
     <td className="num">{row.discountPct === null ? "Нет данных" : `${decimalFormatter.format(row.discountPct)} %`}</td>
     <td className="num">{money(row.unitCompensation)}</td>
     <td className="num">{row.quantity === null ? "Нет данных" : decimalFormatter.format(row.quantity)}</td>
@@ -85,13 +85,13 @@ function Branch({ branch, activityName, expandSmallBranches }: {
           <thead><tr>
             <th scope="col">Штрихкод</th>
             <th scope="col">Полное наименование товара</th>
-            <th scope="col" className="num">Закупочная цена, ₸</th>
+            <th scope="col" className="num">Розничная цена до скидки, ₸</th>
             <th scope="col" className="num">Процент, %</th>
             <th scope="col" className="num">Компенсация на единицу, ₸</th>
             <th scope="col" className="num">Количество за вычетом возвратов</th>
             <th scope="col" className="num">Компенсация, ₸</th>
           </tr></thead>
-          <tbody>{branch.rows.map((row, index) => <ItemRow key={`${row.itemKey}-${row.characteristicKey ?? ""}-${row.from}-${row.to}-${index}`} row={row} />)}</tbody>
+          <tbody>{branch.rows.map((row) => <ItemRow key={JSON.stringify([row.itemKey, row.characteristicKey, row.from, row.to, row.price])} row={row} />)}</tbody>
         </table>
       </div>
     </> : null}</div> : <p className="compensation-note">За расчётный период в филиале нет строк для отображения. Проверьте замечания к отчёту и активности.</p>}
@@ -220,9 +220,9 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
     <details className="compensation-method">
       <summary>Как рассчитывается компенсация</summary>
       <div>
-        <p>Закупочная цена — последняя действующая установка цены для товара и филиала на конец пересечения выбранного периода со сроком активности. Более узкие интервалы правил ограничивают количество в строках, но не меняют дату, на которую определяется цена. Фактическая дата установки цены указана в строке.</p>
-        <p>Процент берётся из сохранённых условий активности в 1С. Он не рассчитывается по разнице розничной цены и цены продажи. Товары берутся из сегмента номенклатуры активности.</p>
-        <p>Количество — продажи минус возвраты за расчётный период. Компенсация на единицу = закупочная цена × процент ÷ 100. Компенсация по строке = сумма на единицу × количество. Денежные значения округляются до двух знаков: сначала на единицу, затем по строке. Итоги складываются из округлённых строк.</p>
+        <p>Розничная цена до скидки — поле «Цена» той же строки продажи или возврата в 1С. Разные цены одного товара показаны отдельными строками; цена другой продажи, выручка и установки цен не подставляются.</p>
+        <p>Процент — только префикс названия правила скидки, например «18,57% в строке…». Название акции и числовое поле скидки не используются. Товары берутся из сегмента номенклатуры правила.</p>
+        <p>Количество — продажи со своим знаком минус абсолютное количество возвратов. Компенсация на единицу = розничная цена до скидки × процент ÷ 100. Компенсация строки = сумма на единицу × нетто количество по этой цене. Округление HALF_UP до двух знаков: сначала на единицу, затем по строке. Итоги — сумма округлённых строк, включая корректировки возвратов.</p>
         <p>«Нет данных» не означает ноль. При нехватке данных полный итог не рассчитывается; известная часть показана отдельно. Отсутствие штрихкода само по себе не мешает денежному расчёту. Штрихкод берётся только из карточки товара, без подмены данными чеков.</p>
         <p>Один товар может входить в несколько активностей: компенсация рассчитывается для каждой отдельно, без распределения продаж между активностями.</p>
       </div>

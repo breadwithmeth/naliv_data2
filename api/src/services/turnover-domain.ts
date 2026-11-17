@@ -3,6 +3,11 @@ import type {
   TurnoverSales, TurnoverTransfer
 } from "./turnover-types.js";
 
+export function turnoverCoefficientBand(value: number | null): "red" | "orange" | "green" | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return value < 2 ? "red" : value < 3 ? "orange" : "green";
+}
+
 export function chronologicalAverage(values: (number | null)[]): number | null {
   if (!values.length || values.some((value) => value === null || !Number.isFinite(value))) return null;
   if (values.length === 1) return values[0]!;

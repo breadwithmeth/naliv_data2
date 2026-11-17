@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chronologicalAverage, salesChange, turnoverRatios } from "../src/services/turnover-domain.js";
+import { chronologicalAverage, salesChange, sumNullable, turnoverRatios, turnoverSales } from "../src/services/turnover-domain.js";
 
 // These regressions catch doubled endpoint columns, invented gap balances,
 // division by zero, and percentages against returns-only comparison bases.
@@ -49,4 +49,24 @@ test("sales changes distinguish new demand, absent baseline, and missing data", 
   assert.deepEqual(salesChange(0, 0), { pct: null, status: "no-base" });
   assert.deepEqual(salesChange(5, -1), { pct: null, status: "no-base" });
   assert.deepEqual(salesChange(null, 10), { pct: null, status: "missing" });
+});
+
+test("nullable totals never discard an unknown or non-finite contributing value", () => {
+  assert.equal(sumNullable([10, null, 30]), null);
+  assert.equal(sumNullable([10, Number.NaN]), null);
+  assert.equal(sumNullable([10, Number.POSITIVE_INFINITY]), null);
+  assert.equal(sumNullable([Number.MAX_VALUE, Number.MAX_VALUE]), null);
+  assert.equal(sumNullable([10, -3, 0]), 7);
+});
+
+test("period sales preserve independent unknown money and use the chronological denominator", () => {
+  assert.deepEqual(turnoverSales(100, null, 1800, 2), {
+    quantity: 100, cost: null, revenue: 1800, averageDailyQty: 50, averageDailyCost: null
+  });
+  assert.deepEqual(turnoverSales(null, 1000, 1800, 2), {
+    quantity: null, cost: 1000, revenue: 1800, averageDailyQty: null, averageDailyCost: 500
+  });
+  assert.deepEqual(turnoverSales(3, 30, 45, 0), {
+    quantity: 3, cost: 30, revenue: 45, averageDailyQty: 3, averageDailyCost: 30
+  });
 });

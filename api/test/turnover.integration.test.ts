@@ -237,6 +237,14 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       assert.deepEqual(item.barcodes, ["460123"]);
       assert.equal(report.rows.find((row) => row.sku === "i2")!.closingCost, null);
       assert.equal(report.rows.every((row) => row.daily.length === 0), true);
+      assert.equal(report.totals.overall.closingQty, null);
+      assert.equal(report.totals.overall.closingCost, null);
+      assert.equal(report.totals.overall.periodSales.revenue, 300);
+      assert.deepEqual(report.totals.byUnit.map((total) => total.unitKey).sort(), ["u1", "u2", "u3"]);
+      assert.equal(report.totals.byUnit.find((total) => total.unitKey === "u1")!.closingQty, 16);
+      assert.equal(report.totals.byUnit.find((total) => total.unitKey === "u2")!.closingQty, 5);
+      assert.equal(report.totals.byUnit.find((total) => total.unitKey === "u3")!.closingQty, 7);
+      assert.deepEqual(report.totals.overall.daily, []);
       const itemDetail = await getTurnoverRow({ ...params, auditGroup: item.key });
       assert.equal(itemDetail.row.key, item.key);
       assert.equal(itemDetail.row.periodSales.quantity, 3);
@@ -248,18 +256,136 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       const grouped = await getTurnoverReport({ ...params, groupBy: "store" });
       assert.equal(grouped.rows.length, 3);
       assert.equal(new Set(grouped.rows.map((row) => row.unit)).size, 3);
+      assert.deepEqual(grouped.totals, report.totals);
       const groupAudit = await getTurnoverReport({ ...params, groupBy: "store", auditGroup: grouped.rows[0]!.key });
       assert.equal(groupAudit.rows.filter((row) => row.daily.length > 0).length, 1);
       assert.equal(groupAudit.rows.find((row) => row.key === grouped.rows[0]!.key)!.daily.length, 3);
       const filtered = await getTurnoverReport({ ...params, risk: "no-sales" });
       assert.equal(filtered.summary.totalRowCount, 5);
       assert.equal(filtered.summary.noSalesCount, report.summary.noSalesCount);
+      assert.equal(filtered.totals.overall.periodSales.quantity, null);
+      assert.equal(filtered.totals.overall.periodSales.revenue, 0);
+      assert.equal(filtered.totals.byUnit.find((total) => total.unitKey === "u1")!.closingQty, 0);
+      assert.equal(report.totals.byUnit.find((total) => total.unitKey === "u1")!.closingQty, 16);
       assert.equal(report.rows.find((row) => row.sku === "i4")!.closingQty, 0);
       assert.equal(report.rows.find((row) => row.sku === "i4")!.risks.includes("stagnant"), false);
       assert.equal(report.rows.find((row) => row.sku === "i5")!.noSalesHistory, true);
       const byDay = await getTurnoverReport({ ...params, groupBy: "day" });
       assert.equal(byDay.summary.totalRowCount, report.summary.totalRowCount);
       assert.equal(byDay.summary.noSalesCount, report.summary.noSalesCount);
+      assert.deepEqual(byDay.totals, report.totals);
+      await t.test("totals recompute weighted ratios from the filtered atomic population in every profile and grouping", async () => {
+        await tx.$executeRawUnsafe("savepoint turnover_totals");
+        try {
+          await tx.$executeRawUnsafe("update catalog_nomenklatura set description=case ref_key when 'i1' then 'Totals Small' else 'Totals Large' end, edinitsa_izmereniya_key='u1' where ref_key in ('i1','i2')");
+          await tx.$executeRawUnsafe("delete from accumulation_register_tovary_na_skladah_balance where nomenklatura_key in ('i1','i2')");
+          await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance
+            select day,'w1',sku,'',quantity
+            from generate_series('2026-08-01'::timestamp,'2026-08-04'::timestamp,interval '1 day') day
+            cross join (values ('i1',10),('i2',30)) products(sku,quantity)`);
+          await tx.$executeRawUnsafe("delete from document_otchet_o_roznichnyh_prodazhah_tovary where nomenklatura_key in ('i1','i2')");
+          await tx.$executeRawUnsafe("delete from document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary where nomenklatura_key in ('i1','i2')");
+          await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
+            ('rr-s1-2026-08-01','i1','','w1',10,200),
+            ('rr-s1-2026-08-01','i2','','w1',90,1800),
+            ('rr-s1-2026-07-29','i1','','w1',5,100),
+            ('rr-s1-2026-07-29','i2','','w1',45,900)`);
+          await tx.$executeRawUnsafe("delete from information_register_sebestoimost_nomenklatury_record_type where nomenklatura_key in ('i1','i2')");
+          await tx.$executeRawUnsafe(`insert into information_register_sebestoimost_nomenklatury_record_type values
+            ('2026-07-01',true,'s1','i1','',10,1), ('2026-07-01',true,'s1','i2','',10,1)`);
+          const request = { ...params, search: "Totals", mode: "both" as const };
+          const baseline = await getTurnoverReport(request);
+          const total = baseline.totals.overall;
+          assert.equal(total.unit, "шт [u1]");
+          assert.deepEqual(baseline.totals.byUnit, []);
+          assert.equal(total.openingQty, 40);
+          assert.equal(total.closingQty, 40);
+          assert.equal(total.averageQty, 40);
+          assert.equal(total.averageCost, 400);
+          assert.equal(total.openingCost, 400);
+          assert.equal(total.closingCost, 400);
+          assert.deepEqual(total.periodSales, { quantity: 100, cost: 1000, revenue: 2000, averageDailyQty: 50, averageDailyCost: 500 });
+          assert.deepEqual(total.comparisonSales, { quantity: 50, cost: 500, revenue: 1000, averageDailyQty: 25, averageDailyCost: 250 });
+          assert.deepEqual(total.quantityChange, { pct: 100, status: "comparable" });
+          assert.deepEqual(total.costChange, { pct: 100, status: "comparable" });
+          assert.equal(total.turnoverQty, 2.5);
+          assert.equal(total.turnoverCost, 2.5);
+          assert.equal(total.turnoverQtyDays, 1.2);
+          assert.equal(total.turnoverCostDays, 1.2);
+          assert.ok(total.stockDays !== null && Math.abs(total.stockDays - 56 / 15) < 1e-12);
+          assert.equal(total.openOrderQty, 7);
+          assert.equal(total.excessQty, 0);
+          assert.ok(total.deficitQty !== null && Math.abs(total.deficitQty - 1970 / 7) < 1e-10);
+          assert.ok(total.recommendedOrderQty !== null && Math.abs(total.recommendedOrderQty - 1921 / 7) < 1e-10);
+          assert.deepEqual(total.stagnantCost, { d30: 0, d60: 0, d90: 0 });
+          for (const groupBy of ["sku", "store", "category", "brand", "day"] as const) {
+            const grouped = await getTurnoverReport({ ...request, groupBy, profile: "summary" });
+            assert.deepEqual(grouped.totals, baseline.totals, groupBy);
+          }
+          const sample = await getTurnoverReport({ ...request, profile: "sample" });
+          assert.deepEqual({ ...sample.totals.overall, daily: [] }, total);
+          assert.deepEqual(sample.totals.overall.daily.map((day) => [day.date, day.quantity, day.stockCost, day.salesQty, day.weight]), [
+            ["2026-08-01", 40, 400, 100, 0.5], ["2026-08-02", 40, 400, 0, 1], ["2026-08-03", 40, 400, 0, 0.5]
+          ]);
+          const searched = await getTurnoverReport({ ...request, search: "Totals Small" });
+          assert.equal(searched.totals.overall.averageQty, 10);
+          assert.equal(searched.totals.overall.periodSales.quantity, 10);
+          assert.equal(searched.totals.overall.turnoverQty, 1);
+          await tx.$executeRawUnsafe("update catalog_nomenklatura set edinitsa_izmereniya_key='u2' where ref_key='i2'");
+          const mixed = await getTurnoverReport({ ...request, profile: "sample" });
+          assert.equal(mixed.totals.overall.unit, null);
+          assert.equal(mixed.totals.overall.openingQty, null);
+          assert.equal(mixed.totals.overall.averageQty, null);
+          assert.equal(mixed.totals.overall.periodSales.quantity, null);
+          assert.equal(mixed.totals.overall.turnoverQty, null);
+          assert.equal(mixed.totals.overall.stockDays, null);
+          assert.equal(mixed.totals.overall.averageCost, 400);
+          assert.equal(mixed.totals.overall.turnoverCost, 2.5);
+          assert.deepEqual(mixed.totals.byUnit.map((total) => [total.unitKey, total.periodSales.quantity]).sort(), [["u1", 10], ["u2", 90]]);
+          assert.deepEqual(mixed.totals.overall.daily.map((day) => [day.quantity, day.stockCost, day.salesQty]), [[null, 400, null], [null, 400, null], [null, 400, null]]);
+          assert.deepEqual(mixed.totals.byUnit.find((total) => total.unitKey === "u2")!.daily.map((day) => day.quantity), [30, 30, 30]);
+          assert.ok(mixed.warnings.some((warning) => /общ.*количеств.*единиц/i.test(warning)));
+          await tx.$executeRawUnsafe("update catalog_nomenklatura set edinitsa_izmereniya_key=null where ref_key='i2'");
+          const unknown = await getTurnoverReport({ ...request, profile: "sample" });
+          assert.equal(unknown.totals.overall.closingQty, null);
+          assert.equal(unknown.totals.overall.closingCost, 400);
+          assert.deepEqual(unknown.totals.byUnit.map((total) => total.unitKey), ["u1"]);
+          const unknownOnly = await getTurnoverReport({ ...request, search: "Totals Large" });
+          assert.equal(unknownOnly.totals.overall.closingQty, null);
+          assert.equal(unknownOnly.totals.overall.periodSales.cost, 900);
+          assert.deepEqual(unknownOnly.totals.byUnit, []);
+          await tx.$executeRawUnsafe("update catalog_nomenklatura set edinitsa_izmereniya_key=null where ref_key='i1'");
+          const allUnknown = await getTurnoverReport(request);
+          assert.deepEqual(allUnknown.totals.byUnit, []);
+          assert.equal(allUnknown.totals.overall.closingQty, null);
+          assert.equal(allUnknown.totals.overall.averageCost, 400);
+          await tx.$executeRawUnsafe("update catalog_nomenklatura set edinitsa_izmereniya_key='u1' where ref_key in ('i1','i2')");
+          await tx.$executeRawUnsafe("update information_register_sebestoimost_nomenklatury_record_type set tsena=null where nomenklatura_key='i2'");
+          const missing = await getTurnoverReport(request);
+          assert.equal(missing.totals.overall.averageQty, 40);
+          assert.equal(missing.totals.overall.averageCost, null);
+          assert.equal(missing.totals.overall.periodSales.cost, null);
+          assert.equal(missing.totals.overall.turnoverCost, null);
+          assert.equal(missing.totals.overall.periodSales.revenue, 2000);
+        } finally {
+          await tx.$executeRawUnsafe("rollback to savepoint turnover_totals");
+          await tx.$executeRawUnsafe("release savepoint turnover_totals");
+        }
+      });
+      await t.test("an empty table population has unknown totals rather than a certified zero history", async () => {
+        const empty = await getTurnoverReport({ ...params, search: "No matching assortment", profile: "sample" });
+        assert.deepEqual(empty.totals.byUnit, []);
+        assert.deepEqual(empty.totals.overall, {
+          unit: null, daily: [], openingQty: null, closingQty: null, averageQty: null,
+          openingCost: null, closingCost: null, averageCost: null,
+          periodSales: { quantity: null, cost: null, revenue: null, averageDailyQty: null, averageDailyCost: null },
+          comparisonSales: { quantity: null, cost: null, revenue: null, averageDailyQty: null, averageDailyCost: null },
+          quantityChange: { pct: null, status: "missing" }, costChange: { pct: null, status: "missing" },
+          turnoverQty: null, turnoverQtyDays: null, turnoverCost: null, turnoverCostDays: null, stockDays: null,
+          excessQty: null, deficitQty: null, recommendedOrderQty: null, openOrderQty: null,
+          stagnantCost: { d30: null, d60: null, d90: null }
+        });
+      });
       const beforeHistory = await getTurnoverReport({ from: "2026-05-20", to: "2026-05-23", sku: "i1", store: ["s1"] });
       assert.equal(beforeHistory.rows[0]!.periodSales.quantity, null);
       assert.equal(beforeHistory.rows[0]!.closingQty, null);
@@ -277,6 +403,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
             status: "reloading" as const, from: "2026-06-01", toExclusive: "2026-08-04",
             completedJobs: 1, totalJobs: 2, sources: [], databaseBytes: 1, pauseAtBytes: 9_000_000_000,
             binding: "turnover-fixture",
+            returnPriceIntervals: [],
             coverageSources: (["retail", "receipts"] as const).map((key) => ({
               source: { key, entity: key === "retail" ? "Document_ОтчетОРозничныхПродажах" : "Document_ЧекККМ",
                 kind: "dated" as const, tables: [key === "retail" ? "document_otchet_o_roznichnyh_prodazhah" : "document_chek_kkm"],
@@ -321,7 +448,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           databaseBytes: 1, pauseAtBytes: 12_000_000_000, binding: "turnover-open-period",
           sources: ["document_otchet_o_roznichnyh_prodazhah", "document_chek_kkm", "accumulation_register_tovary_na_skladah_balance"]
             .map((table) => ({ table, status: "verified" as const, verifiedThrough: through })),
-          coverageSources: []
+          coverageSources: [], returnPriceIntervals: []
         });
         // A whole "current month" request: days after the certified end have no reports or snapshots.
         const open = await getTurnoverReport({ ...params, to: "2026-08-31", sku: "i1" }, ready("2026-08-04"));
@@ -370,14 +497,20 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           assert.equal(total.turnoverQty, 14 / 55);
           assert.equal(total.turnoverCost, 64 / 385);
           assert.equal(total.turnoverQtyDays, 3 / (14 / 55));
+          assert.equal(consolidated.totals.overall.closingQty, 42);
+          assert.equal(consolidated.totals.overall.periodSales.quantity, 14);
           const oneShop = await getTurnoverReport({ ...request, store: ["s1"] });
           assert.deepEqual(oneShop.rows[0]!.daily.map((day) => day.quantity), [14, 12, 22]);
           assert.equal(oneShop.rows[0]!.periodSales.quantity, 6);
           assert.equal(oneShop.rows[0]!.periodSales.cost, 40);
+          assert.equal(oneShop.totals.overall.closingQty, 22);
+          assert.equal(oneShop.totals.overall.periodSales.quantity, 6);
           const oneWarehouse = await getTurnoverReport({ ...request, warehouse: "w1" });
           assert.deepEqual(oneWarehouse.rows[0]!.daily.map((day) => day.quantity), [12, 8, 16]);
           assert.equal(oneWarehouse.rows[0]!.periodSales.quantity, 3);
           assert.equal(oneWarehouse.rows[0]!.periodSales.cost, 10);
+          assert.equal(oneWarehouse.totals.overall.closingQty, 16);
+          assert.equal(oneWarehouse.totals.overall.periodSales.quantity, 3);
           const detail = await getTurnoverRow({ ...request, auditGroup: total.key });
           assert.equal(detail.row.periodSales.quantity, 14);
           assert.deepEqual(detail.row.daily.map((day) => day.quantity), [54, 62, 42]);
@@ -489,6 +622,9 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           assert.equal(visible.rows[0]!.periodSales.quantity, 0);
           const hidden = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "quantity", search: "Zero Item", excludeZero: true });
           assert.equal(hidden.rows.length, 0);
+          assert.equal(visible.totals.overall.periodSales.quantity, 0);
+          assert.equal(hidden.totals.overall.periodSales.quantity, null);
+          assert.deepEqual(hidden.totals.byUnit, []);
           const hiddenMoney = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "money", search: "Zero Item", excludeZero: true });
           assert.equal(hiddenMoney.rows.length, 0);
           const stockOnly = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", mode: "quantity", search: "Litres", excludeZero: true });
@@ -590,12 +726,16 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           assert.equal(selected.rows.find((row) => row.sku === "i1")!.periodSales.quantity, 3);
           assert.equal(selected.rows.find((row) => row.sku === "i1")!.periodSales.cost, 10);
           const overlap = await getTurnoverReport({ ...params, category: ["folder", "child", "folder"] });
+          assert.equal(selected.totals.overall.closingQty, null);
+          assert.equal(selected.totals.overall.periodSales.revenue, 300);
           assert.deepEqual(overlap.rows.map((row) => row.sku).sort(), ["i1", "i2", "i3", "i4", "i5"]);
           assert.equal(overlap.rows.find((row) => row.sku === "i1")!.periodSales.quantity, 3);
           const unrestricted = await getTurnoverReport({ ...params, category: [] });
           assert.deepEqual(unrestricted.rows.map((row) => row.sku).sort(), ["i1", "i2", "i3", "i4", "i5"]);
           const single = await getTurnoverReport({ ...params, category: ["child"] });
           assert.deepEqual(single.rows.map((row) => row.sku), ["i1"]);
+          assert.equal(single.totals.overall.closingQty, 16);
+          assert.equal(single.totals.overall.periodSales.quantity, 3);
           const detail = await getTurnoverRow({ ...selection, auditGroup: item.key });
           assert.equal(detail.row.sku, "i1");
           await assert.rejects(getTurnoverRow({ ...params, category: ["g2"], auditGroup: item.key }), /Строка/);
@@ -665,7 +805,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
         await assert.rejects(getTurnoverRow({ ...params, category: ["folder"], auditGroup: missingCard.key }), /Строка/);
         assert.equal((await getTurnoverReport({ ...params, sku: "folder" })).rows.length, 0);
       });
-    }, { timeout: 30_000 });
+    }, { timeout: 60_000 });
   } finally {
     prisma.$queryRaw = originalQuery;
     prisma.$queryRawUnsafe = originalUnsafeQuery;

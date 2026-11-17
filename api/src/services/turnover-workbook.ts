@@ -5,12 +5,13 @@ import type { Writable } from "node:stream";
 import { setImmediate } from "node:timers/promises";
 import type {
   TurnoverChange, TurnoverDailyRow, TurnoverReport, TurnoverRow,
-  TurnoverTransfer, TurnoverWindow
+  TurnoverTotal, TurnoverTransfer, TurnoverWindow
 } from "./turnover-types.js";
 import { writeTurnoverSampleWorkbook } from "./turnover-sample-workbook.js";
+import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
 
 type Value = string | number | null;
-type Column<T> = { label: string; block: string; value: (row: T) => Value; width?: number; format?: string };
+type Column<T> = { label: string; block: string; value: (row: T) => Value; footer?: (total: TurnoverTotal, label: string) => Value; footerOnly?: boolean; coefficient?: boolean; width?: number; format?: string };
 type StreamingSheet = ExcelJS.Worksheet & { commit(): void };
 type StreamingWorkbook = ExcelJS.stream.xlsx.WorkbookWriter & { zip: EventEmitter & { abort(): void } };
 const decimal = '#,##0.###;[Red](#,##0.###);0';
@@ -31,52 +32,52 @@ function identityColumns(includeBarcodes = true): Column<TurnoverRow>[] {
     { label: "Бренд", block: "Идентификация", value: r => r.brandName, width: 24 },
     { label: "SKU (ключ 1С)", block: "Идентификация", value: r => r.sku, width: 38 },
     { label: "Артикул", block: "Идентификация", value: r => r.article, width: 18 },
-    { label: "Наименование", block: "Идентификация", value: r => r.name, width: 45 }
+    { label: "Наименование", block: "Идентификация", value: r => r.name, footer: (_total, label) => label, width: 45 }
   ];
   if (includeBarcodes) columns.push({ label: "Штрихкоды", block: "Идентификация", value: r => r.barcodes.join(", "), width: 24 });
-  columns.push({ label: "Единица учёта 1С", block: "Идентификация", value: r => r.unit, width: 19 });
+  columns.push({ label: "Единица учёта 1С", block: "Идентификация", value: r => r.unit, footer: total => total.unit, width: 19 });
   return columns;
 }
 
 function reportColumns(report: TurnoverReport): Column<TurnoverRow>[] {
   const columns = identityColumns(report.params.profile !== "summary");
   if (report.params.mode !== "money") columns.push(
-    { label: "Начальный остаток", block: "Количество · в единице строки", value: r => r.openingQty },
-    { label: "Конечный остаток", block: "Количество · в единице строки", value: r => r.closingQty },
-    { label: "Средний остаток", block: "Количество · в единице строки", value: r => r.averageQty },
-    { label: "Нетто продажи за период", block: "Количество · в единице строки", value: r => r.periodSales.quantity },
-    { label: "Среднедневные продажи периода", block: "Количество · в единице строки", value: r => r.periodSales.averageDailyQty },
-    { label: "Оборачиваемость, раз", block: "Количество · в единице строки", value: r => r.turnoverQty },
-    { label: "Оборачиваемость, дни", block: "Количество · в единице строки", value: r => r.turnoverQtyDays }
+    { label: "Начальный остаток", block: "Количество · в единице строки", value: r => r.openingQty, footer: t => t.openingQty },
+    { label: "Конечный остаток", block: "Количество · в единице строки", value: r => r.closingQty, footer: t => t.closingQty },
+    { label: "Средний остаток", block: "Количество · в единице строки", value: r => r.averageQty, footer: t => t.averageQty },
+    { label: "Нетто продажи за период", block: "Количество · в единице строки", value: r => r.periodSales.quantity, footer: t => t.periodSales.quantity },
+    { label: "Среднедневные продажи периода", block: "Количество · в единице строки", value: r => r.periodSales.averageDailyQty, footer: t => t.periodSales.averageDailyQty },
+    { label: "Оборачиваемость, раз", block: "Количество · в единице строки", value: r => r.turnoverQty, footer: t => t.turnoverQty, coefficient: true },
+    { label: "Оборачиваемость, дни", block: "Количество · в единице строки", value: r => r.turnoverQtyDays, footer: t => t.turnoverQtyDays }
   );
   if (report.params.mode !== "quantity") columns.push(
-    { label: "Стоимость начального остатка, ₸", block: "Себестоимость · ₸", value: r => r.openingCost, format: money },
-    { label: "Стоимость конечного остатка, ₸", block: "Себестоимость · ₸", value: r => r.closingCost, format: money },
-    { label: "Средняя стоимость запаса, ₸", block: "Себестоимость · ₸", value: r => r.averageCost, format: money },
-    { label: "Нетто продажи по себестоимости, ₸", block: "Себестоимость · ₸", value: r => r.periodSales.cost, format: money },
-    { label: "Среднедневная себестоимость продаж периода, ₸", block: "Себестоимость · ₸", value: r => r.periodSales.averageDailyCost, format: money },
-    { label: "Оборачиваемость по себестоимости, раз", block: "Себестоимость · ₸", value: r => r.turnoverCost },
-    { label: "Оборачиваемость по себестоимости, дни", block: "Себестоимость · ₸", value: r => r.turnoverCostDays },
-    { label: "Розничная выручка, ₸ · не числитель оборачиваемости", block: "Выручка отдельно", value: r => r.periodSales.revenue, format: money }
+    { label: "Стоимость начального остатка, ₸", block: "Себестоимость · ₸", value: r => r.openingCost, footer: t => t.openingCost, format: money },
+    { label: "Стоимость конечного остатка, ₸", block: "Себестоимость · ₸", value: r => r.closingCost, footer: t => t.closingCost, format: money },
+    { label: "Средняя стоимость запаса, ₸", block: "Себестоимость · ₸", value: r => r.averageCost, footer: t => t.averageCost, format: money },
+    { label: "Нетто продажи по себестоимости, ₸", block: "Себестоимость · ₸", value: r => r.periodSales.cost, footer: t => t.periodSales.cost, format: money },
+    { label: "Среднедневная себестоимость продаж периода, ₸", block: "Себестоимость · ₸", value: r => r.periodSales.averageDailyCost, footer: t => t.periodSales.averageDailyCost, format: money },
+    { label: "Оборачиваемость по себестоимости, раз", block: "Себестоимость · ₸", value: r => r.turnoverCost, footer: t => t.turnoverCost, coefficient: true },
+    { label: "Оборачиваемость по себестоимости, дни", block: "Себестоимость · ₸", value: r => r.turnoverCostDays, footer: t => t.turnoverCostDays },
+    { label: "Розничная выручка, ₸ · не числитель оборачиваемости", block: "Выручка отдельно", value: r => r.periodSales.revenue, footer: t => t.periodSales.revenue, format: money }
   );
   if (report.params.mode !== "money") columns.push(
-    { label: "Нетто количество периода сравнения", block: "Сравнение периодов", value: r => r.comparisonSales.quantity },
-    { label: "Изменение количества, % / статус", block: "Сравнение периодов", value: r => changeValue(r.quantityChange), format: percent }
+    { label: "Нетто количество периода сравнения", block: "Сравнение периодов", value: r => r.comparisonSales.quantity, footer: t => t.comparisonSales.quantity },
+    { label: "Изменение количества, % / статус", block: "Сравнение периодов", value: r => changeValue(r.quantityChange), footer: t => changeValue(t.quantityChange), format: percent }
   );
   if (report.params.mode !== "quantity") columns.push(
-    { label: "Себестоимость продаж периода сравнения, ₸", block: "Сравнение периодов", value: r => r.comparisonSales.cost, format: money },
-    { label: "Изменение себестоимости продаж, % / статус", block: "Сравнение периодов", value: r => changeValue(r.costChange), format: percent }
+    { label: "Себестоимость продаж периода сравнения, ₸", block: "Сравнение периодов", value: r => r.comparisonSales.cost, footer: t => t.comparisonSales.cost, format: money },
+    { label: "Изменение себестоимости продаж, % / статус", block: "Сравнение периодов", value: r => changeValue(r.costChange), footer: t => changeValue(t.costChange), format: percent }
   );
   columns.push(
-    { label: `Дни запаса · спрос за ${report.params.horizon ?? 14} дней`, block: "Риски и решения", value: r => r.stockDays },
+    { label: `Дни запаса · спрос за ${report.params.horizon ?? 14} дней`, block: "Риски и решения", value: r => r.stockDays, footer: t => t.stockDays },
     { label: "Последняя продажа в магазине", block: "Риски и решения", value: r => r.lastSaleDate, width: 22 },
     { label: "Дни без движения / история", block: "Риски и решения", value: r => r.noSalesHistory ? "Нет продаж за историю учёта" : r.daysWithoutMovement, width: 26 },
     { label: "Дни без наличия (наблюдаемые)", block: "Риски и решения", value: r => r.outOfStockDays },
-    { label: "Излишек, единица строки", block: "Риски и решения", value: r => r.excessQty },
-    { label: "Дефицит, единица строки", block: "Риски и решения", value: r => r.deficitQty },
-    { label: "Открытые заказы за вычетом поступлений", block: "Риски и решения", value: r => r.openOrderQty },
+    { label: "Излишек, единица строки", block: "Риски и решения", value: r => r.excessQty, footer: t => t.excessQty },
+    { label: "Дефицит, единица строки", block: "Риски и решения", value: r => r.deficitQty, footer: t => t.deficitQty },
+    { label: "Открытые заказы за вычетом поступлений", block: "Риски и решения", value: r => r.openOrderQty, footer: t => t.openOrderQty },
     { label: "Ближайшая ожидаемая поставка", block: "Риски и решения", value: r => r.nextDeliveryDate, width: 24 },
-    { label: "Рекомендовано к заказу, единица строки", block: "Риски и решения", value: r => r.recommendedOrderQty },
+    { label: "Рекомендовано к заказу, единица строки", block: "Риски и решения", value: r => r.recommendedOrderQty, footer: t => t.recommendedOrderQty },
     { label: "Статусы", block: "Риски и решения", value: r => r.risks.map(risk => riskNames[risk]).join("; "), width: 28 },
     { label: "Рекомендации и причины", block: "Риски и решения", value: r => r.recommendations.map(rec => `${rec.action}: ${rec.reason}`).join("\n"), width: 65 },
     { label: "Наблюдаемые дни остатков", block: "Качество данных", value: r => r.observedDays },
@@ -84,9 +85,9 @@ function reportColumns(report: TurnoverReport): Column<TurnoverRow>[] {
     { label: "Покрытие себестоимости, %", block: "Качество данных", value: r => r.costCoveragePct === null ? null : r.costCoveragePct / 100, format: percent }
   );
   if (report.params.mode !== "quantity") columns.push(
-    { label: "Стоимость без движения ≥30 дней, ₸", block: "Замороженные средства · накопительные группы", value: r => r.stagnantCost.d30, format: money },
-    { label: "Стоимость без движения ≥60 дней, ₸", block: "Замороженные средства · накопительные группы", value: r => r.stagnantCost.d60, format: money },
-    { label: "Стоимость без движения ≥90 дней, ₸", block: "Замороженные средства · накопительные группы", value: r => r.stagnantCost.d90, format: money }
+    { label: "Стоимость без движения ≥30 дней, ₸", block: "Замороженные средства · накопительные группы", value: r => r.stagnantCost.d30, footer: t => t.stagnantCost.d30, format: money },
+    { label: "Стоимость без движения ≥60 дней, ₸", block: "Замороженные средства · накопительные группы", value: r => r.stagnantCost.d60, footer: t => t.stagnantCost.d60, format: money },
+    { label: "Стоимость без движения ≥90 дней, ₸", block: "Замороженные средства · накопительные группы", value: r => r.stagnantCost.d90, footer: t => t.stagnantCost.d90, format: money }
   );
   return columns;
 }
@@ -97,9 +98,11 @@ function table<T>(workbook: StreamingWorkbook, name: string, columns: Column<T>[
   let sheet: StreamingSheet;
   let part = 0;
   let rowCount = 4;
+  let footerCount = 0;
   function open() {
     part++;
     rowCount = 4;
+    footerCount = 0;
     sheet = workbook.addWorksheet(part === 1 ? name : `${name} ${part}`, {
       views: [{ state: "frozen", xSplit: 1, ySplit: 4 }],
       properties: { defaultRowHeight: 21 },
@@ -139,6 +142,9 @@ function table<T>(workbook: StreamingWorkbook, name: string, columns: Column<T>[
   async function finish() {
     signal.throwIfAborted();
     sheet.autoFilter = { from: { row: 4, column: 1 }, to: { row: rowCount, column: columns.length } };
+    columns.forEach((column, index) => {
+      if (column.coefficient) formatTurnoverCoefficientRange(sheet, sheet.getColumn(index + 1).letter, 5, rowCount + footerCount);
+    });
     const entryName = `xl/worksheets/sheet${sheet.id}.xml`;
     let onEntry!: (entry: { name: string }) => void;
     let onAbort!: () => void;
@@ -161,31 +167,64 @@ function table<T>(workbook: StreamingWorkbook, name: string, columns: Column<T>[
     add(record: T) {
       if (rowCount >= 10_004) return false;
       // A string cell is always text, including leading '=' and leading zeros.
-      sheet.addRow(columns.map(column => {
+      const row = sheet.addRow(columns.map(column => {
+        if (column.footerOnly) return null;
         const value = column.value(record);
         return value === null || (typeof value === "number" && !Number.isFinite(value)) ? "n/a" : typeof value === "string" ? value.slice(0, 32_767) : value;
-      })).commit();
+      }));
+      columns.forEach((column, index) => {
+        const cell = row.getCell(index + 1);
+        if (column.coefficient) styleTurnoverCoefficient(cell, typeof cell.value === "number" ? cell.value : null);
+      });
+      row.commit();
       rowCount++;
       return true;
+    },
+    footer(total: TurnoverTotal, label = "ИТОГО") {
+      const row = sheet.addRow(columns.map(column => {
+        if (!column.footer) return null;
+        const value = column.footer(total, label);
+        return value === null || (typeof value === "number" && !Number.isFinite(value)) ? "n/a" : value;
+      }));
+      row.eachCell({ includeEmpty: true }, cell => {
+        cell.font = { name: "Calibri", size: 11, bold: true };
+        cell.border = { top: { style: "thin", color: { argb: "FF9CA3AF" } } };
+      });
+      columns.forEach((column, index) => {
+        const cell = row.getCell(index + 1);
+        if (column.coefficient) styleTurnoverCoefficient(cell, typeof cell.value === "number" ? cell.value : null);
+      });
+      row.commit();
+      footerCount++;
     },
     finish,
     async nextPart() { await finish(); open(); }
   };
 }
 
-function dailyColumns(report: TurnoverReport): Column<TurnoverDailyRow>[] {
+function dailyColumns(report: TurnoverReport, includePeriodTotals = false): Column<TurnoverDailyRow>[] {
   const columns: Column<TurnoverDailyRow>[] = [
-    { label: "Дата", block: "Ежедневно", value: r => r.date, width: 16 },
-    { label: "Единица учёта 1С", block: "Ежедневно", value: r => r.unit },
+    { label: "Дата", block: "Ежедневно", value: r => r.date, footer: (_total, label) => label, width: 16 },
+    { label: "Единица учёта 1С", block: "Ежедневно", value: r => r.unit, footer: t => t.unit },
     { label: "Вес даты в среднем", block: "Среднее хронологическое", value: r => r.weight }
   ];
-  if (report.params.mode !== "money") columns.push({ label: "Остаток, единица строки", block: "Остаток", value: r => r.quantity });
-  if (report.params.mode !== "quantity") columns.push({ label: "Стоимость остатка, ₸", block: "Остаток", value: r => r.stockCost, format: money });
-  if (report.params.mode !== "money") columns.push({ label: "Нетто продажи, единица строки", block: "Продажи", value: r => r.salesQty });
+  if (report.params.mode !== "money") columns.push({ label: "Остаток, единица строки", block: "Остаток", value: r => r.quantity, footer: t => t.closingQty });
+  if (report.params.mode !== "quantity") columns.push({ label: "Стоимость остатка, ₸", block: "Остаток", value: r => r.stockCost, footer: t => t.closingCost, format: money });
+  if (report.params.mode !== "money") columns.push({ label: "Нетто продажи, единица строки", block: "Продажи", value: r => r.salesQty, footer: t => t.periodSales.quantity });
   if (report.params.mode !== "quantity") columns.push(
-    { label: "Себестоимость продаж, ₸", block: "Продажи", value: r => r.salesCost, format: money },
-    { label: "Розничная выручка отдельно, ₸", block: "Выручка", value: r => r.revenue, format: money }
+    { label: "Себестоимость продаж, ₸", block: "Продажи", value: r => r.salesCost, footer: t => t.periodSales.cost, format: money },
+    { label: "Розничная выручка отдельно, ₸", block: "Выручка", value: r => r.revenue, footer: t => t.periodSales.revenue, format: money }
   );
+  if (includePeriodTotals) {
+    if (report.params.mode !== "money") columns.push(
+      { label: "Начальный остаток периода", block: "Итоги периода · не сумма дней", value: () => null, footerOnly: true, footer: t => t.openingQty },
+      { label: "Средний остаток периода", block: "Итоги периода · не сумма дней", value: () => null, footerOnly: true, footer: t => t.averageQty }
+    );
+    if (report.params.mode !== "quantity") columns.push(
+      { label: "Стоимость начального остатка периода, ₸", block: "Итоги периода · не сумма дней", value: () => null, footerOnly: true, footer: t => t.openingCost, format: money },
+      { label: "Средняя стоимость запаса периода, ₸", block: "Итоги периода · не сумма дней", value: () => null, footerOnly: true, footer: t => t.averageCost, format: money }
+    );
+  }
   return columns;
 }
 
@@ -207,11 +246,13 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
     workbook.created = new Date(report.generatedAt);
     const note = `Период [${report.params.from}, ${report.params.to}); сравнение [${report.comparison.from}, ${report.comparison.to}). n/a — данных нет или расчёт невозможен; 0 — известный ноль. Стоимость по себестоимости, выручка отдельно.`;
     if (report.params.groupBy === "day") {
-      const main = table(workbook, "Оборачиваемость", dailyColumns(report), "Оборачиваемость запасов · по дням", note, canceled.signal);
+      const main = table(workbook, "Оборачиваемость", dailyColumns(report, true), "Оборачиваемость запасов · по дням", note + " В ИТОГО дневной остаток означает конечный запас; начальный и средний запас периода приведены отдельно.", canceled.signal);
       for (const row of report.daily) {
         if (!main.add(row)) { await main.nextPart(); main.add(row); }
         if (++written % 1024 === 0) await checkpoint();
       }
+      for (const total of report.totals.byUnit) main.footer(total, `ИТОГО · ${total.unit ?? total.unitKey}`);
+      main.footer(report.totals.overall);
       await main.finish();
     } else {
       const main = table(workbook, "Оборачиваемость", reportColumns(report), "Оборачиваемость товарных запасов", note, canceled.signal);
@@ -219,6 +260,8 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
         if (!main.add(row)) { await main.nextPart(); main.add(row); }
         if (++written % 1024 === 0) await checkpoint();
       }
+      for (const total of report.totals.byUnit) main.footer(total, `ИТОГО · ${total.unit ?? total.unitKey}`);
+      main.footer(report.totals.overall);
       await main.finish();
     }
 

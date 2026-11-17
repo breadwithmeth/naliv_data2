@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import type { Writable } from "node:stream";
-import type { TurnoverMode, TurnoverReport, TurnoverRow } from "./turnover-types.js";
+import type { TurnoverMode, TurnoverReport, TurnoverRow, TurnoverTotal, TurnoverTotals } from "./turnover-types.js";
+import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
 
 const MAIN_UNITS = "рассчет оборачиваемости";
 const MAIN_MONEY = "рассчет оборачиваемости ";
@@ -104,7 +105,7 @@ function mainHeaders(days: string[]): string[] {
   return headers;
 }
 
-function mainCellValues(entry: RowLabel, days: string[], options: SampleOptions): unknown[] {
+function mainCellValues(entry: { label: string; row: Pick<TurnoverRow, "daily" | "averageQty" | "averageCost" | "periodSales" | "turnoverQty" | "turnoverCost" | "turnoverQtyDays" | "turnoverCostDays"> }, days: string[], options: SampleOptions, salesRows: number, footerSalesRow?: number): unknown[] {
   const row = entry.row;
   const values: unknown[] = [entry.label];
   const daily = row.daily;
@@ -147,16 +148,24 @@ function mainCellValues(entry: RowLabel, days: string[], options: SampleOptions)
   } else {
     values.push("n/a", "n/a");
   }
-  if (numeric(turnover)) values.push({ formula: `${salesColumn}{r}/${averageColumn}{r}`, result: turnover });
+  if (numeric(turnover)) values.push({ formula: footerSalesRow === undefined
+    ? `${salesColumn}{r}/${averageColumn}{r}`
+    : `IF(AND(ISNUMBER(${salesColumn}{r}),ISNUMBER(${averageColumn}{r}),${salesColumn}{r}>=0,${averageColumn}{r}>0),${salesColumn}{r}/${averageColumn}{r},"n/a")`, result: turnover });
   else values.push("n/a");
   values.push(days.length);
   if (numeric(sales)) {
+    const column = options.mode === "quantity" ? "B" : "C";
+    const first = options.mode === "quantity" ? 2 : 1;
     values.push({
-      formula: `VLOOKUP(A{r},'${options.salesSheet}'!A:${options.mode === "quantity" ? "B" : "C"},${options.mode === "quantity" ? 2 : 3},0)`,
+      formula: footerSalesRow === undefined
+        ? `VLOOKUP(A{r},'${options.salesSheet}'!A${first}:${column}${first + salesRows - 1},${options.mode === "quantity" ? 2 : 3},0)`
+        : `'${options.salesSheet}'!${column}${footerSalesRow}`,
       result: sales
     });
   } else values.push("n/a");
-  if (numeric(turnoverDays)) values.push({ formula: `${daysColumn}{r}/${coefficientColumn}{r}`, result: turnoverDays });
+  if (numeric(turnoverDays)) values.push({ formula: footerSalesRow === undefined
+    ? `${daysColumn}{r}/${coefficientColumn}{r}`
+    : `IF(AND(ISNUMBER(${coefficientColumn}{r}),${coefficientColumn}{r}>0),${daysColumn}{r}/${coefficientColumn}{r},"n/a")`, result: turnoverDays });
   else values.push("n/a");
   return values;
 }
@@ -168,7 +177,7 @@ function replaceRowReference(value: unknown, rowNumber: number): unknown {
   return value;
 }
 
-function createMainSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter, entries: RowLabel[], days: string[], options: SampleOptions) {
+function createMainSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter, entries: RowLabel[], days: string[], options: SampleOptions, totals: TurnoverTotals) {
   const sheet = workbook.addWorksheet(options.mainSheet, {
     views: [{
       state: "frozen", ySplit: 1, showGridLines: true, zoomScale: 100, zoomScaleNormal: 100,
@@ -192,18 +201,39 @@ function createMainSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter, entries: 
   const turnoverDaysColumn = days.length + 9;
   for (let index = 0; index < entries.length; index++) {
     const rowNumber = index + 2;
-    const values = mainCellValues(entries[index]!, days, options).map((value) => replaceRowReference(value, rowNumber));
+    const values = mainCellValues(entries[index]!, days, options, entries.length).map((value) => replaceRowReference(value, rowNumber));
     const row = sheet.addRow(values);
     for (const column of [averageColumn, coefficientColumn, daysColumn, turnoverDaysColumn]) {
       row.getCell(column).numFmt = "0.00";
     }
+    styleTurnoverCoefficient(row.getCell(coefficientColumn), options.mode === "quantity" ? entries[index].row.turnoverQty : entries[index].row.turnoverCost);
     row.commit();
   }
+  const footerTotals: Array<{ label: string; total: TurnoverTotal }> = [
+    ...totals.byUnit.map(total => ({ label: `ИТОГО · ${total.unit ?? total.unitKey}`, total })),
+    { label: "ИТОГО", total: totals.overall }
+  ];
+  for (let index = 0; index < footerTotals.length; index++) {
+    const { label, total } = footerTotals[index];
+    const rowNumber = entries.length + 2 + index;
+    const salesRow = entries.length + (options.mode === "quantity" ? 2 : 1) + index;
+    const values = mainCellValues({ label, row: total }, days, options, entries.length, salesRow)
+      .map(value => value === null ? "n/a" : replaceRowReference(value, rowNumber));
+    const row = sheet.addRow(values);
+    row.eachCell(cell => {
+      cell.font = { name: "Calibri", size: 11, bold: true };
+      cell.border = { top: { style: "thin", color: { argb: "FF9CA3AF" } } };
+    });
+    for (const column of [averageColumn, coefficientColumn, daysColumn, turnoverDaysColumn]) row.getCell(column).numFmt = "0.00";
+    styleTurnoverCoefficient(row.getCell(coefficientColumn), options.mode === "quantity" ? total.turnoverQty : total.turnoverCost);
+    row.commit();
+  }
+  formatTurnoverCoefficientRange(sheet, columnLetter(coefficientColumn), 2, entries.length + 1 + footerTotals.length);
   sheet.commit();
   return sheet;
 }
 
-function createSalesSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter, entries: RowLabel[], options: SampleOptions) {
+function createSalesSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter, entries: RowLabel[], options: SampleOptions, totals: TurnoverTotals) {
   const sheet = workbook.addWorksheet(options.salesSheet, {
     views: [{ state: "normal", showGridLines: true, zoomScale: 100, zoomScaleNormal: 100, activeCell: options.mode === "quantity" ? "A2" : "A1" }]
   }) as StreamingSheet;
@@ -226,16 +256,15 @@ function createSalesSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter, entries:
       sheet.addRow([label, numeric(quantity) ? quantity : "n/a", numeric(cost) ? cost : "n/a"]).commit();
     }
   }
-  if (options.mode === "money") {
-    const unit = salesEntries[0]?.row.unit;
-    const quantity = salesEntries.every(({ row }) => row.unit === unit)
-      ? safeSum(salesEntries.map(({ row }) => row.periodSales.quantity)) : null;
-    const cost = safeSum(salesEntries.map(({ row }) => row.periodSales.cost));
-    const row = sheet.addRow([
-      "Итого",
-      quantity === null ? "n/a" : quantity,
-      cost === null ? "n/a" : cost
-    ]);
+  for (const { label, total } of [
+    ...totals.byUnit.map(total => ({ label: `ИТОГО · ${total.unit ?? total.unitKey}`, total })),
+    { label: "ИТОГО", total: totals.overall }
+  ]) {
+    const values: Array<string | number> = [label, total.periodSales.quantity ?? "n/a"];
+    if (options.mode === "money") values.push(total.periodSales.cost ?? "n/a");
+    const row = sheet.addRow(values);
+    row.font = { name: "Calibri", size: 11, bold: true };
+    row.eachCell(cell => { cell.border = { top: { style: "thin", color: { argb: "FF9CA3AF" } } }; });
     row.commit();
   }
   sheet.commit();
@@ -259,20 +288,20 @@ export async function writeTurnoverSampleWorkbook(report: TurnoverReport, output
     if (mode === "quantity" || mode === "both") {
       createMainSheet(workbook, entries, days, {
         mode: "quantity", mainSheet: MAIN_UNITS, salesSheet: SALES_UNITS, activeCell: "AI2", autoFilter: false
-      });
+      }, report.totals);
       createSalesSheet(workbook, entries, {
         mode: "quantity", mainSheet: MAIN_UNITS, salesSheet: SALES_UNITS, activeCell: "AI2", autoFilter: false
-      });
+      }, report.totals);
     }
     if (mode === "money" || mode === "both") {
       createMainSheet(workbook, entries, days, {
         mode: "money", mainSheet: mode === "both" ? MAIN_BOTH_MONEY : MAIN_MONEY,
         salesSheet: mode === "both" ? SALES_BOTH_MONEY : SALES_MONEY, activeCell: "AK13", autoFilter: true
-      });
+      }, report.totals);
       createSalesSheet(workbook, entries, {
         mode: "money", mainSheet: mode === "both" ? MAIN_BOTH_MONEY : MAIN_MONEY,
         salesSheet: mode === "both" ? SALES_BOTH_MONEY : SALES_MONEY, activeCell: "AK13", autoFilter: true
-      });
+      }, report.totals);
     }
     await workbook.commit();
   } catch (error) {

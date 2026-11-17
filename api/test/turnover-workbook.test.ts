@@ -5,6 +5,8 @@ import { buffer } from "node:stream/consumers";
 import { setImmediate } from "node:timers/promises";
 import ExcelJS from "exceljs";
 import { writeTurnoverWorkbook } from "../src/services/turnover-workbook.js";
+import { turnoverCoefficientBand } from "../src/services/turnover-domain.js";
+import JSZip from "jszip";
 import type { TurnoverReport, TurnoverRow, TurnoverSales } from "../src/services/turnover-types.js";
 
 const sales: TurnoverSales = { quantity: 12, cost: 120, revenue: 180, averageDailyQty: 6, averageDailyCost: 60 };
@@ -33,6 +35,15 @@ function fixture(mode: "quantity" | "money" | "both"): TurnoverReport {
     comparison: { from: "2026-09-25", to: "2026-09-28", days: 3 },
     norms: { defaults: { minDays: 3, staleDays: 30, criticalStaleDays: 60, excessDays: 45, stopDays: 60, changePct: 20, targetDays: 30, highStockCost: null, leadTimeDays: null }, categories: { beer: { targetDays: 14 } } },
     rows: [{ ...row }], daily: row.daily, transfers: [],
+    totals: { overall: {
+      unit: "л", daily: row.daily, openingQty: 10, closingQty: 20, averageQty: 15,
+      openingCost: 100, closingCost: 200, averageCost: 150,
+      periodSales: sales, comparisonSales: { ...sales, quantity: 0, cost: 0, revenue: 0 },
+      quantityChange: { pct: null, status: "new" }, costChange: { pct: null, status: "new" },
+      turnoverQty: 0.8, turnoverQtyDays: 3.75, turnoverCost: 0.8, turnoverCostDays: 3.75,
+      stockDays: 10, excessQty: 0, deficitQty: 0, recommendedOrderQty: 0, openOrderQty: 0,
+      stagnantCost: { d30: 0, d60: 0, d90: 0 }
+    }, byUnit: [] },
     summary: { rowCount: 1, totalRowCount: 1, stagnantCount: 0, skuCount: 1, stockCost: 200, noSalesCount: 0, overstockCount: 0, deficitCount: 0, frozen30Cost: 0, frozen60Cost: 0, frozen90Cost: 0, costCoveragePct: 100, stockCoveragePct: 100 },
     options: { stores: [{ key: "store", name: "Магазин" }], warehouses: [{ key: "wh", name: "Склад", storeKey: "store" }], categories: [{ key: "beer", name: "Пиво" }], brands: [], skus: [{ key: "item", name: "=1+1" }] },
     coverage: { firstStockDate: "2026-09-28", lastStockDate: "2026-09-30", firstSalesDate: "2026-06-01", lastSalesDate: "2026-09-30", missingStockDates: [], observedDays: 3, expectedDays: 3, requestedTo: null },
@@ -122,7 +133,7 @@ test("sample quantity workbook reproduces the example sheets, widths, headers an
   assert.deepEqual(main.getCell("H2").value, { formula: "G2/(3-1)", result: 15 });
   assert.deepEqual(main.getCell("I2").value, { formula: "K2/H2", result: 0.8 });
   assert.equal(main.getCell("J2").value, 3);
-  assert.deepEqual(main.getCell("K2").value, { formula: "VLOOKUP(A2,'Продажи за период '!A:B,2,0)", result: 12 });
+  assert.deepEqual(main.getCell("K2").value, { formula: "VLOOKUP(A2,'Продажи за период '!A2:B2,2,0)", result: 12 });
   assert.deepEqual(main.getCell("L2").value, { formula: "J2/I2", result: 3.75 });
   for (const address of ["H2", "I2", "J2", "L2"]) assert.equal(main.getCell(address).numFmt, "0.00");
   assert.equal(main.pageSetup.orientation, "landscape");
@@ -149,7 +160,7 @@ test("sample money workbook reproduces the money sheets, VLOOKUP range and total
   assert.equal(main.getCell("F2").value, 200);
   assert.deepEqual(main.getCell("H2").value, { formula: "G2/(3-1)", result: 150 });
   assert.deepEqual(main.getCell("I2").value, { formula: "K2/H2", result: 0.8 });
-  assert.deepEqual(main.getCell("K2").value, { formula: "VLOOKUP(A2,'Продажи за период '!A:C,3,0)", result: 120 });
+  assert.deepEqual(main.getCell("K2").value, { formula: "VLOOKUP(A2,'Продажи за период '!A1:C1,3,0)", result: 120 });
   assert.deepEqual(main.getCell("L2").value, { formula: "J2/I2", result: 3.75 });
   assert.equal(main.views[0]?.state, "frozen");
   assert.equal(main.views[0]?.ySplit, 1);
@@ -161,7 +172,7 @@ test("sample money workbook reproduces the money sheets, VLOOKUP range and total
   assert.equal(sales.getCell("A1").value, "=1+1");
   assert.equal(sales.getCell("B1").value, 12);
   assert.equal(sales.getCell("C1").value, 120);
-  assert.equal(sales.getCell("A2").value, "Итого");
+  assert.equal(sales.getCell("A2").value, "ИТОГО");
   assert.equal(sales.getCell("B2").value, 12);
   assert.equal(sales.getCell("C2").value, 120);
 });
@@ -175,8 +186,8 @@ test("combined sample export keeps both examples separate with distinct lookup s
     "рассчет оборачиваемости", "Продажи за период ",
     "рассчет оборачиваемости деньги", "Продажи за период в деньгах"
   ]);
-  assert.equal(workbook.worksheets[0]!.getCell("K2").value.formula, "VLOOKUP(A2,'Продажи за период '!A:B,2,0)");
-  assert.equal(workbook.worksheets[2]!.getCell("K2").value.formula, "VLOOKUP(A2,'Продажи за период в деньгах'!A:C,3,0)");
+  assert.equal(workbook.worksheets[0]!.getCell("K2").value.formula, "VLOOKUP(A2,'Продажи за период '!A2:B2,2,0)");
+  assert.equal(workbook.worksheets[2]!.getCell("K2").value.formula, "VLOOKUP(A2,'Продажи за период в деньгах'!A1:C1,3,0)");
 });
 
 test("sample exports keep product labels independent of shops and withhold mixed-unit quantity totals", async () => {
@@ -187,19 +198,29 @@ test("sample exports keep product labels independent of shops and withhold mixed
     ...row, key: "other:item", sku: "other", name: "Другой товар", storeKey: "second", storeName: "Второй магазин",
     unit: "шт", daily: row.daily.map((day) => ({ ...day, unit: "шт" }))
   });
+  const unitTotal = report.totals.overall;
+  report.totals.byUnit = [{ ...unitTotal, unitKey: "litre" }, { ...unitTotal, unit: "шт", unitKey: "piece" }];
+  report.totals.overall = { ...unitTotal, unit: null, openingQty: null, closingQty: null, averageQty: null,
+    turnoverQty: null, turnoverQtyDays: null, stockDays: null, excessQty: null, deficitQty: null,
+    recommendedOrderQty: null, openOrderQty: null, openingCost: 200, closingCost: 400, averageCost: 300,
+    periodSales: { quantity: null, cost: 240, revenue: 360, averageDailyQty: null, averageDailyCost: 120 },
+    daily: row.daily.map(d => ({ ...d, quantity: null, stockCost: d.stockCost! * 2 })) };
   const workbook = await load(report);
   const main = workbook.worksheets[0]!;
   assert.equal(main.getCell("A2").value, row.name);
   assert.equal(main.getCell("A3").value, "Другой товар");
   const sales = workbook.getWorksheet("Продажи за период ")!;
-  assert.equal(sales.getCell("A3").value, "Итого");
-  assert.equal(sales.getCell("B3").value, "n/a");
-  assert.equal(sales.getCell("C3").value, 240);
+  assert.equal(sales.lastRow!.getCell(1).value, "ИТОГО");
+  assert.equal(sales.lastRow!.getCell(2).value, "n/a");
+  assert.equal(sales.lastRow!.getCell(3).value, 240);
 });
 
 test("money-only export preserves unknown costs and the exact applied filter and category norms", async () => {
   const report = fixture("money");
   report.rows[0].averageCost = null;
+  report.totals.overall.averageCost = null;
+  report.totals.overall.turnoverCost = null;
+  report.totals.overall.turnoverCostDays = null;
   const workbook = await load(report);
   const main = workbook.worksheets[0];
   assert.equal(main.getCell("L5").value, "n/a");
@@ -249,6 +270,135 @@ test("broad report export retains aggregate daily history when individual audits
   assert.equal(daily.getCell("H5").value, 10);
   assert.equal(daily.getCell("I5").value, 100);
   assert.equal(daily.getCell("H7").value, 20);
+});
+
+test("turnover coefficients classify raw boundaries without colouring missing or nonfinite values", () => {
+  for (const [value, expected] of [[0, "red"], [1, "red"], [1.999, "red"], [2, "orange"], [2.999, "orange"], [3, "green"], [4, "green"], [null, null], [NaN, null], [Infinity, null]] as const) {
+    assert.equal(turnoverCoefficientBand(value), expected);
+  }
+});
+
+test("every workbook profile and mode ends its main table with server totals outside the filter", async () => {
+  for (const profile of ["sample", "summary", "full"] as const) for (const mode of ["quantity", "money", "both"] as const) {
+    const report = fixture(mode);
+    report.params.profile = profile;
+    const workbook = await load(report);
+    const mains = workbook.worksheets.filter(s => s.name.startsWith(profile === "sample" ? "рассчет" : "Оборачиваемость"));
+    for (const main of mains) {
+      const footer = main.lastRow!;
+      assert.equal(footer.getCell(profile === "sample" ? 1 : 7).value, "ИТОГО");
+      if (profile === "sample") {
+        assert.equal(footer.getCell(10).value, 3);
+        assert.equal(footer.getCell(9).value.result, 0.8);
+        assert.equal(footer.getCell(12).value.result, 3.75);
+        assert.doesNotMatch(footer.getCell(11).value.formula ?? "", /VLOOKUP/);
+        assert.equal(footer.getCell(3).value.result, mode === "money" || main.name.endsWith("деньги") ? 50 : 5);
+      } else {
+        assert.equal(main.autoFilter, `A4:${main.getColumn(main.columnCount).letter}${footer.number - 1}`);
+      }
+    }
+    if (profile === "sample") {
+      for (const sales of workbook.worksheets.filter(s => s.name.startsWith("Продажи"))) assert.equal(sales.lastRow!.getCell(1).value, "ИТОГО");
+    }
+  }
+});
+
+test("sample footer recomputes coefficient 2.5 with N3 once and never looks up a product named ИТОГО", async () => {
+  const report = fixture("quantity");
+  report.params.profile = "sample";
+  report.rows = [
+    { ...row, name: "ИТОГО", key: "one", sku: "one", averageQty: 10, periodSales: { ...sales, quantity: 10 }, turnoverQty: 1 },
+    { ...row, name: "Other", key: "two", sku: "two", averageQty: 30, periodSales: { ...sales, quantity: 90 }, turnoverQty: 3 }
+  ];
+  report.totals.overall = { ...report.totals.overall, openingQty: 20, closingQty: 40, averageQty: 40,
+    periodSales: { ...sales, quantity: 100 }, turnoverQty: 2.5, turnoverQtyDays: 1.2,
+    daily: row.daily.map((d, index) => ({ ...d, quantity: [20, 50, 40][index] })) };
+  const main = (await load(report)).worksheets[0];
+  assert.equal(main.getCell("A2").value, "ИТОГО");
+  assert.equal(main.getCell("A4").value, "ИТОГО");
+  assert.equal(main.getCell("H4").value.result, 40);
+  assert.equal(main.getCell("I4").value.result, 2.5);
+  assert.equal(main.getCell("J4").value, 3);
+  assert.equal(main.getCell("K4").value.result, 100);
+  assert.equal(main.getCell("L4").value.result, 1.2);
+  assert.doesNotMatch(main.getCell("K4").value.formula ?? "", /VLOOKUP/);
+  assert.match(main.getCell("K2").value.formula, /A2:B3/);
+});
+
+test("coefficient fills and conditional rules cover data and totals, not turnover days", async () => {
+  for (const profile of ["sample", "summary"] as const) {
+    const report = fixture("both");
+    report.params.profile = profile;
+    const values = [0, 1.999, 2, 2.999, 3, null, NaN, Infinity];
+    report.rows = values.map((value, i) => ({ ...row, key: `row${i}`, sku: `sku${i}`, name: `Item ${i}`, turnoverQty: value, turnoverCost: value }));
+    report.totals.overall.turnoverQty = 2.5;
+    report.totals.overall.turnoverCost = 2.5;
+    const stream = new PassThrough();
+    const [, bytes] = await Promise.all([writeTurnoverWorkbook(report, stream), buffer(stream)]);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(bytes);
+    const main = workbook.worksheets[0];
+    const coefficient = profile === "sample" ? 9 : 14;
+    const days = profile === "sample" ? 12 : 15;
+    const first = profile === "sample" ? 2 : 5;
+    const colors = ["FFFEE2E2", "FFFEE2E2", "FFFFEDD5", "FFFFEDD5", "FFDCFCE7"];
+    for (let i = 0; i < values.length; i++) {
+      const cell = main.getRow(first + i).getCell(coefficient);
+      assert.equal((cell.fill as ExcelJS.FillPattern)?.fgColor?.argb, colors[i]);
+      assert.equal((main.getRow(first + i).getCell(days).fill as ExcelJS.FillPattern)?.fgColor?.argb, undefined);
+    }
+    assert.equal((main.lastRow!.getCell(coefficient).fill as ExcelJS.FillPattern).fgColor?.argb, "FFFFEDD5");
+    const zip = await JSZip.loadAsync(bytes);
+    const xml = await zip.file("xl/worksheets/sheet1.xml")!.async("string");
+    assert.match(xml, /conditionalFormatting/);
+    assert.match(xml, /ISNUMBER/);
+    assert.match(xml, /&lt;2/);
+    assert.match(xml, /&gt;=2/);
+    assert.match(xml, /&lt;3/);
+    assert.match(xml, /&gt;=3/);
+  }
+});
+
+test("analytical day footer exposes distinct opening closing average and sales in every mode", async () => {
+  for (const mode of ["quantity", "money", "both"] as const) {
+    const report = fixture(mode);
+    report.params.groupBy = "day";
+    const main = (await load(report)).worksheets[0];
+    const footer = main.lastRow!;
+    assert.equal(footer.getCell(1).value, "ИТОГО");
+    assert.equal(footer.getCell(2).value, "л");
+    assert.equal(footer.getCell(3).value, null);
+    const headers = main.getRow(4);
+    const column = (label: string) => {
+      let found = 0;
+      headers.eachCell((cell, index) => { if (cell.value === label) found = index; });
+      assert.ok(found > 0, `missing period metric: ${label}`);
+      return found;
+    };
+    for (const [label, expected] of [
+      ...(mode !== "money" ? [["Остаток, единица строки", 20], ["Начальный остаток периода", 10], ["Средний остаток периода", 15], ["Нетто продажи, единица строки", 12]] as const : []),
+      ...(mode !== "quantity" ? [["Стоимость остатка, ₸", 200], ["Стоимость начального остатка периода, ₸", 100], ["Средняя стоимость запаса периода, ₸", 150], ["Себестоимость продаж, ₸", 120]] as const : [])
+    ]) {
+      const index = column(label);
+      assert.equal(footer.getCell(index).value, expected);
+      if (label.includes("периода")) assert.equal(main.getRow(5).getCell(index).value, null);
+    }
+  }
+});
+
+test("analytical splitting keeps one footer on the last part including an exactly full part", async () => {
+  for (const count of [10000, 10001]) {
+    const report = fixture("quantity");
+    report.params.profile = "summary";
+    report.rows = Array<TurnoverRow>(count).fill(row);
+    const workbook = await load(report);
+    const mains = workbook.worksheets.filter(s => s.name.startsWith("Оборачиваемость"));
+    assert.equal(mains.length, count === 10000 ? 1 : 2);
+    let footers = 0;
+    for (const main of mains) main.eachRow(r => { if (r.getCell(7).value === "ИТОГО") footers++; });
+    assert.equal(footers, 1);
+    assert.equal(mains.at(-1)!.lastRow!.getCell(7).value, "ИТОГО");
+  }
 });
 
 test("a stalled Excel download stops consuming the full assortment and disconnect cancels it", async () => {

@@ -119,6 +119,14 @@ export type TurnoverRow = {
   recommendations: TurnoverRecommendation[];
   daily: TurnoverDailyRow[];
 };
+export type TurnoverTotalMetrics = Pick<TurnoverRow,
+  "openingQty" | "closingQty" | "averageQty" | "openingCost" | "closingCost" | "averageCost" |
+  "periodSales" | "comparisonSales" | "quantityChange" | "costChange" |
+  "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays" |
+  "stockDays" | "excessQty" | "deficitQty" | "recommendedOrderQty" | "openOrderQty" | "stagnantCost"
+>;
+export type TurnoverTotal = TurnoverTotalMetrics & { unit: string | null; daily: TurnoverDailyRow[] };
+export type TurnoverTotals = { overall: TurnoverTotal; byUnit: Array<TurnoverTotal & { unitKey: string }> };
 export type TurnoverOption = { key: string; name: string };
 export type TurnoverTransfer = {
   sku: string;
@@ -136,6 +144,8 @@ export type TurnoverReport = {
   norms: TurnoverPolicy;
   rows: TurnoverRow[];
   daily: TurnoverDailyRow[];
+  /** Actual table population after every filter, independent of display grouping. */
+  totals: TurnoverTotals;
   transfers: TurnoverTransfer[];
   summary: {
     rowCount: number;

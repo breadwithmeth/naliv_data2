@@ -3,6 +3,8 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { config } from "../config.js";
 import { prisma } from "../prisma.js";
+import { RETURN_PRICE_EFFECTIVE_CONTRACT_SHA256, RETURN_PRICE_SOURCE_ENTITY, RETURN_PRICE_TABLE, returnPriceUpgradeSchema, validReturnPriceUpgrade } from "./return-price-upgrade.js";
+export { validReturnPriceUpgrade } from "./return-price-upgrade.js";
 
 type Executor = Pick<Prisma.TransactionClient, "$queryRaw" | "$queryRawUnsafe">;
 /** Mirrors naliv_data1 analytics_reload.PAUSE_AT_BYTES (writer capacity pause). */
@@ -21,7 +23,7 @@ const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => !Number.isNa
 const kinds = z.enum(["dated", "records", "balance", "snapshot", "reference", "membership"]);
 const sourceSchema = z.object({ key: z.string().min(1), entity: z.string().min(1), kind: kinds, tables: z.array(identifier).min(1), floor: day.nullish(), required: z.boolean(), recovery: z.boolean().optional(), unavailable: z.boolean().optional() });
 const descriptorSchema = z.object({ jobKey: sha, cycleId: z.string().uuid(), phase: z.enum(["recovery", "incremental", "reference", "price_audit", "deep_reread"]), source: z.string(), sourceEntity: z.string(), rangeStart: day.nullable(), rangeEndExclusive: day.nullable(), balancePeriod: z.string().nullable(), required: z.boolean(), parentTable: identifier, childTables: z.array(identifier) });
-const manifestSchema = z.object({ manifestVersion: z.literal(1), reloadId: z.string().uuid(), targetDatabase: z.object({ name: z.literal("nalivdata"), oid: z.number().int().positive() }), sourceSchema: z.object({ name: identifier, oid: z.number().int().positive() }), planSha256: sha, preDdlSummarySha256: sha, from: day, toExclusive: day, canaryDay: day, sources: z.array(sourceSchema).min(1), requiredRecoveryJobCount: z.number().int().nonnegative(), recoveryJobs: z.array(descriptorSchema).min(1), recoveryJobsSha256: sha, routineCycles: z.record(z.object({ createdAt: z.string(), window: z.object({ from: day, toExclusive: day }), jobs: z.array(descriptorSchema) })).default({}) });
+const manifestSchema = z.object({ manifestVersion: z.literal(1), reloadId: z.string().uuid(), targetDatabase: z.object({ name: z.literal("nalivdata"), oid: z.number().int().positive() }), sourceSchema: z.object({ name: identifier, oid: z.number().int().positive() }), planSha256: sha, preDdlSummarySha256: sha, from: day, toExclusive: day, canaryDay: day, sources: z.array(sourceSchema).min(1), requiredRecoveryJobCount: z.number().int().nonnegative(), recoveryJobs: z.array(descriptorSchema).min(1), recoveryJobsSha256: sha, routineCycles: z.record(z.object({ createdAt: z.string(), window: z.object({ from: day, toExclusive: day }), jobs: z.array(descriptorSchema) })).default({}), returnPriceUpgrade: returnPriceUpgradeSchema.optional() });
 const evidenceSchema = z.object({ manifestVersion: z.literal(1), jobKey: sha, scope: z.object({ kind: kinds, rangeStart: day.nullable(), rangeEndExclusive: day.nullable(), balancePeriod: z.string().nullable() }).strict(), tables: z.record(z.object({ rows: z.number().int().nonnegative(), nullCounts: z.record(z.number().int().nonnegative()), resourceTotals: z.record(z.string().regex(/^-?\d+(\.\d+)?$/)), sha256: sha, targetOnlyRows: z.number().int().nonnegative() }).strict()), sourceSha256: sha }).strict();
 type Source = z.infer<typeof sourceSchema>;
 type Descriptor = z.infer<typeof descriptorSchema>;
@@ -29,7 +31,7 @@ type Job = { reload_id: string; job_key: string; cycle_id: string; phase: string
 type Plan = { reload_id: string; table_schema: string; plan_sha256: string; contract_sha256: string; index_manifest_sha256: string; source_sha256: string; from_date: string | Date; to_exclusive: string | Date; canary_status: string; status: string; manifest: unknown; revision: bigint | number; updated_at: Date };
 type Identity = { database_name: string; database_oid: bigint | number; schema_name: string; schema_oid: bigint | number; database_bytes: bigint | number; has_layout: boolean; has_plans: boolean; has_jobs: boolean; tables: string[] };
 type Layout = { table_schema: string; layout_version: number; contract_sha256: string; plan_sha256: string; migration_id: string; ddl_frozen: boolean };
-export type ReloadReadinessState = ReloadReadiness & { readonly binding: string; readonly coverageSources: Array<{ source: Source; intervals: Array<{ from: string; to: string }> }> };
+export type ReloadReadinessState = ReloadReadiness & { readonly binding: string; readonly coverageSources: Array<{ source: Source; intervals: Array<{ from: string; to: string }> }>; readonly returnPriceIntervals: Array<{ from: string; to: string }> };
 const fallbackTables = ["document_ustanovka_tsen_nomenklatury_tovary", "document_otchet_o_roznichnyh_prodazhah_tovary", "document_chek_kkm", "document_chek_kkm_tovary", "accumulation_register_tovary_na_skladah_balance"];
 const normalizeDay = (value: Date | string | null) => value instanceof Date ? value.toISOString().slice(0, 10) : value;
 const nextDay = (value: string) => new Date(Date.parse(value) + 86_400_000).toISOString().slice(0, 10);
@@ -38,8 +40,8 @@ function canonicalJson(value: unknown): string {
   if (value && typeof value === "object") return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
   return JSON.stringify(value);
 }
-function state(value: ReloadReadiness, binding: string, coverageSources: ReloadReadinessState["coverageSources"] = []): ReloadReadinessState {
-  return Object.defineProperties(value, { binding: { value: binding }, coverageSources: { value: coverageSources } }) as ReloadReadinessState;
+function state(value: ReloadReadiness, binding: string, coverageSources: ReloadReadinessState["coverageSources"] = [], returnPriceIntervals: ReloadReadinessState["returnPriceIntervals"] = []): ReloadReadinessState {
+  return Object.defineProperties(value, { binding: { value: binding }, coverageSources: { value: coverageSources }, returnPriceIntervals: { value: returnPriceIntervals } }) as ReloadReadinessState;
 }
 /** Only application-owned schema identifiers reach this read-only seam. No fact scans. */
 export async function readReloadReadiness(executor: Executor = prisma, metadataSchema = "ops"): Promise<ReloadReadinessState> {
@@ -65,12 +67,15 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
     const plans = await executor.$queryRawUnsafe<Plan[]>(`select reload_id::text, table_schema, plan_sha256, contract_sha256, index_manifest_sha256, source_sha256, from_date, to_exclusive, canary_status, status, manifest, revision, updated_at from "${metadataSchema}"."analytics_reload_plans" where table_schema = $1 order by updated_at desc`, identity.schema_name);
     const unfinished = plans.filter(plan => ["preparing", "reloading", "paused_capacity", "blocked"].includes(plan.status));
     if (unfinished.length > 1 || plans.some(plan => !["preparing", "reloading", "paused_capacity", "blocked", "ready"].includes(plan.status))) return state(current, "blocked:plans");
-    const plan = unfinished[0] ?? plans.find(plan => plan.status === "ready" && plan.plan_sha256 === layout.plan_sha256 && plan.contract_sha256 === layout.contract_sha256);
-    if (!plan) return state({ ...current, status: plans.length ? "blocked" : "needs_preparation" }, "blocked:no-bound-plan");
-    const binding = `${plan.reload_id}:${plan.revision}:${plan.status}:${plan.canary_status}:${layout.plan_sha256}`;
+    const boundPlans = plans.filter(plan => plan.table_schema === identity!.schema_name && plan.plan_sha256 === layout.plan_sha256 && plan.reload_id === layout.migration_id);
+    const plan = boundPlans.length === 1 ? boundPlans[0] : undefined;
+    if (!plan || (unfinished.length && unfinished[0] !== plan)) return state({ ...current, status: plans.length ? "blocked" : "needs_preparation" }, "blocked:no-bound-plan");
+    const binding = `${plan.reload_id}:${plan.revision}:${plan.status}:${plan.canary_status}:${layout.plan_sha256}:${layout.contract_sha256}`;
     current.from = normalizeDay(plan.from_date); current.toExclusive = normalizeDay(plan.to_exclusive);
     const manifest = manifestSchema.parse(plan.manifest);
-    if (plan.plan_sha256 !== layout.plan_sha256 || plan.contract_sha256 !== layout.contract_sha256 || layout.migration_id !== plan.reload_id || manifest.reloadId !== plan.reload_id || manifest.planSha256 !== plan.plan_sha256 || manifest.targetDatabase.name !== identity.database_name || manifest.targetDatabase.oid !== Number(identity.database_oid) || manifest.sourceSchema.name !== identity.schema_name || manifest.sourceSchema.oid !== Number(identity.schema_oid) || manifest.from !== current.from || manifest.toExclusive !== current.toExclusive || manifest.from >= manifest.toExclusive || !sha.safeParse(plan.source_sha256).success || !sha.safeParse(plan.index_manifest_sha256).success || !["pending", "running", "verified"].includes(plan.canary_status) || !Number.isSafeInteger(Number(plan.revision)) || Number(plan.revision) < 0) return state(current, `blocked:${binding}`);
+    const upgrade = manifest.returnPriceUpgrade;
+    const contractBound = upgrade === undefined ? plan.contract_sha256 === layout.contract_sha256 : validReturnPriceUpgrade(plan.manifest, plan.contract_sha256, layout.contract_sha256);
+    if (!contractBound || plan.plan_sha256 !== layout.plan_sha256 || plan.table_schema !== identity.schema_name || layout.table_schema !== identity.schema_name || layout.migration_id !== plan.reload_id || manifest.reloadId !== plan.reload_id || manifest.planSha256 !== plan.plan_sha256 || manifest.targetDatabase.name !== identity.database_name || manifest.targetDatabase.oid !== Number(identity.database_oid) || manifest.sourceSchema.name !== identity.schema_name || manifest.sourceSchema.oid !== Number(identity.schema_oid) || manifest.from !== current.from || manifest.toExclusive !== current.toExclusive || manifest.from >= manifest.toExclusive || !sha.safeParse(plan.source_sha256).success || !sha.safeParse(plan.index_manifest_sha256).success || !["pending", "running", "verified"].includes(plan.canary_status) || !Number.isSafeInteger(Number(plan.revision)) || Number(plan.revision) < 0 || (upgrade?.canaryPasses.length === 2 && plan.source_sha256 !== upgrade.workerSourceSha256)) return state(current, `blocked:${binding}`);
     const recovery = manifest.recoveryJobs;
     if (manifest.sources.some(source => source.required && !recovery.some(job => job.source === source.key && job.required))) throw new Error("Required source has no recovery jobs");
     // Hash the writer's complete descriptors: schema parsing strips fields the API does not use.
@@ -96,9 +101,38 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
         if (!job.verified_at || job.source_rows === null || job.written_rows === null || !sha.safeParse(job.business_sha256).success || !sha.safeParse(job.source_sha256).success || evidence.sourceSha256 !== job.source_sha256 || evidence.jobKey !== job.job_key || evidence.scope.kind !== source.kind || evidence.scope.rangeStart !== descriptor.rangeStart || evidence.scope.rangeEndExclusive !== descriptor.rangeEndExclusive || evidence.scope.balancePeriod !== descriptor.balancePeriod || Object.keys(evidence.tables).length !== tables.length || tables.some(table => !evidence.tables[table] || (source.kind !== "reference" && evidence.tables[table].targetOnlyRows !== 0))) throw new Error("Incomplete verification evidence");
       }
     }
+    if (upgrade) {
+      const cycle = manifest.routineCycles[upgrade.cycleId];
+      if (!cycle && (upgrade.state === "verified" || upgrade.canaryPasses.length)) throw new Error("Missing return price cycle");
+      if (cycle) {
+        const retail = sources.get("retail");
+        if (retail?.kind !== "dated" || retail.entity !== RETURN_PRICE_SOURCE_ENTITY || !retail.tables.includes(RETURN_PRICE_TABLE)) throw new Error("Invalid return price source");
+        const dayCount = (Date.parse(upgrade.rangeEndExclusive) - Date.parse(upgrade.rangeStart)) / 86_400_000;
+        if (cycle.window.from !== upgrade.rangeStart || cycle.window.toExclusive !== upgrade.rangeEndExclusive || cycle.jobs.length !== dayCount) throw new Error("Incomplete return price cycle");
+        const days = new Set<string>();
+        for (const descriptor of cycle.jobs) {
+          const job = byKey.get(descriptor.jobKey), evidence = evidenceByKey.get(descriptor.jobKey);
+          if (descriptor.source !== "retail" || descriptor.sourceEntity !== RETURN_PRICE_SOURCE_ENTITY || descriptor.phase !== "deep_reread" || descriptor.parentTable !== "document_otchet_o_roznichnyh_prodazhah" || descriptor.balancePeriod !== null || descriptor.rangeStart === null || descriptor.rangeStart < upgrade.rangeStart || descriptor.rangeStart >= upgrade.rangeEndExclusive || descriptor.rangeEndExclusive !== nextDay(descriptor.rangeStart) || days.has(descriptor.rangeStart)) throw new Error("Invalid return price day");
+          if (upgrade.state === "verified" && (job?.status !== "verified" || !Object.hasOwn(evidence?.tables[RETURN_PRICE_TABLE]?.nullCounts ?? {}, "tsena"))) throw new Error("Unverified return price day");
+          days.add(descriptor.rangeStart);
+        }
+        if (upgrade.canaryPasses.length === 2) {
+          const descriptor = cycle.jobs.find(job => job.rangeStart === upgrade.canaryDay)!;
+          const job = byKey.get(descriptor.jobKey), evidence = evidenceByKey.get(descriptor.jobKey);
+          if (job?.status !== "verified" || !evidence || !Object.hasOwn(evidence.tables[RETURN_PRICE_TABLE]?.nullCounts ?? {}, "tsena")) throw new Error("Unverified return price canary");
+          const target = { tables: Object.fromEntries(Object.entries(evidence.tables).map(([table, { targetOnlyRows: _targetOnlyRows, ...summary }]) => [table, summary])) };
+          const targetSha256 = createHash("sha256").update(canonicalJson(target)).digest("hex");
+          if (upgrade.canaryPasses[0]!.sourceSha256 !== job.source_sha256 || upgrade.canaryPasses[0]!.targetSha256 !== targetSha256) throw new Error("Return price canary evidence mismatch");
+        }
+      }
+    }
     const required = recovery.filter(descriptor => descriptor.required);
     current.totalJobs = required.length; current.completedJobs = required.filter(descriptor => byKey.get(descriptor.jobKey)?.status === "verified").length;
     const coverageSources = manifest.sources.map(source => ({ source, intervals: jobs.filter(job => job.source_entity === source.entity && job.status === "verified" && job.range_start && job.range_end_exclusive).map(job => ({ from: normalizeDay(job.range_start)!, to: normalizeDay(job.range_end_exclusive)! })).sort((a, b) => a.from.localeCompare(b.from)) }));
+    const returnPriceIntervals = layout.contract_sha256 === RETURN_PRICE_EFFECTIVE_CONTRACT_SHA256 && sources.get("retail")?.kind === "dated"
+      ? jobs.filter(job => job.source_entity === RETURN_PRICE_SOURCE_ENTITY && job.status === "verified" && job.range_start && job.range_end_exclusive && descriptors.get(job.job_key)?.source === "retail" && Object.hasOwn(evidenceByKey.get(job.job_key)?.tables[RETURN_PRICE_TABLE]?.nullCounts ?? {}, "tsena"))
+        .map(job => ({ from: normalizeDay(job.range_start)!, to: normalizeDay(job.range_end_exclusive)! })).sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to))
+      : [];
     current.sources = coverageSources.flatMap(({ source, intervals }) => {
       let through = source.floor ?? null;
       if (through) for (const interval of intervals) { if (interval.from > through) break; if (interval.to > through) through = interval.to; }
@@ -116,7 +150,7 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
     const failed = required.some(job => ["failed", "unavailable"].includes(byKey.get(job.jobKey)!.status));
     const missingRequired = manifest.sources.some(source => source.required && source.tables.some(table => !identity!.tables.includes(table)));
     current.status = plan.status === "blocked" || failed || missingRequired ? "blocked" : plan.status === "paused_capacity" || required.some(job => byKey.get(job.jobKey)!.status === "paused_capacity") ? "paused_capacity" : plan.status !== "ready" || plan.canary_status !== "verified" || current.completedJobs !== current.totalJobs ? "reloading" : "ready";
-    return state(current, `${binding}:${current.status}`, coverageSources);
+    return state(current, `${binding}:${current.status}`, coverageSources, returnPriceIntervals);
   } catch {
     return state({ ...current, status: "blocked" }, "blocked:unreadable");
   }

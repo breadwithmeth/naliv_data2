@@ -17,7 +17,7 @@ const { readReloadReadiness } = await import("../src/services/reload-readiness.j
 test("positive-TTL JSON and workbook hits are refused before computation after incomplete or failed readiness", async () => {
   let status: "ready" | "reloading" | "blocked" = "ready", calls = 0;
   const blocked = await readReloadReadiness({ $queryRaw: async () => [], $queryRawUnsafe: async () => { throw new Error("denied"); } } as never);
-  const reader = async () => Object.defineProperties({ ...blocked, status }, { binding: { value: status }, coverageSources: { value: [] } });
+  const reader = async () => Object.defineProperties({ ...blocked, status }, { binding: { value: status }, coverageSources: { value: [] }, returnPriceIntervals: { value: [] } });
   const load = createCachedReportLoader(new ReportCache(60_000, 1_000_000), reader);
   const app = express();
   for (const kind of ["json", "xlsx"]) app.get(`/${kind}`, async (req, res, next) => {

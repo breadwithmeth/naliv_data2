@@ -244,9 +244,9 @@ totals; the recalculated package passed Open XML validation without errors.
 «Сводно по товарам» и «По магазинам».
 В форме выбираются **«Товараоборот в шт.»** или **«Товараоборот в деньгах»**, детализация,
 период, магазины, склад, несколько категорий, бренд и товар, затем нажимается
-**Скачать Excel**. Настройки находятся слева, состав выбранной выгрузки и скачивание —
-справа; на телефоне блоки располагаются друг под другом. Предпросмотр и повторный расчёт
-в браузере не нужны: файл формируется одним запросом.
+**Показать отчёт** или **Скачать Excel**. Настройки находятся слева, состав выбранной
+выгрузки — справа; на телефоне блоки располагаются друг под другом. Предпросмотр
+загружается только по кнопке. Изменение отбора отменяет запрос и убирает старый результат.
 
 - **«Сводно по товарам»** — две таблицы: остатки и продажи; одна строка на SKU.
   **«По магазинам»** — строки магазин × SKU, листы динамики 7/14/30, ежедневных
@@ -282,7 +282,7 @@ totals; the recalculated package passed Open XML validation without errors.
   `средний товарный запас в шт`, `Коэффицент оборачиваемости`,
   `количество дней в периоде`, `продажи в шт за период`, `количесто дней оборота в шт`.
 - Лист **«Продажи за период »**: номенклатура и продажи; в денежном варианте добавляется
-  себестоимость и итоговая строка `Итого`.
+  себестоимость. В обоих вариантах последняя строка — **«ИТОГО»**.
 - Совпадают ширины колонок (A = 65.5703125; даты = 9.140625; последние шесть колонок —
   26.7109375 / 29.28515625 / 29.28515625 / 27.28515625 / 24.5703125 / 29.28515625),
   шрифт и числовой формат `0.00` у среднего, коэффициента, дней и оборота, границы и
@@ -310,6 +310,24 @@ totals; the recalculated package passed Open XML validation without errors.
   количественный `Итого` доступен только при единой учётной единице; иначе — `n/a`.
 - К названиям не добавляются магазины. Если разные SKU имеют одинаковые названия,
   в обоих листах добавляется ключ SKU, чтобы `VLOOKUP` находил правильный товар.
+- JSON `totals` и последняя строка **«ИТОГО»** в Excel/предпросмотре относятся ко всему
+  фактическому отбору после всех фильтров, не к странице и не к pre-risk `summary`.
+  Общий коэффициент пересчитывается как сумма продаж / сумма среднего запаса;
+  дни оборота — N / коэффициент. N учитывается один раз. Пустой отбор — `n/a`, не ноль.
+- Количества суммируются только при одной известной идентичности единицы 1С.
+  Одинаковое название единицы не доказывает совместимость. При смешанных/неизвестных
+  единицах общий количественный итог — `n/a`, известные единицы получают отдельные
+  подытоги; денежные суммы независимы от единиц. Любое неизвестное слагаемое делает
+  соответствующий полный итог неизвестным.
+- В аналитическом Excel ИТОГО находится вне AutoFilter и только на последней части
+  основной таблицы. В дневной детализации начальный/средний запас периода находятся
+  в отдельных итоговых колонках; дневные остатки не складываются как запас периода.
+- Окрашивается только коэффициент: `<2` — красный, `2…<3` — оранжевый, `>=3` — зелёный,
+  по исходному числу до округления. `n/a` и дни оборота не окрашиваются. Excel содержит
+  статическую заливку и правила условного форматирования для пересчёта.
+- Предпросмотр: 100 товарных строк на страницу, серверные итоги по всему отбору,
+  фактический период ответа и предупреждения о сокращении. Сводный запрос использует
+  `profile=sample`; предпросмотр магазинов — `summary`, скачивание магазинов — `full`.
 
 Поиск товара заранее сужает источник по названию, артикулу, коду или ключу SKU.
 Справочники формы загружаются отдельным запросом `GET /api/reports/turnover/options`.
@@ -614,17 +632,22 @@ separate activities remain independent, and conflicting overlapping percentages
 produce an unresolved row rather than an arbitrary rate.
 
 Items/characteristics come directly from the current
-`information_register_nomenklatura_segmenta` snapshot. Purchase price type is
-`catalog_magaziny.vid_tsen_zakupa_key`; the price is the last posted,
-non-deleted `document_ustanovka_tsen_nomenklatury` before the end of the
-requested/activity intersection, matching item, characteristic and price type.
-Narrower rule intervals limit quantity, not this price cutoff. Legacy price
-lines join through `coalesce(_parent_ref_key, ref_key)`. Conflicting latest
-prices and prices requiring an unavailable packaging conversion are not guessed.
-The stored numeric percentage is used even when an activity's name states a
-different percentage. Unit compensation is rounded half-up to two decimals,
-then multiplied by net quantity and rounded again; totals sum those line amounts.
-Negative net quantities and compensation remain negative.
+`information_register_nomenklatura_segmenta` snapshot. Price is the pre-discount
+`Цена` of the same retail sale/return movement. Each distinct numeric price gets
+its own row; returns use `-abs(quantity)`, and negative sale-table movements keep
+their original sign. No purchase-price type, price installation, paid revenue,
+other sale, VAT or extra discount adjustment substitutes for this price.
+The percentage comes only from the beginning of the linked discount rule's
+`description` (`18,57% …` means 18.57), not its numeric field or the activity name.
+Missing/invalid prefixes remain unknown even when another field has a percentage.
+Unit compensation is rounded HALF_UP to two decimals, then multiplied by signed
+quantity and rounded again; totals sum rounded price-group lines. Two units at
+1000 and one return at 800 with 10% produce +200 and −80, total 120.
+Return prices are trusted only on dates with verified retail evidence explicitly
+containing `nullCounts.tsena`. Old certificates do not certify this new field.
+Before the additive DDL, the API safely reads absent return prices as unknown;
+partially backfilled but uncertified numbers remain unknown. Genuine source NULL
+is never filled with zero. Normal nightly retail jobs extend field certification.
 
 Only compensation amounts are totaled across products. Net quantities remain
 on item rows; kilograms, litres and pieces are not combined into a branch,
@@ -638,29 +661,25 @@ The currently published 1C metadata exposes no authoritative item-card barcode
 source; receipt barcodes are deliberately not substituted. An additional 1C
 publication/source is needed to populate those barcodes.
 
-Excel has the seven report columns, branch worksheets with activity blocks,
-activity/general totals, frozen headings, text barcodes and a diagnostics sheet.
-The new synchronizer profile must complete a reference refresh before the
-membership source becomes available. No production sync or deployment is
-performed by the application build.
+Excel sheet order: **«Компенсации»**, optional **«Корректировки»**, **«Диагностика»**.
+The seven columns show barcode, product, pre-discount retail price, percentage,
+unit compensation, net quantity and compensation. Stores are sorted by name/key;
+each contains its sales-bearing activities, product price groups and subtotals.
+Zero-net sales blocks remain visible. Return-only and negative-sale adjustments
+appear only on «Корректировки» and are included in the general total.
+Known inactive blocks do not create zero product rows. Unresolved scopes remain
+diagnostic and block the full report total; an invalid percentage on a rule with
+proven no movements does not invalidate its known zero contribution.
+Text cells and leading-zero barcodes stay text; diagnostics retain every level.
 
-Verification: 87 API tests passed with connection-local TEMP fixtures and
-isolated test identities (`--test-concurrency=1`, connection pool capped at 2
-to avoid exhausting the shared database). API/web builds passed; Vite reports
-a chunk-size warning. A read-only 1C segment snapshot was combined with real
-PostgreSQL source views in a temporary transaction: the September Borjomi
-activity produced 5 branches / 25 rows, with missing prices/barcodes and a
-clearly partial known subtotal, not a fabricated complete total.
-The all-activity source smoke completed 84 activities / 210 branch blocks /
-221,341 detail rows. Its streaming XLSX was written and reopened: 26 sheets,
-221,341 detail rows and 768,402 diagnostics rows, about 63.5 MB. On the local
-verification machine calculation took about 50 seconds and workbook generation
-about 82 seconds; this is a heavy export, not an instant download. The combined
-export/re-read smoke peaked at about 1,559 MiB RSS. No production capacity claim
-is implied. All-activity branch tables mount only when opened, and large
-single-activity branches start collapsed without discarding rows.
-Browser verification covered one/all selection, incomplete-source HTTP export,
-lazy detail opening/closing and table rendering at 375/768/1280 widths.
+Deploy the compatible API before `return-price-prepare --apply`: the additive
+contract transition is explicit ledger lineage, not replacement of historical
+plan/evidence hashes. Worker/backfill operations and gates are documented in
+`naliv_data1/README.md`. Application builds do not deploy or mutate production data.
+Local targeted verification includes connection-local TEMP fixtures for old-layout
+API safety and movement-price grouping, workbook formulas/styles/stream failures,
+field-specific readiness, filtered turnover totals and preview rendering.
+Live 1C/backfill parity and deployed-version acceptance are separate operator gates.
 
 ## Promotion analytics
 

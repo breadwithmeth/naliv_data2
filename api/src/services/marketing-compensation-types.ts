@@ -12,11 +12,12 @@ export type CompensationRow = {
   itemKey: string; characteristicKey: string | null; name: string;
   barcode: string | null; price: number | null; discountPct: number | null;
   unitCompensation: number | null; quantity: number | null;
-  compensation: number | null; priceDate: string | null;
+  compensation: number | null;
   from: string; to: string; issues: CompensationIssue[];
 };
 export type CompensationBranch = {
   key: string | null; name: string; rows: CompensationRow[];
+  hasSales: boolean; hasReturns: boolean;
   totals: CompensationTotals; issues: CompensationIssue[];
 };
 export type CompensationActivity = CompensationActivityOption & {

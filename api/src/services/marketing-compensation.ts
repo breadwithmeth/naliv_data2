@@ -3,6 +3,7 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { prisma } from "../prisma.js";
 import type { CompensationActivity, CompensationActivityOption, CompensationBranch, CompensationIssue, CompensationRow, CompensationTotals, MarketingCompensationReport } from "./marketing-compensation-types.js";
+import { getReloadReadiness, type ReloadReadinessState } from "./reload-readiness.js";
 
 const ZERO = "00000000-0000-0000-0000-000000000000";
 const DAY = 86_400_000;
@@ -17,9 +18,7 @@ const names = {
   items: "catalog_nomenklatura",
   reports: "document_otchet_o_roznichnyh_prodazhah",
   sales: "document_otchet_o_roznichnyh_prodazhah_tovary",
-  returns: "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary",
-  prices: "document_ustanovka_tsen_nomenklatury",
-  priceLines: "document_ustanovka_tsen_nomenklatury_tovary"
+  returns: "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary"
 } as const;
 function table(name: string) {
   return Prisma.raw(`"${config.PGSCHEMA.replaceAll('"', '""')}"."${name}"`);
@@ -43,6 +42,13 @@ function boundary(v: unknown, end = false): number | null {
 function decimal(v: unknown): Prisma.Decimal | null {
   if (v === null || v === undefined || v === "") return null;
   try { const d = new Prisma.Decimal(String(v)); return d.isFinite() ? d : null; } catch { return null; }
+}
+function parseCompensationPercentage(value: unknown): Prisma.Decimal | null {
+  if (typeof value !== "string") return null;
+  const match = /^(\d+(?:[.,]\d+)?)\s*%/.exec(value.trimStart());
+  if (!match) return null;
+  const rate = decimal(match[1].replace(",", "."));
+  return rate !== null && rate.gte(0) && rate.lte(100) ? rate : null;
 }
 const money = (d: Prisma.Decimal) => d.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber();
 function totals(rows: CompensationRow[], blocking = false): CompensationTotals {
@@ -80,17 +86,21 @@ export async function getMarketingCompensationActivities(input: Params) {
 }
 type Candidate = {
   id: number; activityKey: string; branchKey: string | null; itemKey: string; characteristicKey: string | null;
-  from: string; to: string; priceTo: string; discountPct: string | null; conflict: boolean;
+  from: string; to: string; discountPct: string | null; conflict: boolean;
 };
 type CalculatedSource = {
   id: number; quantity: string | null; missing_quantity: boolean; report_count: bigint | number;
-  price: string | null; price_count: bigint | number; price_date: string | null;
+  price: string | null; has_movements: boolean; has_sales: boolean; has_returns: boolean;
+  unverified_return: boolean; missing_price: boolean;
 };
 
 /** Segments come from the materialized 1C membership register, not guessed XML conditions. */
-export async function getMarketingCompensationReport(input: Params): Promise<MarketingCompensationReport> {
+export async function getMarketingCompensationReport(
+  input: Params,
+  reloadReader: () => Promise<Pick<ReloadReadinessState, "returnPriceIntervals">> = getReloadReadiness
+): Promise<MarketingCompensationReport> {
   const params = compensationQuerySchema.parse(input);
-  const available = await availableSources();
+  const [available, readiness] = await Promise.all([availableSources(), reloadReader()]);
   const report: MarketingCompensationReport = {
     from: iso(params.from), to: iso(params.to), activityKey: params.activityKey ?? null,
     activities: [], totals: totals([]), issues: []
@@ -113,9 +123,9 @@ export async function getMarketingCompensationReport(input: Params): Promise<Mar
     load(names.activities, "ref_key, data_nachala_deystviya, data_okonchaniya_deystviya, dlya_vseh_magazinov"),
     load(names.rules, "_parent_ref_key, ref_key, skidka_natsenka_key, magazin_key, data_nachala, data_okonchaniya"),
     load(names.activityStores, "_parent_ref_key, ref_key, magazin_key"),
-    load(names.discounts, "ref_key, sposob_predostavleniya, znachenie_skidki_natsenki::text, segment_nomenklatury_predostavleniya_key, deletion_mark"),
+    load(names.discounts, "ref_key, description, segment_nomenklatury_predostavleniya_key, deletion_mark"),
     load(names.segments, "ref_key, description, deletion_mark"),
-    load(names.stores, "ref_key, description, vid_tsen_zakupa_key, deletion_mark"),
+    load(names.stores, "ref_key, description, deletion_mark"),
     load(names.items, "ref_key, description, naimenovanie_polnoe, to_jsonb(catalog_nomenklatura)->>'shtrihkod' as shtrihkod, to_jsonb(catalog_nomenklatura)->>'barcode' as barcode"),
     load(names.membership, "segment_key, nomenklatura_key, harakteristika_key")
   ]);
@@ -123,6 +133,7 @@ export async function getMarketingCompensationReport(input: Params): Promise<Mar
   const storeByKey = new Map(stores.filter(r => r.deletion_mark !== true).map(r => [ref(r.ref_key), r]));
   const itemByKey = new Map(items.map(r => [ref(r.ref_key), r]));
   const discountByKey = new Map(discounts.map(r => [ref(r.ref_key), r]));
+  const percentageByKey = new Map(discounts.map(r => [ref(r.ref_key), parseCompensationPercentage(r.description)]));
   const segmentByKey = new Map(segments.map(r => [ref(r.ref_key), r]));
   const parent = (r: Json) => ref(r._parent_ref_key) ?? ref(r.ref_key);
   const memberMap = new Map<string, Json[]>();
@@ -147,15 +158,9 @@ export async function getMarketingCompensationReport(input: Params): Promise<Mar
     const scopes = new Map<string, Array<Omit<Candidate, "id">>>();
     for (const rule of activityRules) {
       const discount = discountByKey.get(ref(rule.skidka_natsenka_key));
-      if (!discount || discount.deletion_mark === true) { activity.issues.push(issue("missing_percentage", "Не найдено действующее правило скидки.")); continue; }
-      if (discount.sposob_predostavleniya !== "Процент") {
-        // Gift/bonus/coupon/price rules never yield a percentage compensation: one
-        // activity-level issue instead of a non-computable row per segment item × branch.
-        activity.issues.push(issue("missing_percentage", "Правило без процентной скидки (подарок, бонус, купон или цена): компенсация по проценту не рассчитывается, строки товаров не формируются."));
-        continue;
-      }
-      const rate = decimal(discount.znachenie_skidki_natsenki);
-      if (rate === null || rate.isNegative() || rate.gt(100)) activity.issues.push(issue("missing_percentage", "Не указан корректный процент скидки в правиле 1С."));
+      if (!discount || discount.deletion_mark === true) { activity.issues.push(issue("missing_rule", "Не найдено действующее правило скидки.")); continue; }
+      const rate = percentageByKey.get(ref(rule.skidka_natsenka_key)) ?? null;
+      if (rate === null) activity.issues.push(issue("missing_percentage", "В начале названия правила 1С нет корректного процента компенсации."));
       const segmentKey = ref(discount.segment_nomenklatury_predostavleniya_key);
       const segment = segmentByKey.get(segmentKey);
       if (!segment || segment.deletion_mark === true) { activity.issues.push(issue("missing_segment", "Не найден сегмент номенклатуры правила скидки.")); continue; }
@@ -176,8 +181,8 @@ export async function getMarketingCompensationReport(input: Params): Promise<Mar
         const key = JSON.stringify([branchKey, itemKey, characteristicKey]);
         const list = scopes.get(key) ?? [];
         list.push({ activityKey: option.key, branchKey, itemKey, characteristicKey,
-          from: iso(new Date(windowFrom)), to: iso(new Date(windowTo)), priceTo: activity.to,
-          discountPct: rate !== null && !rate.isNegative() && rate.lte(100) ? rate.toString() : null, conflict: false });
+          from: iso(new Date(windowFrom)), to: iso(new Date(windowTo)),
+          discountPct: rate?.toString() ?? null, conflict: false });
         scopes.set(key, list);
       }
     }
@@ -199,57 +204,36 @@ export async function getMarketingCompensationReport(input: Params): Promise<Mar
     activity.issues = [...new Map(activity.issues.map(i => [i.code + i.message, i])).values()];
   }
   const salesReady = [names.reports, names.sales, names.returns].every(n => available.has(n));
-  const priceReady = [names.prices, names.priceLines].every(n => available.has(n));
   let calculated: CalculatedSource[] = [];
   if (candidates.length) {
-    const payload = candidates.map(c => ({ ...c, priceType: ref(storeByKey.get(c.branchKey)?.vid_tsen_zakupa_key) }));
+    const itemKeys = [...new Set(candidates.map(c => c.itemKey))];
     const salesCte = salesReady ? Prisma.sql`
       reports as materialized (
         select r.ref_key, r.magazin_key, r.date from ${table(names.reports)} r
         where r.posted is true and r.deletion_mark is not true and r.date >= ${params.from} and r.date < ${params.to}
       ),
       movements as materialized (
-        select r.magazin_key, r.date, l.nomenklatura_key, nullif(l.harakteristika_key, ${ZERO}) as characteristic, l.kolichestvo as quantity
+        select r.magazin_key, r.date, l.nomenklatura_key, nullif(l.harakteristika_key, ${ZERO}) as characteristic,
+          l.kolichestvo as quantity, l.tsena as price, 'sale'::text as kind
         from ${table(names.sales)} l join reports r on coalesce(l._parent_ref_key, l.ref_key) = r.ref_key
-        where l.nomenklatura_key = any(${[...new Set(candidates.map(c => c.itemKey))]}::text[])
+        where l.nomenklatura_key = any(${itemKeys}::text[])
         union all
-        select r.magazin_key, r.date, l.nomenklatura_key, nullif(l.harakteristika_key, ${ZERO}), -l.kolichestvo
+        select r.magazin_key, r.date, l.nomenklatura_key, nullif(l.harakteristika_key, ${ZERO}),
+          -abs(l.kolichestvo), (to_jsonb(l)->>'tsena')::numeric, 'return'::text
         from ${table(names.returns)} l join reports r on coalesce(l._parent_ref_key, l.ref_key) = r.ref_key
-        where l.nomenklatura_key = any(${[...new Set(candidates.map(c => c.itemKey))]}::text[])
+        where l.nomenklatura_key = any(${itemKeys}::text[])
       )` : Prisma.sql`
       reports as (select null::text as ref_key, null::text as magazin_key, null::timestamp as date where false),
-      movements as (select null::text as magazin_key, null::timestamp as date, null::text as nomenklatura_key, null::text as characteristic, null::numeric as quantity where false)`;
-    const priceCte = priceReady ? Prisma.sql`
-      price_scopes as (
-        select distinct "itemKey", "characteristicKey", "priceType", "priceTo" from candidates
-      ),
-      valid_prices as materialized (
-        select l.nomenklatura_key, l.vid_tseny_key, l.harakteristika_key, l.tsena, d.date,
-          nullif(nullif(to_jsonb(l)->>'upakovka_key', ${ZERO}), '') is not null as packaged
-        from ${table(names.priceLines)} l join ${table(names.prices)} d
-          on coalesce(l._parent_ref_key, l.ref_key) = d.ref_key
-        where d.posted is true and d.deletion_mark is not true and d.date < ${params.to}
-      ),
-      price_matches as (
-        select c.*, l.tsena, l.date, l.packaged,
-          dense_rank() over (partition by c."itemKey", c."characteristicKey", c."priceType", c."priceTo" order by l.date desc) as ranking
-        from price_scopes c join valid_prices l
-          on l.nomenklatura_key = c."itemKey" and l.vid_tseny_key = c."priceType"
-          and coalesce(nullif(l.harakteristika_key, ${ZERO}), '') = coalesce(c."characteristicKey", '')
-        where l.date < c."priceTo"::timestamp
-      ),
-      price_results as materialized (
-        select "itemKey", "characteristicKey", "priceType", "priceTo",
-          case when bool_or(tsena is null or packaged) then null else min(tsena)::text end as price,
-          count(distinct tsena) as price_count, max(date)::text as price_date
-        from price_matches where ranking = 1
-        group by "itemKey", "characteristicKey", "priceType", "priceTo"
-      )` : Prisma.sql`
-      price_results as (select null::text as "itemKey", null::text as "characteristicKey", null::text as "priceType", null::text as "priceTo", null::text as price, 0 as price_count, null::text as price_date where false)`;
+      movements as (select null::text as magazin_key, null::timestamp as date, null::text as nomenklatura_key,
+        null::text as characteristic, null::numeric as quantity, null::numeric as price, null::text as kind where false)`;
     calculated = await prisma.$queryRaw<CalculatedSource[]>`
       with candidates as materialized (
-        select * from jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) as c(id int, "branchKey" text, "itemKey" text, "characteristicKey" text, "from" text, "to" text, "priceTo" text, "priceType" text)
-      ), ${salesCte}, ${priceCte},
+        select * from jsonb_to_recordset(${JSON.stringify(candidates)}::jsonb)
+          as c(id int, "branchKey" text, "itemKey" text, "characteristicKey" text, "from" text, "to" text)
+      ), ${salesCte},
+      return_price_intervals as (
+        select * from jsonb_to_recordset(${JSON.stringify(readiness.returnPriceIntervals)}::jsonb) as i("from" text, "to" text)
+      ),
       coverage_scopes as (select distinct "branchKey", "from", "to" from candidates),
       coverage_results as (
         select c."branchKey", c."from", c."to", count(r.ref_key) as report_count
@@ -257,23 +241,46 @@ export async function getMarketingCompensationReport(input: Params): Promise<Mar
           and r.date >= c."from"::timestamp and r.date < c."to"::timestamp
         group by c."branchKey", c."from", c."to"
       ),
-      movement_results as (
-        select c.id, sum(m.quantity)::text as quantity, bool_or(m.quantity is null) as missing_quantity
+      matched as (
+        select c.id, m.*,
+          m.kind = 'return' and not exists (
+            select 1 from return_price_intervals i where m.date >= i."from"::timestamp and m.date < i."to"::timestamp
+          ) as unverified_return
         from candidates c join movements m on m.magazin_key = c."branchKey" and m.nomenklatura_key = c."itemKey"
           and coalesce(m.characteristic, '') = coalesce(c."characteristicKey", '')
           and m.date >= c."from"::timestamp and m.date < c."to"::timestamp
-        group by c.id
+        where m.quantity <> 0 or m.quantity is null
+      ),
+      priced as (
+        select *, case when not unverified_return and price >= 0 and price::text not in ('NaN','Infinity','-Infinity')
+          then price else null end as known_price
+        from matched
+      ),
+      movement_results as (
+        select id, known_price::text as price, sum(quantity)::text as quantity,
+          bool_or(quantity is null) as missing_quantity, true as has_movements,
+          bool_or(kind = 'sale' and quantity > 0) as has_sales,
+          bool_or((kind = 'return' and quantity <> 0) or (kind = 'sale' and quantity < 0)) as has_returns,
+          bool_or(unverified_return) as unverified_return,
+          bool_or(price is null or price < 0 or price::text in ('NaN','Infinity','-Infinity')) as missing_price
+        from priced group by id, known_price
       )
       select c.id, q.quantity, coalesce(q.missing_quantity, false) as missing_quantity,
-        coalesce(coverage.report_count, 0) as report_count, p.price, p.price_count, p.price_date
+        coalesce(coverage.report_count, 0) as report_count, q.price,
+        coalesce(q.has_movements, false) as has_movements, coalesce(q.has_sales, false) as has_sales,
+        coalesce(q.has_returns, false) as has_returns, coalesce(q.unverified_return, false) as unverified_return,
+        coalesce(q.missing_price, false) as missing_price
       from candidates c
       left join coverage_results coverage on coverage."branchKey" = c."branchKey" and coverage."from" = c."from" and coverage."to" = c."to"
       left join movement_results q on q.id = c.id
-      left join price_results p on p."itemKey" = c."itemKey" and p."priceType" = c."priceType"
-        and coalesce(p."characteristicKey", '') = coalesce(c."characteristicKey", '') and p."priceTo" = c."priceTo"
     `;
   }
-  const byId = new Map(calculated.map(r => [r.id, r]));
+  const byId = new Map<number, CalculatedSource[]>();
+  for (const row of calculated) {
+    const group = byId.get(row.id) ?? [];
+    group.push(row);
+    byId.set(row.id, group);
+  }
   const branchMaps = new Map<string, Map<string | null, CompensationBranch>>();
   for (const c of candidates) {
     const activity = activityMap.get(c.activityKey)!;
@@ -282,32 +289,40 @@ export async function getMarketingCompensationReport(input: Params): Promise<Mar
     let branch = branches.get(c.branchKey);
     const store = storeByKey.get(c.branchKey);
     if (!branch) {
-      branch = { key: c.branchKey, name: text(store?.description) ?? "Не определён филиал", rows: [], totals: totals([]), issues: [] };
+      branch = { key: c.branchKey, name: text(store?.description) ?? "Не определён филиал", rows: [],
+        hasSales: false, hasReturns: false, totals: totals([]), issues: [] };
       if (!store) branch.issues.push(issue("missing_branch", "Филиал отсутствует в справочнике магазинов."));
-      if (!ref(store?.vid_tsen_zakupa_key)) branch.issues.push(issue("missing_purchase_price_type", "У филиала не указан вид закупочных цен."));
       branches.set(c.branchKey, branch); activity.branches.push(branch);
     }
-    const item = itemByKey.get(c.itemKey);
-    const source = byId.get(c.id);
-    const issues: CompensationIssue[] = [];
-    const barcode = text(item?.shtrihkod) ?? text(item?.barcode);
-    if (!barcode) issues.push(issue("missing_barcode", "Нет штрихкода карточки номенклатуры в опубликованных данных 1С."));
-    if (!item) issues.push(issue("missing_item", "Номенклатура отсутствует в справочнике."));
-    const rate = decimal(c.discountPct);
-    if (c.conflict) issues.push(issue("conflicting_percentage", "Для товара действуют пересекающиеся правила с разными процентами скидки."));
-    else if (rate === null) issues.push(issue("missing_percentage", "Нет процента скидки."));
-    let price = decimal(source?.price);
-    if (Number(source?.price_count ?? 0) > 1) { price = null; issues.push(issue("conflicting_price", "В последних установках на одну дату указаны разные закупочные цены.")); }
-    if (price === null || price.isNegative()) { price = null; issues.push(issue("missing_price", "Нет действующей закупочной цены филиала на конец периода.")); }
-    const quantity = !store || !salesReady || !source || source.missing_quantity || Number(source.report_count) === 0 ? null : decimal(source.quantity ?? "0");
-    if (quantity === null) issues.push(issue("missing_quantity", "Количество не определено: нет отчётов продаж филиала за интервал либо в строке отсутствует количество."));
-    const unitCompensation = price !== null && rate !== null ? money(price.mul(rate).div(100)) : null;
-    const compensation = unitCompensation !== null && quantity !== null && item && store ? money(quantity.mul(unitCompensation)) : null;
-    branch.rows.push({ itemKey: c.itemKey, characteristicKey: c.characteristicKey,
-      name: text(item?.naimenovanie_polnoe) ?? text(item?.description) ?? c.itemKey, barcode,
-      price: price?.toNumber() ?? null, discountPct: rate?.toNumber() ?? null,
-      unitCompensation, quantity: quantity?.toNumber() ?? null, compensation,
-      priceDate: source?.price_date ?? null, from: c.from, to: c.to, issues });
+    const sources = byId.get(c.id) ?? [];
+    if (!salesReady || !sources.length || sources.some(s => Number(s.report_count) === 0)) {
+      branch.issues.push(issue("missing_quantity", `Нет отчётов продаж филиала за интервал [${c.from}, ${c.to}); отсутствие движений не подтверждено.`));
+    }
+    for (const source of sources) {
+      if (!source.has_movements) continue;
+      branch.hasSales ||= source.has_sales;
+      branch.hasReturns ||= source.has_returns;
+      const item = itemByKey.get(c.itemKey);
+      const issues: CompensationIssue[] = [];
+      const barcode = text(item?.shtrihkod) ?? text(item?.barcode);
+      if (!barcode) issues.push(issue("missing_barcode", "Нет штрихкода карточки номенклатуры в опубликованных данных 1С."));
+      if (!item) issues.push(issue("missing_item", "Номенклатура отсутствует в справочнике."));
+      const rate = decimal(c.discountPct);
+      if (c.conflict) issues.push(issue("conflicting_percentage", "Для товара действуют пересекающиеся правила с разными процентами компенсации."));
+      else if (rate === null) issues.push(issue("missing_percentage", "Нет корректного процентного префикса названия правила."));
+      const price = decimal(source.price);
+      if (source.missing_price) issues.push(issue("missing_price", "Нет корректной цены до скидки в строке продажи/возврата 1С."));
+      if (source.unverified_return) issues.push(issue("return_price_unverified", "Цена возврата за этот день ещё не подтверждена сверкой источника и назначения."));
+      const quantity = !store || source.missing_quantity ? null : decimal(source.quantity);
+      if (quantity === null) issues.push(issue("missing_quantity", "Количество движения не определено."));
+      const unit = price !== null && rate !== null ? price.mul(rate).div(100).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP) : null;
+      const compensation = unit !== null && quantity !== null && item && store ? money(quantity.mul(unit)) : null;
+      branch.rows.push({ itemKey: c.itemKey, characteristicKey: c.characteristicKey,
+        name: text(item?.naimenovanie_polnoe) ?? text(item?.description) ?? c.itemKey, barcode,
+        price: price?.toNumber() ?? null, discountPct: rate?.toNumber() ?? null,
+        unitCompensation: unit?.toNumber() ?? null, quantity: quantity?.toNumber() ?? null, compensation,
+        from: c.from, to: c.to, issues });
+    }
   }
   // Unassigned report movements cannot be silently excluded from an apparently complete total.
   if (salesReady && candidates.length) {
@@ -334,12 +349,15 @@ export async function getMarketingCompensationReport(input: Params): Promise<Mar
     if (unknown.length) report.issues.push(issue("missing_branch", "Есть движения товаров отчёта с неопределённым филиалом; полный общий итог недоступен."));
   }
   for (const a of report.activities) {
-    a.branches.sort((x, y) => x.name.localeCompare(y.name, "ru"));
+    a.branches.sort((x, y) => x.name.localeCompare(y.name, "ru") || (x.key ?? "").localeCompare(y.key ?? ""));
     for (const b of a.branches) {
-      b.rows.sort((x, y) => x.name.localeCompare(y.name, "ru") || x.itemKey.localeCompare(y.itemKey) || x.from.localeCompare(y.from));
+      b.rows.sort((x, y) => x.name.localeCompare(y.name, "ru") || x.itemKey.localeCompare(y.itemKey)
+        || (x.characteristicKey ?? "").localeCompare(y.characteristicKey ?? "") || x.from.localeCompare(y.from) || x.to.localeCompare(y.to)
+        || (x.price === null ? y.price === null ? 0 : 1 : y.price === null ? -1 : x.price - y.price));
+      b.issues = [...new Map(b.issues.map(i => [i.code + i.message, i])).values()];
       b.totals = totals(b.rows, b.issues.length > 0);
     }
-    a.totals = totals(a.branches.flatMap(b => b.rows), a.issues.length > 0 || a.branches.some(b => b.totals.compensation === null));
+    a.totals = totals(a.branches.flatMap(b => b.rows), a.issues.some(i => i.code !== "missing_percentage") || a.branches.some(b => b.totals.compensation === null));
   }
   report.totals = totals(report.activities.flatMap(a => a.branches.flatMap(b => b.rows)), report.issues.length > 0 || report.activities.some(a => a.totals.compensation === null));
   return report;
