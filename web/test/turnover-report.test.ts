@@ -9,6 +9,7 @@ function row(index = 0): TurnoverPreviewRow {
   return {
     key: `row-${index}`, name: `Товар ${index}`, sku: `sku-${index}`, article: `article-${index}`,
     storeKey: "store-a", storeName: "Магазин А", categoryName: "Категория", unit: "шт.",
+    rootGroupKey: "root", rootGroupName: "Верхняя группа",
     noSalesHistory: false, openingQty: 8, closingQty: 12, averageQty: 10,
     openingCost: 80, closingCost: 120, averageCost: 100,
     periodSales: { quantity: 25, cost: 250, revenue: 400, averageDailyQty: 12.5, averageDailyCost: 125 },
@@ -61,8 +62,10 @@ test("compact preview pages 100 product rows and retains server-wide totals on e
   data.totals.overall.periodSales = { ...data.totals.overall.periodSales, quantity: 2525 };
   const first = render(data);
   const second = render(data, 1);
-  assert.equal((section(first, "tbody").match(/<tr[ >]/g) ?? []).length, 100);
-  assert.equal((section(second, "tbody").match(/<tr[ >]/g) ?? []).length, 1);
+  assert.equal((section(first, "tbody").match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 100);
+  assert.equal((section(second, "tbody").match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 1);
+  assert.match(section(first, "tbody"), /scope="rowgroup"[^>]*>Верхняя группа</);
+  assert.match(section(second, "tbody"), /scope="rowgroup"[^>]*>Верхняя группа</);
   assert.doesNotMatch(section(first, "tbody"), /Товар 100</);
   assert.match(section(second, "tbody"), /Товар 100</);
   assert.equal(section(first, "tfoot"), section(second, "tfoot"));
@@ -74,8 +77,8 @@ test("compact preview pages 100 product rows and retains server-wide totals on e
   assert.match(second, /<th scope="col"/);
   const detailedFirst = render(data, 0, true);
   const detailedSecond = render(data, 1, true);
-  assert.equal((section(detailedFirst, "tbody").match(/<tr[ >]/g) ?? []).length, 100);
-  assert.equal((section(detailedSecond, "tbody").match(/<tr[ >]/g) ?? []).length, 1);
+  assert.equal((section(detailedFirst, "tbody").match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 100);
+  assert.equal((section(detailedSecond, "tbody").match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 1);
   assert.equal(section(detailedFirst, "tfoot"), section(detailedSecond, "tfoot"));
   assert.match(section(detailedSecond, "tfoot"), /2[\u00a0\u202f ]525/);
 });
@@ -262,7 +265,7 @@ test("builder has one primary show submit and secondary Excel with advanced sett
   const advanced = html.slice(advancedStart, html.indexOf('<div class="turnover-download-actions"'));
   assert.doesNotMatch(advanced, /<details[^>]*\bopen/);
   assert.match(advanced, /Дополнительные настройки/);
-  for (const label of ["Категории / группы товаров", "Склад", "Бренд", "По магазинам", "Включать офисы и отделы", "Исключить нулевые товары"]) {
+  for (const label of ["Категории / группы товаров", "Склад", "Бренд", "Включать офисы и отделы", "Исключить нулевые товары"]) {
     assert.ok(advanced.includes(label), `missing advanced setting ${label}`);
   }
   assert.doesNotMatch(advanced, /type="checkbox"[^>]*checked/);
@@ -319,4 +322,47 @@ test("incomplete calculation opt-in is visible outside advanced settings and ini
   const checkbox = html.slice(html.lastIndexOf("<input", index), index);
   assert.match(checkbox, /type="checkbox"/);
   assert.doesNotMatch(checkbox, /checked/);
+});
+
+test("store splitting is a visible unchecked checkbox independent of selected stores", () => {
+  const html = renderToStaticMarkup(createElement(TurnoverReport, {
+    dateRange: { from: "2026-11-01", to: "2026-11-03" }, onDateRangeChange: () => {}
+  }));
+  const index = html.indexOf("Разбить по магазинам");
+  assert.ok(index >= 0 && index < html.indexOf('<details class="turnover-advanced">'));
+  const control = html.slice(html.lastIndexOf("<input", index), index);
+  assert.match(control, /type="checkbox"/);
+  assert.doesNotMatch(control, /checked/);
+  assert.doesNotMatch(html, /type="radio"[^>]*value="(?:sample|stores)"/);
+});
+
+test("section boundaries use identities, repeat stores before roots and span every visible column", () => {
+  const data = report();
+  data.params.sort = "name";
+  data.rows = [
+    { ...row(0), storeKey: "s1", storeName: "Одинаковый", rootGroupKey: "g1", rootGroupName: "Без группы" },
+    { ...row(1), storeKey: "s1", storeName: "Одинаковый", rootGroupKey: null, rootGroupName: "Без группы" },
+    { ...row(2), storeKey: "s2", storeName: "Одинаковый", rootGroupKey: "g1", rootGroupName: "Без группы" },
+    { ...row(3), storeKey: null, storeName: "", rootGroupKey: "g2", rootGroupName: "Верхняя группа" }
+  ];
+  for (const mode of ["quantity", "money", "both"] as const) for (const detailed of [false, true]) {
+    data.params.mode = mode;
+    data.params.profile = "summary";
+    const body = section(render(data, 0, detailed), "tbody");
+    assert.equal((body.match(/class="turnover-preview-store"/g) ?? []).length, 3);
+    assert.equal((body.match(/class="turnover-preview-group"/g) ?? []).length, 4);
+    assert.equal((body.match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 4);
+    assert.match(body, /Магазин не определён/);
+    const columns = 2 + Number(detailed) + Number(mode !== "money")
+      + (mode !== "money" ? detailed ? 6 : 4 : 0) + (mode !== "quantity" ? detailed ? 7 : 4 : 0);
+    const headers = [...body.matchAll(/scope="rowgroup" colSpan="(\d+)"/gi)];
+    assert.equal(headers.length, 7);
+    for (const header of headers) assert.equal(Number(header[1]), columns);
+    data.params.profile = "sample";
+    const network = section(render(data, 0, detailed), "tbody");
+    assert.doesNotMatch(network, /class="turnover-preview-store"/);
+    assert.equal((network.match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 4);
+  }
+  data.rows = [];
+  assert.doesNotMatch(section(render(data), "tbody"), /scope="rowgroup"/);
 });

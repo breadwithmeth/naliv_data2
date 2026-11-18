@@ -10,6 +10,7 @@ import {
   buildPhysicalStoreIndex, isUsableWarehouse, type PhysicalStore, type PhysicalStoreIndex, type StoreDirectoryEntry
 } from "./turnover-stores.js";
 import { evaluateCoverage, getReloadReadiness } from "./reload-readiness.js";
+import { buildTurnoverRootGroups, compareTurnoverPresentationRows } from "./turnover-presentation.js";
 import type {
   TurnoverDailyRow, TurnoverNorms, TurnoverOption, TurnoverPolicy, TurnoverReport,
   TurnoverOptions, TurnoverRequest, TurnoverRow, TurnoverRowDetail, TurnoverSales, TurnoverTotal, TurnoverTotals, TurnoverWindow
@@ -83,7 +84,7 @@ export const turnoverQuerySchema = z.object({
   groupBy: z.enum(["sku", "store", "category", "brand", "day"]).default("sku"),
   horizon: z.coerce.number().pipe(z.union([z.literal(7), z.literal(14), z.literal(30)])).default(14),
   risk: z.enum(["all", "no-sales", "overstock", "deficit", "stagnant"]).default("all"),
-  sort: z.enum(["turnover", "stock-cost", "no-movement", "sales-decline"]).default("turnover"),
+  sort: z.enum(["turnover", "stock-cost", "no-movement", "sales-decline", "name"]).default("turnover"),
   profile: z.enum(["summary", "full", "sample"]).default("full"),
   auditGroup: z.string().min(1).max(1000).optional(),
   norms: z.union([jsonPolicySchema, policySchema]).optional()
@@ -471,7 +472,7 @@ type NormalizedTurnoverRequest = TurnoverRequest & {
   comparisonFrom: string; comparisonTo: string; store: string[]; storeScope: "retail" | "all"; excludeZero: boolean; includeIncomplete: boolean; category: string[]; mode: "quantity" | "money" | "both";
   groupBy: "sku" | "store" | "category" | "brand" | "day"; horizon: 7 | 14 | 30;
   risk: "all" | "no-sales" | "overstock" | "deficit" | "stagnant";
-  sort: "turnover" | "stock-cost" | "no-movement" | "sales-decline";
+  sort: "turnover" | "stock-cost" | "no-movement" | "sales-decline" | "name";
   profile: "summary" | "full" | "sample"; norms: TurnoverPolicy;
 };
 type DailyFact = { quantity: number | null; cost: number | null; revenue: number | null; positive: boolean };
@@ -480,6 +481,7 @@ type CostPoint = { at: number; price: number | null };
 type Pair = {
   key: string; store: string; sku: string; item: Item; unit: string; unitToken: string;
   category: string | null; categoryName: string; brand: string | null; brandName: string;
+  rootGroupKey: string | null; rootGroupName: string;
   storeName: string; norms: TurnoverNorms; minimum: number | null;
   stock: Map<string, StockValue>; sales: Map<string, DailyFact>; positiveDates: string[];
   firstStock: string | null; orders: OrderFact[]; barcodes: string[];
@@ -581,6 +583,8 @@ function aggregateRows(rows: TurnoverRow[], key: string, name: string, days: num
     storeKey: same("storeKey") ? first.storeKey : null, storeName: same("storeName") ? first.storeName : "Все выбранные магазины",
     warehouseKey: same("warehouseKey") ? first.warehouseKey : null, warehouseName: same("warehouseName") ? first.warehouseName : "Все выбранные склады",
     categoryKey: same("categoryKey") ? first.categoryKey : null, categoryName: same("categoryName") ? first.categoryName : "Несколько категорий",
+    rootGroupKey: same("rootGroupKey") ? first.rootGroupKey : null,
+    rootGroupName: same("rootGroupKey") ? first.rootGroupName : "Несколько групп",
     brandKey: same("brandKey") ? first.brandKey : null, brandName: same("brandName") ? first.brandName : "Несколько брендов", unit: first.unit,
     openingQty: sum("openingQty"), closingQty, averageQty, openingCost: sum("openingCost"), closingCost: sum("closingCost"), averageCost,
     periodSales, comparisonSales, quantityChange: salesChange(periodSales.quantity, comparisonSales.quantity),
@@ -746,6 +750,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     throw error;
   }
   const items = new Map(source.items.map((item) => [item.key, item]));
+  const rootGroups = buildTurnoverRootGroups(items);
   const physicalWarehouses = source.warehouses
     .filter((warehouse) => warehouse.storeKey && sourceStoreKeys.includes(warehouse.storeKey)
       && isUsableWarehouse(warehouse.name))
@@ -821,8 +826,10 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
         message: "Унаследованные нормативы противоречат друг другу: критический порог ниже обычного" }]);
     }
     const storeName = physical?.name ?? (physicalKey === UNKNOWN ? "Магазин не указан" : `Магазин ${physicalKey}`);
+    const rootGroup = rootGroups.get(sku);
     const pair: Pair = { key, store: physicalKey, sku, item, unit, unitToken: unitName ? unitKey! : `unknown:${sku}`,
       category, categoryName: category ? groups.get(category) ?? items.get(category)?.name ?? `Категория ${category}` : "Категория не указана",
+      rootGroupKey: rootGroup?.key ?? null, rootGroupName: rootGroup?.name ?? "Без группы",
       brand, brandName: brand ? brands.get(brand) ?? `Бренд не найден (${brand})` : "Бренд не указан",
       storeName, norms, minimum: minimumForStore(item, storeName), stock: new Map(), sales: new Map(),
       positiveDates: [], firstStock: null, orders: [], barcodes: barcodeIndex.get(sku) ?? [] };
@@ -1015,6 +1022,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
       barcodes: pair.barcodes, storeKey: pair.store === UNKNOWN ? null : pair.store, storeName: pair.storeName,
       warehouseKey: params.warehouse ?? null, warehouseName: warehouse?.name ?? (params.warehouse ? `Склад ${params.warehouse}` : "Все склады"),
       categoryKey: pair.category, categoryName: pair.categoryName, brandKey: pair.brand, brandName: pair.brandName, unit: pair.unit,
+      rootGroupKey: pair.rootGroupKey, rootGroupName: pair.rootGroupName,
       openingQty: opening.quantity, closingQty: closing.quantity, averageQty, openingCost: opening.cost, closingCost: closing.cost, averageCost,
       periodSales, comparisonSales, quantityChange: salesChange(periodSales.quantity, comparisonSales.quantity),
       costChange: salesChange(periodSales.cost, comparisonSales.cost), windows,
@@ -1102,6 +1110,9 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     : params.sort === "sales-decline" ? row.quantityChange.pct
     : params.mode === "money" ? row.turnoverCost : row.turnoverQty;
   rows.sort((a, b) => {
+    if (params.sort === "name") return params.groupBy === "sku"
+      ? compareTurnoverPresentationRows(a, b, params.profile !== "sample")
+      : a.name.localeCompare(b.name, "ru") || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
     const left = sortValue(a), right = sortValue(b);
     if (left === null && right !== null) return 1;
     if (right === null && left !== null) return -1;

@@ -9,7 +9,7 @@ import type {
 } from "./turnover-types.js";
 import { writeTurnoverSampleWorkbook } from "./turnover-sample-workbook.js";
 import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
-import { writeTurnoverSummarySheet } from "./turnover-summary-workbook.js";
+import { writeTurnoverProductsSheet, writeTurnoverSummarySheet } from "./turnover-summary-workbook.js";
 import { completeTurnoverReport } from "./turnover-domain.js";
 
 type Value = string | number | null;
@@ -249,6 +249,7 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
     workbook.creator = "Naliv Аналитика";
     workbook.created = new Date(report.generatedAt);
     await writeTurnoverSummarySheet(workbook, report);
+    if (report.params.groupBy === "sku" && report.params.sort === "name") await writeTurnoverProductsSheet(workbook, report);
     const includeIncomplete = Boolean(report.params.includeIncomplete);
     const note = `Период [${report.params.from}, ${report.params.to}); сравнение [${report.comparison.from}, ${report.comparison.to}). ${includeIncomplete
       ? "n/a — данных нет или расчёт невозможен; 0 — известный ноль."

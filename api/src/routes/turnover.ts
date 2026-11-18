@@ -18,6 +18,7 @@ turnoverRouter.get("/turnover", asyncHandler(async (req, res) => {
       rows: report.rows.map(row => ({
         key: row.key, name: row.name, sku: row.sku, article: row.article,
         storeKey: row.storeKey, storeName: row.storeName, categoryName: row.categoryName, unit: row.unit,
+        rootGroupKey: row.rootGroupKey, rootGroupName: row.rootGroupName,
         noSalesHistory: row.noSalesHistory, openingQty: row.openingQty, closingQty: row.closingQty,
         averageQty: row.averageQty, openingCost: row.openingCost, closingCost: row.closingCost,
         averageCost: row.averageCost, periodSales: row.periodSales, turnoverQty: row.turnoverQty,

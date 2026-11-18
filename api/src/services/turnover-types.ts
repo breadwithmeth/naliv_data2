@@ -2,7 +2,7 @@ export type TurnoverMode = "quantity" | "money" | "both";
 export type TurnoverProfile = "summary" | "full" | "sample";
 export type TurnoverGroup = "sku" | "store" | "category" | "brand" | "day";
 export type TurnoverRisk = "all" | "no-sales" | "overstock" | "deficit" | "stagnant";
-export type TurnoverSort = "turnover" | "stock-cost" | "no-movement" | "sales-decline";
+export type TurnoverSort = "turnover" | "stock-cost" | "no-movement" | "sales-decline" | "name";
 export type TurnoverNorms = {
   minDays: number;
   staleDays: number;
@@ -85,6 +85,8 @@ export type TurnoverRow = {
   warehouseName: string;
   categoryKey: string | null;
   categoryName: string;
+  rootGroupKey: string | null;
+  rootGroupName: string;
   brandKey: string | null;
   brandName: string;
   unit: string;
@@ -190,7 +192,7 @@ export type TurnoverReport = {
 };
 
 export type TurnoverPreviewRow = Pick<TurnoverRow,
-  "key" | "name" | "sku" | "article" | "storeKey" | "storeName" | "categoryName" | "unit" |
+  "key" | "name" | "sku" | "article" | "storeKey" | "storeName" | "categoryName" | "rootGroupKey" | "rootGroupName" | "unit" |
   "noSalesHistory" | "openingQty" | "closingQty" | "averageQty" |
   "openingCost" | "closingCost" | "averageCost" | "periodSales" |
   "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays" |

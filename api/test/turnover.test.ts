@@ -131,6 +131,8 @@ test("default turnover population is filtered before daily, grouping and totals,
   const { prisma } = await import("../src/prisma.js");
   const { getTurnoverReport, turnoverQuerySchema } = await import("../src/services/turnover.js");
   const request = { from: "2026-11-01", to: "2026-11-04", mode: "both" as const };
+  assert.equal(turnoverQuerySchema.parse(request).sort, "turnover");
+  assert.equal(turnoverQuerySchema.parse({ ...request, sort: "name" }).sort, "name");
   assert.equal(turnoverQuerySchema.parse(request).includeIncomplete, false);
   assert.equal(turnoverQuerySchema.parse({ ...request, includeIncomplete: "false" }).includeIncomplete, false);
   assert.equal(turnoverQuerySchema.parse({ ...request, includeIncomplete: "true" }).includeIncomplete, true);

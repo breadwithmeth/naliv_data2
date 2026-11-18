@@ -3895,3 +3895,15 @@ select:focus {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+.turnover-preview-table .turnover-preview-store th {
+  color: var(--turnover-ink);
+  background: #e8eef7;
+  font-weight: 650;
+}
+
+.turnover-preview-table .turnover-preview-group th {
+  color: #344054;
+  background: #f2f4f7;
+  font-weight: 600;
+}

@@ -16,6 +16,7 @@ const row: TurnoverRow = {
   key: "store:item", name: "=1+1", sku: "item", article: "001", barcodes: ["000123"],
   storeKey: "store", storeName: "Магазин", warehouseKey: "wh", warehouseName: "Склад",
   categoryKey: "beer", categoryName: "Пиво", brandKey: null, brandName: "Не указан", unit: "л",
+  rootGroupKey: "beer", rootGroupName: "Пиво",
   openingQty: 10, closingQty: 20, averageQty: 15, openingCost: 100, closingCost: 200, averageCost: 150,
   periodSales: sales, comparisonSales: { ...sales, quantity: 0, cost: 0, revenue: 0 },
   quantityChange: { pct: null, status: "new" }, costChange: { pct: null, status: "new" },
@@ -574,6 +575,7 @@ test("analytical splitting keeps one footer on the last part including an exactl
   for (const count of [10000, 10001]) {
     const report = fixture("quantity");
     report.params.profile = "summary";
+    report.params.sort = "name";
     report.rows = Array<TurnoverRow>(count).fill(row);
     const workbook = await load(report);
     const mains = workbook.worksheets.filter(s => s.name.startsWith("Оборачиваемость"));
@@ -582,6 +584,20 @@ test("analytical splitting keeps one footer on the last part including an exactl
     for (const main of mains) main.eachRow(r => { if (r.getCell(7).value === "ИТОГО") footers++; });
     assert.equal(footers, 1);
     assert.equal(mains.at(-1)!.lastRow!.getCell(7).value, "ИТОГО");
+    const products = workbook.worksheets.filter(s => s.name === "Товары" || s.name.startsWith("Товары "));
+    assert.equal(products.length, count === 10000 ? 1 : 2);
+    let productCount = 0, productFooters = 0;
+    for (const part of products) {
+      assert.equal(namedRow(part, "Магазин").number, 4);
+      assert.equal(namedRow(part, "Пиво").number, 5);
+      part.eachRow(r => {
+        if (r.getCell(1).value === "=1+1") productCount++;
+        if (r.getCell(1).value === "ИТОГО") productFooters++;
+      });
+    }
+    assert.equal(productCount, count);
+    assert.equal(productFooters, 1);
+    assert.equal(products.at(-1)!.lastRow!.getCell(1).value, "ИТОГО");
   }
 });
 
@@ -704,4 +720,87 @@ test("opt-in sample formulas retain original unavailable guards and cached finan
     assert.equal(sheet.getCell("I4").value.result, 0.8);
     assert.equal(sheet.getCell("L4").value.result, 3.75);
   }
+});
+
+test("name-sorted SKU exports add a products sheet after Кратко with server metrics in every mode and profile", async () => {
+  for (const profile of ["sample", "summary", "full"] as const) for (const mode of ["quantity", "money", "both"] as const) {
+    const report = fixture(mode);
+    Object.assign(report.params, { profile, sort: "name" });
+    report.rows = [
+      { ...row, key: "a", sku: "a", name: "=А", periodSales: { ...sales, quantity: -3, cost: -30 }, closingQty: 0, turnoverQty: -0.3 },
+      { ...row, key: "b", sku: "b", name: "Я", rootGroupKey: null, rootGroupName: "Без группы" }
+    ];
+    report.totals.overall.periodSales = { ...sales, quantity: 999, cost: 12345 };
+    const workbook = await load(report, `turnover-grouped-${profile}-${mode}.xlsx`);
+    assert.deepEqual(workbook.worksheets.slice(0, 2).map(sheet => sheet.name), ["Кратко", "Товары"]);
+    const sheet = workbook.getWorksheet("Товары")!;
+    assert.equal(sheet.columnCount, 2 + (mode === "both" ? 8 : 4));
+    const product = namedRow(sheet, "=А");
+    assert.equal(product.getCell(1).type, ExcelJS.ValueType.String);
+    assert.equal(product.getCell(3).value, mode === "money" ? -30 : -3);
+    assert.equal(product.getCell(4).value, mode === "money" ? 200 : 0);
+    assert.equal(namedRow(sheet, "ИТОГО").getCell(3).value, mode === "money" ? 12345 : 999);
+    assert.equal(namedRow(sheet, "ИТОГО").number, sheet.lastRow!.number);
+    const labels: string[] = [];
+    sheet.eachRow(r => { if (typeof r.getCell(1).value === "string") labels.push(r.getCell(1).value as string); });
+    assert.deepEqual(labels.filter(label => ["Магазин", "Пиво", "=А", "Без группы", "Я"].includes(label)),
+      profile === "sample" ? ["Пиво", "=А", "Без группы", "Я"] : ["Магазин", "Пиво", "=А", "Без группы", "Я"]);
+    assert.ok(sheetValues(workbook.getWorksheet("Кратко")!).includes("Товары — по группам А–Я"));
+    assert.ok(sheetValues(workbook.getWorksheet("Кратко")!).includes(profile === "sample" ? "Без разбивки по магазинам" : "Разбивка по магазинам"));
+    if (profile === "sample") {
+      const main = workbook.getWorksheet(mode === "money" ? "рассчет оборачиваемости " : "рассчет оборачиваемости")!;
+      assert.ok(main);
+      assert.equal(main.getCell("A2").value, "=А");
+      assert.equal(main.getCell("A3").value, "Я");
+      const coefficient = main.getCell("I2").value as { formula: string; result: number };
+      assert.ok(coefficient.formula);
+      assert.equal(coefficient.result, mode === "money" ? row.turnoverCost : -0.3);
+    }
+  }
+  for (const overrides of [{ sort: "turnover" as const }, { sort: "name" as const, groupBy: "store" as const }]) {
+    const report = fixture("quantity");
+    Object.assign(report.params, overrides);
+    const workbook = await load(report);
+    assert.equal(workbook.getWorksheet("Товары"), undefined);
+    assert.equal(sheetValues(workbook.getWorksheet("Кратко")!).includes("Товары — по группам А–Я"), false);
+  }
+});
+
+test("products sections keep homonymous store and group keys separate, including known and null Без группы", async () => {
+  const report = fixture("both");
+  Object.assign(report.params, { profile: "summary", sort: "name", includeIncomplete: true });
+  report.rows = [
+    { ...row, name: "А", storeKey: "s1", rootGroupKey: "g1", rootGroupName: "Без группы" },
+    { ...row, name: "Б", storeKey: "s1", rootGroupKey: "g2", rootGroupName: "Без группы" },
+    { ...row, name: "В", storeKey: "s1", rootGroupKey: null, rootGroupName: "Без группы", closingCost: null, turnoverQty: null },
+    { ...row, name: "Я", storeKey: "s2", rootGroupKey: "g1", rootGroupName: "Без группы" }
+  ];
+  const sheet = (await load(report)).getWorksheet("Товары")!;
+  const labels: string[] = [];
+  sheet.eachRow(r => { labels.push(String(r.getCell(1).value)); });
+  assert.equal(labels.filter(value => value === "Магазин").length, 2);
+  assert.equal(labels.filter(value => value === "Без группы").length, 4);
+  assert.deepEqual(labels.filter(value => ["А", "Б", "В", "Я"].includes(value)), ["А", "Б", "В", "Я"]);
+  assert.equal(namedRow(sheet, "В").getCell(8).value, "Не рассчитано");
+  assert.equal(namedRow(sheet, "В").getCell(5).value, "Не рассчитано");
+  assert.equal((namedRow(sheet, "В").getCell(5).fill as ExcelJS.FillPattern)?.fgColor?.argb, undefined);
+  report.rows = [];
+  const empty = (await load(report)).getWorksheet("Товары")!;
+  assert.ok(sheetValues(empty).includes("По выбранным условиям товаров нет"));
+  assert.equal(sheetValues(empty).includes("ИТОГО"), false);
+});
+
+test("presentation sheets leave room for wrapped unit identities instead of clipping adjacent rows", async () => {
+  const report = fixture("quantity");
+  Object.assign(report.params, { profile: "sample", sort: "name" });
+  const unit = "шт [fd33bbe6-8cd3-11e8-840d-3085a9455e10]";
+  report.rows = [{ ...row, unit }];
+  report.totals.overall.unit = unit;
+  const workbook = await load(report, "turnover-long-labels.xlsx");
+  assert.ok(namedRow(workbook.getWorksheet("Кратко")!, "Количество").height! >= 48,
+    "the observed three-line unit label needs at least 48 points including padding");
+  assert.ok(namedRow(workbook.getWorksheet("Товары")!, "=1+1").height! >= 48);
+  const product = namedRow(workbook.getWorksheet("Товары")!, "=1+1");
+  assert.equal(product.getCell(3).alignment?.vertical, product.getCell(1).alignment.vertical,
+    "sales and product label must share the same vertical alignment in a wrapped row");
 });

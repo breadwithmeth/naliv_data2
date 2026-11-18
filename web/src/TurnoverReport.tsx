@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Download } from "lucide-react";
 import { api } from "./api";
@@ -109,7 +109,7 @@ function prepareRequest(range: InclusiveDateRange, filters: Filters): PreparedRe
       from: range.from,
       // Dashboard and all builder controls own inclusive dates. Only the API end is exclusive.
       to: new Date(to + DAY_MS).toISOString().slice(0, 10),
-      mode: filters.mode, profile: detail ? "full" : "sample", groupBy: "sku",
+      mode: filters.mode, profile: detail ? "full" : "sample", groupBy: "sku", sort: "name",
       storeScope: filters.includeNonRetail ? "all" : "retail",
       ...(filters.excludeZero ? { excludeZero: true } : {}),
       includeIncomplete: filters.includeIncomplete,
@@ -313,15 +313,24 @@ export function TurnoverPreviewTable({ report, page, onPageChange, detailed = fa
           </tr>
         </thead>
         <tbody>
-          {rows.length ? rows.map((row) => <tr key={row.key}>
+          {rows.length ? rows.map((row, index) => {
+            const previous = rows[index - 1];
+            const newStore = stores && (!previous || previous.storeKey !== row.storeKey);
+            const newGroup = !previous || newStore || previous.rootGroupKey !== row.rootGroupKey;
+            return <Fragment key={row.key}>
+              {newStore ? <tr className="turnover-preview-store"><th scope="rowgroup" colSpan={columnCount}>{row.storeKey === null ? "Магазин не определён" : row.storeName || "Магазин не определён"}</th></tr> : null}
+              {newGroup ? <tr className="turnover-preview-group"><th scope="rowgroup" colSpan={columnCount}>{row.rootGroupKey === null ? "Без группы" : row.rootGroupName}</th></tr> : null}
+              <tr>
             <th scope="row" className="turnover-preview-product">{row.name}</th>
             {detailed ? <td className="turnover-preview-identifiers">
               {row.sku ? <span>SKU: {row.sku}</span> : null}{row.article ? <span>Артикул: {row.article}</span> : null}
             </td> : null}
-            {stores ? <td>{row.storeName || "Магазин не определён"}</td> : null}
+            {stores ? <td>{row.storeKey === null ? "Магазин не определён" : row.storeName || "Магазин не определён"}</td> : null}
             {quantity ? <td>{row.unit || "Единица не указана"}</td> : null}
             <PreviewMetricCells metrics={row} quantity={quantity} money={money} detailed={detailed} />
-          </tr>) : <tr><td colSpan={columnCount} className="turnover-preview-empty">
+              </tr>
+            </Fragment>;
+          }) : <tr><td colSpan={columnCount} className="turnover-preview-empty">
             {excludedIncompleteRows > 0 && !includeIncomplete
               ? "Все строки по выбранным условиям исключены: нет полного расчёта. Отметьте «Включить строки без полного расчёта» и нажмите «Показать отчёт»."
               : "По выбранным условиям товаров нет. Измените отбор и нажмите «Показать отчёт»."}
@@ -357,7 +366,6 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
 }) {
   const headingId = useId();
   const reportName = useId();
-  const formatName = useId();
   const periodHintId = useId();
   const periodErrorId = useId();
   const categoryHintId = useId();
@@ -423,7 +431,7 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   const to = dateNumber(dateRange.to);
   const days = from !== null && to !== null && to >= from ? (to - from) / DAY_MS + 1 : null;
   const advancedCount = Number(filters.category.length > 0) + Number(!!filters.warehouse) + Number(!!filters.brand)
-    + Number(filters.format === "stores") + Number(filters.includeNonRetail) + Number(filters.excludeZero);
+    + Number(filters.includeNonRetail) + Number(filters.excludeZero);
   const selectedFilters = [
     ...(filters.store.length ? [`Магазины: ${selectedNames(filters.store, stores)}`] : []),
     ...(filters.search.trim() ? [`Товар: ${filters.search.trim()}`] : []),
@@ -560,6 +568,10 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
           <label className="turnover-field turnover-product-search"><span>Товар</span><input type="search" value={filters.search} onChange={(event) => update("search", event.target.value)} placeholder="Название, артикул, код или SKU" /></label>
         </div>
         <label className="turnover-check">
+          <input type="checkbox" checked={filters.format === "stores"} onChange={(event) => update("format", event.target.checked ? "stores" : "sample")} />
+          <span>Разбить по магазинам</span>
+        </label>
+        <label className="turnover-check">
           <input type="checkbox" checked={filters.includeIncomplete} onChange={(event) => update("includeIncomplete", event.target.checked)} />
           <span>Включить строки без полного расчёта</span>
         </label>
@@ -577,15 +589,6 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
               <OptionSelect label="Склад" value={filters.warehouse} options={warehouses} disabled={!options} onChange={(value) => update("warehouse", value)} placeholder="Все склады" />
               <OptionSelect label="Бренд" value={filters.brand} options={brands} disabled={!brands.length} onChange={(value) => update("brand", value)} placeholder="Все бренды" />
             </div>
-            <fieldset className="turnover-fieldset">
-              <legend>Детализация</legend>
-              <div className="turnover-report-options">
-                {([["sample", "Сводно по товарам"], ["stores", "По магазинам"]] as [ReportFormat, string][]).map(([value, label]) => <label className="turnover-report-choice" key={value}>
-                  <input type="radio" name={formatName} value={value} checked={filters.format === value} onChange={() => update("format", value)} />
-                  <span>{label}</span>
-                </label>)}
-              </div>
-            </fieldset>
             <label className="turnover-check turnover-scope-check">
               <input type="checkbox" checked={filters.includeNonRetail} onChange={(event) => update("includeNonRetail", event.target.checked)} />
               <span>Включать офисы и отделы</span>

@@ -716,6 +716,44 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       const inherited = await getTurnoverReport({ ...params, norms: inheritedPolicy });
       assert.equal(inherited.rows.find((row) => row.sku === "i1")!.periodSales.quantity, 3);
       assert.equal(inherited.rows.find((row) => row.sku === "i1")!.categoryKey, "child");
+      assert.equal(inherited.rows.find((row) => row.sku === "i1")!.rootGroupKey, "folder");
+      assert.equal(inherited.rows.find((row) => row.sku === "i1")!.rootGroupName, "Group");
+      const inheritedSample = await getTurnoverReport({ ...params, norms: inheritedPolicy, profile: "sample" });
+      assert.equal(inheritedSample.rows.find((row) => row.sku === "i1")!.rootGroupKey, "folder");
+      assert.equal(inheritedSample.rows.find((row) => row.sku === "i1")!.categoryKey, "child");
+      assert.equal(inheritedSample.rows.find((row) => row.sku === "i1")!.periodSales.quantity, 3);
+      await t.test("name order groups roots and stores independently of turnover without changing the population or totals", async () => {
+        await tx.$executeRawUnsafe("savepoint presentation_order");
+        try {
+          await tx.$executeRawUnsafe("update catalog_nomenklatura set description=case ref_key when 'i1' then 'Сортировка Я' else 'Сортировка А' end where ref_key in ('i1','i2')");
+          await tx.$executeRawUnsafe("update catalog_magaziny set description=case ref_key when 's1' then 'Я магазин' else 'А магазин' end");
+          await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance values
+            ('2026-08-01','w2','i2','',10), ('2026-08-02','w2','i2','',10),
+            ('2026-08-03','w2','i2','',10), ('2026-08-04','w2','i2','',10)`);
+          await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
+            ('rr-s1-2026-08-01','i2','','w1',100,1000), ('rr-s2-2026-08-01','i2','','w2',100,1000)`);
+          for (const profile of ["sample", "summary", "full"] as const) {
+            const request = { from: params.from, to: params.to, mode: "quantity" as const, profile, search: "Сортировка", includeIncomplete: true };
+            const metrics = await getTurnoverReport(request);
+            const ordered = await getTurnoverReport({ ...request, sort: "name" });
+            assert.deepEqual(ordered.totals, metrics.totals);
+            assert.deepEqual(new Set(ordered.rows.map(row => row.key)), new Set(metrics.rows.map(row => row.key)));
+            assert.ok(ordered.rows.every(row => row.rootGroupKey === "folder" && row.rootGroupName === "Group"));
+            if (profile === "sample") {
+              assert.deepEqual(ordered.rows.map(row => row.name), ["Сортировка А", "Сортировка Я"]);
+              assert.ok(ordered.rows[0]!.turnoverQty! > ordered.rows[1]!.turnoverQty!);
+            } else {
+              assert.deepEqual(ordered.rows.map(row => [row.storeName, row.name]), [
+                ["А магазин", "Сортировка А"], ["А магазин", "Сортировка Я"],
+                ["Я магазин", "Сортировка А"], ["Я магазин", "Сортировка Я"]
+              ]);
+            }
+          }
+        } finally {
+          await tx.$executeRawUnsafe("rollback to savepoint presentation_order");
+          await tx.$executeRawUnsafe("release savepoint presentation_order");
+        }
+      });
       await t.test("multiple categories union folder descendants and product groups without duplicating sales", async () => {
         await tx.$executeRawUnsafe("insert into catalog_tovarnye_gruppy values ('g2','Second product group')");
         await tx.$executeRawUnsafe("update catalog_nomenklatura set tovarnaya_gruppa_key='g2' where ref_key='i2'");
