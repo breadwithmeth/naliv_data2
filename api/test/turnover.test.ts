@@ -202,6 +202,13 @@ test("default turnover population is filtered before daily, grouping and totals,
       if (profile === "sample") assert.deepEqual(report.rows[0].daily.map(day => day.salesQty), [2, 2, 2]);
       assert.equal(report.transfers.length, 0);
     }
+    const standard = await getTurnoverReport({ ...request, profile: "summary", sort: "name" }, reloadReader);
+    const analytical = await getTurnoverReport({ ...request, profile: "summary" }, reloadReader);
+    assert.deepEqual(standard.rows[0]!.daily.map(day => day.salesQty), [2, 2, 2]);
+    assert.deepEqual(standard.totals.overall.daily.map(day => day.quantity), [10, 10, 10]);
+    assert.deepEqual({ ...standard.totals, overall: { ...standard.totals.overall, daily: [] } }, analytical.totals);
+    assert.deepEqual(standard.rows.map(row => row.key).sort(), analytical.rows.map(row => row.key).sort());
+    assert.equal(turnoverQuerySchema.safeParse({ ...request, to: "2026-11-02", profile: "summary", sort: "name" }).success, false);
     const quantity = await getTurnoverReport({ ...request, mode: "quantity" }, reloadReader);
     assert.equal(quantity.rows.length, 2, "quantity mode must not require optional cost data");
     mixedUnits = true;

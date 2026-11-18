@@ -462,6 +462,8 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
         assert.equal(asked.coverage.requestedTo, null);
         const tooShort = await getTurnoverReport({ ...params, from: "2026-08-03", to: "2026-08-31", profile: "sample", sku: "i1" }, ready("2026-08-04"));
         assert.equal(tooShort.params.to, "2026-08-31");
+        const shopTooShort = await getTurnoverReport({ ...params, from: "2026-08-03", to: "2026-08-31", profile: "summary", sort: "name", sku: "i1" }, ready("2026-08-04"));
+        assert.equal(shopTooShort.params.to, "2026-08-31");
       });
       await t.test("sample reports consolidate each SKU across shops and warehouses and recompute turnover", async () => {
         await tx.$executeRawUnsafe("savepoint consolidated_sample");
@@ -736,7 +738,14 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
             const request = { from: params.from, to: params.to, mode: "quantity" as const, profile, search: "Сортировка", includeIncomplete: true };
             const metrics = await getTurnoverReport(request);
             const ordered = await getTurnoverReport({ ...request, sort: "name" });
-            assert.deepEqual(ordered.totals, metrics.totals);
+            if (profile === "summary") {
+              assert.ok(ordered.rows.every(row => row.daily.length === 3));
+              assert.equal(ordered.totals.overall.daily.length, 3);
+              assert.deepEqual({
+                ...ordered.totals, overall: { ...ordered.totals.overall, daily: [] },
+                byUnit: ordered.totals.byUnit.map(total => ({ ...total, daily: [] }))
+              }, metrics.totals);
+            } else assert.deepEqual(ordered.totals, metrics.totals);
             assert.deepEqual(new Set(ordered.rows.map(row => row.key)), new Set(metrics.rows.map(row => row.key)));
             assert.ok(ordered.rows.every(row => row.rootGroupKey === "folder" && row.rootGroupName === "Group"));
             if (profile === "sample") {

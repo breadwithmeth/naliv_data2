@@ -38,7 +38,7 @@ export type TurnoverRequest = {
   horizon?: 7 | 14 | 30;
   risk?: TurnoverRisk;
   sort?: TurnoverSort;
-  /** summary = main sheet only; full = all detail sheets. */
+  /** summary = standard SKU/name shop layout or analytical main table; full = analytical details. */
   profile?: TurnoverProfile;
   norms?: TurnoverPolicy;
   /** Opaque returned row key for an exact, on-demand daily drilldown. */
@@ -196,7 +196,7 @@ export type TurnoverPreviewRow = Pick<TurnoverRow,
   "noSalesHistory" | "openingQty" | "closingQty" | "averageQty" |
   "openingCost" | "closingCost" | "averageCost" | "periodSales" |
   "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays" |
-  "stockDays" | "risks"
+  "stockDays" | "risks" | "daily"
 > & { primaryAction: string | null };
 export type TurnoverPreview = Omit<TurnoverReport, "rows"> & { rows: TurnoverPreviewRow[] };
 export type TurnoverRowDetail = { row: TurnoverRow; generatedAt: string };

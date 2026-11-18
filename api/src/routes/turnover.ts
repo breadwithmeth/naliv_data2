@@ -24,6 +24,7 @@ turnoverRouter.get("/turnover", asyncHandler(async (req, res) => {
         averageCost: row.averageCost, periodSales: row.periodSales, turnoverQty: row.turnoverQty,
         turnoverQtyDays: row.turnoverQtyDays, turnoverCost: row.turnoverCost,
         turnoverCostDays: row.turnoverCostDays, stockDays: row.stockDays, risks: row.risks,
+        daily: row.daily,
         primaryAction: row.recommendations[0]?.action ?? null
       }))
     };

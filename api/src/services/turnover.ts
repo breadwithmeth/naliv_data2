@@ -92,7 +92,8 @@ export const turnoverQuerySchema = z.object({
   if (value.profile === "sample" && value.groupBy !== "sku") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["groupBy"], message: "Сводный отчёт формируется по товарам (SKU)" });
   }
-  if (value.profile === "sample" && dayCount(value.from, value.to) < 2) {
+  if ((value.profile === "sample" || (value.profile === "summary" && value.groupBy === "sku" && value.sort === "name"))
+    && dayCount(value.from, value.to) < 2) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "Сводный отчёт требует период не менее 2 календарных дней" });
   }
   const days = dayCount(value.from, value.to);
@@ -644,9 +645,8 @@ function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string
     existing.salesCost = sumNullable([existing.salesCost, day.salesCost]);
     existing.revenue = sumNullable([existing.revenue, day.revenue]);
   };
-  // Sample rows already retain their consolidated daily history. Do not retain
-  // the discarded atomic arrays, or materialize daily totals in other profiles.
-  if (params.profile === "sample") {
+  // Standard layouts retain daily rows for the same authoritative total population.
+  if (params.profile === "sample" || (params.profile === "summary" && params.groupBy === "sku" && params.sort === "name")) {
     for (const row of renderedRows) for (const day of row.daily) {
       addDay(overallDaily, day, compatible, unit ?? "Разные или неизвестные единицы", compatible ? unitKey : undefined);
       if (!compatible && day.unitKey) {
@@ -719,8 +719,10 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   // reports and closing stock: analyse the certified part and say so explicitly.
   const certifiedEnd = certifiedTurnoverEnd(readiness);
   let requestedTo: string | null = null;
+  const standardLayout = params.profile === "sample"
+    || (params.profile === "summary" && params.groupBy === "sku" && params.sort === "name");
   if (certifiedEnd && params.to > certifiedEnd && !request.comparisonTo
-    && dayCount(params.from, certifiedEnd) >= (params.profile === "sample" ? 2 : 1)) {
+    && dayCount(params.from, certifiedEnd) >= (standardLayout ? 2 : 1)) {
     requestedTo = params.to;
     params = turnoverQuerySchema.parse({ ...request, to: certifiedEnd });
   }
@@ -1067,7 +1069,8 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
       }
     }
     const keepDaily = !consolidateStores && (params.auditGroup === row.key
-      || (params.profile === "full" && retainSkuAudit));
+      || (params.profile === "full" && retainSkuAudit)
+      || (params.profile === "summary" && params.groupBy === "sku" && params.sort === "name"));
     if (!keepDaily) row.daily = [];
     atomicRows.push(row);
   }

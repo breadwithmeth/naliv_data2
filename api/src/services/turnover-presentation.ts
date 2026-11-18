@@ -57,3 +57,65 @@ export function compareTurnoverPresentationRows(a: PresentationRow, b: Presentat
     || collator.compare(a.name, b.name)
     || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 }
+
+export type TurnoverStandardColumn =
+  | { kind: "day"; date: string; index: number; half: boolean; label: string }
+  | { kind: "weighted" | "average" | "coefficient" | "periodDays" | "sales" | "turnoverDays"; label: string };
+
+export function turnoverStandardDates(from: string, to: string): string[] {
+  const days: string[] = [];
+  for (let date = Date.parse(`${from}T00:00:00Z`), end = Date.parse(`${to}T00:00:00Z`); date < end; date += 86_400_000) {
+    days.push(new Date(date).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+/** All columns after nomenclature in the supplied standard workbook. */
+export function turnoverStandardColumns(days: readonly string[]): TurnoverStandardColumn[] {
+  const columns: TurnoverStandardColumn[] = [];
+  for (let index = 0; index < days.length; index++) {
+    const date = days[index]!;
+    const label = `${date.slice(8, 10)}.${date.slice(5, 7)}.`;
+    if (index === days.length - 1) columns.push({ kind: "day", date, index, half: true, label: `${label} / 2` });
+    columns.push({ kind: "day", date, index, half: false, label });
+    if (index === 0) columns.push({ kind: "day", date, index, half: true, label: `${label} / 2` });
+  }
+  columns.push(
+    { kind: "weighted", label: "сумма остатков за период " },
+    { kind: "average", label: "средний товарный запас в шт " },
+    { kind: "coefficient", label: "Коэффицент оборачиваемости" },
+    { kind: "periodDays", label: "количество дней в периоде " },
+    { kind: "sales", label: "продажи в шт за период " },
+    { kind: "turnoverDays", label: "количесто дней оборота в шт " }
+  );
+  return columns;
+}
+
+type StandardMetrics = Pick<TurnoverRow, "daily" | "averageQty" | "averageCost" | "periodSales" |
+  "turnoverQty" | "turnoverCost" | "turnoverQtyDays" | "turnoverCostDays">;
+
+/** Display the existing sample calculation, never aggregate displayed products. */
+export function turnoverStandardValue(
+  row: StandardMetrics, column: TurnoverStandardColumn, mode: "quantity" | "money", periodDays: number
+): number | null {
+  let value: number | null;
+  if (column.kind === "day") {
+    const day = row.daily[column.index];
+    value = day?.date === column.date ? mode === "quantity" ? day.quantity : day.stockCost : null;
+    if (value !== null && column.half) value /= 2;
+  } else {
+    switch (column.kind) {
+      case "weighted": {
+        const average = mode === "quantity" ? row.averageQty : row.averageCost;
+        value = average === null ? null : average * (periodDays - 1);
+        break;
+      }
+      case "average": value = mode === "quantity" ? row.averageQty : row.averageCost; break;
+      case "coefficient": value = mode === "quantity" ? row.turnoverQty : row.turnoverCost; break;
+      case "periodDays": value = periodDays; break;
+      case "sales": value = mode === "quantity" ? row.periodSales.quantity : row.periodSales.cost; break;
+      case "turnoverDays": value = mode === "quantity" ? row.turnoverQtyDays : row.turnoverCostDays; break;
+    }
+  }
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
