@@ -3,9 +3,9 @@ import { once } from "node:events";
 import type { EventEmitter } from "node:events";
 import type { Writable } from "node:stream";
 import { setImmediate } from "node:timers/promises";
-import type { TurnoverMode, TurnoverReport, TurnoverRow, TurnoverTotal } from "./turnover-types.js";
+import type { TurnoverMode, TurnoverReport, TurnoverRow, TurnoverTotal, TurnoverUnitTotal } from "./turnover-types.js";
 import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
-import { turnoverStandardColumns, turnoverStandardDates } from "./turnover-presentation.js";
+import { turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows, turnoverUnitLabels } from "./turnover-presentation.js";
 import { chronologicalStock, completeTurnoverReport } from "./turnover-domain.js";
 
 const MAIN_UNITS = "рассчет оборачиваемости";
@@ -39,7 +39,7 @@ function setFullPageSetup(sheet: ExcelJS.Worksheet) {
 }
 
 type LayoutEntry = { kind: "section"; label: string } | { kind: "product"; row: TurnoverRow }
-  | { kind: "total"; label: string; row: TurnoverTotal };
+  | { kind: "total"; label: string; row: TurnoverTotal; byUnit: readonly TurnoverUnitTotal[] };
 type SampleMode = Exclude<TurnoverMode, "both">;
 type SampleOptions = { mode: SampleMode; salesSheet: string; mainSheet: string; activeCell: string; autoFilter: boolean; includeIncomplete?: boolean };
 type CellFormula = { formula: string; result?: unknown };
@@ -65,7 +65,7 @@ function columnLetter(index: number): string {
 function* reportLayout(report: TurnoverReport, cache?: LayoutEntry[]): Generator<LayoutEntry> {
   const sections = report.params.groupBy === "sku" && report.params.sort === "name";
   const splitStores = report.params.profile !== "sample";
-  const storeTotals = new Map(report.totals.byStore.map(({ storeKey, total }) => [storeKey, total]));
+  const storeTotals = new Map(report.totals.byStore.map(total => [total.storeKey, total]));
   let previousStore: string | null | undefined;
   let previousGroup: string | null | undefined;
   for (let index = 0; index < report.rows.length; index++) {
@@ -91,13 +91,13 @@ function* reportLayout(report: TurnoverReport, cache?: LayoutEntry[]): Generator
     if (splitStores && row.storeKey !== report.rows[index + 1]?.storeKey) {
       const total = storeTotals.get(row.storeKey);
       if (total) {
-        const subtotal: LayoutEntry = { kind: "total", label: "ИТОГО по магазину", row: total };
+        const subtotal: LayoutEntry = { kind: "total", label: "ИТОГО по магазину", row: total.total, byUnit: total.byUnit };
         cache?.push(subtotal);
         yield subtotal;
       }
     }
   }
-  const overall: LayoutEntry = { kind: "total", label: "ИТОГО", row: report.totals.overall };
+  const overall: LayoutEntry = { kind: "total", label: "ИТОГО", row: report.totals.overall, byUnit: report.totals.byUnit };
   cache?.push(overall);
   yield overall;
 }
@@ -205,7 +205,8 @@ async function finishSheet(workbook: StreamingWorkbook, sheet: StreamingSheet, s
   }
 }
 
-async function createSheets(workbook: StreamingWorkbook, entries: Iterable<LayoutEntry>, days: string[], options: SampleOptions, signal: AbortSignal) {
+async function createSheets(workbook: StreamingWorkbook, entries: Iterable<LayoutEntry>, days: string[], options: SampleOptions,
+  unitLabels: ReadonlyMap<string, string>, signal: AbortSignal) {
   const main = workbook.addWorksheet(options.mainSheet, {
     views: [{
       state: "normal", showGridLines: true, zoomScale: 100, zoomScaleNormal: 100,
@@ -278,7 +279,7 @@ async function createSheets(workbook: StreamingWorkbook, entries: Iterable<Layou
       sectionRow(main, entry.label);
       sectionRow(sales, entry.label);
     } else if (entry.kind === "total") {
-      addProduct(entry, true);
+      for (const total of turnoverStandardTotalRows(entry.label, entry.row, entry.byUnit, options.mode, unitLabels)) addProduct(total, true);
     } else {
       if (entry.row.daily.length !== days.length || entry.row.daily.some((day, index) => day.date !== days[index])) {
         throw new Error("Для сводного отчёта нужны дневные остатки за весь период");
@@ -304,6 +305,7 @@ export async function writeTurnoverSampleWorkbook(report: TurnoverReport, output
   if (days.length < 2) throw new Error("Сводный отчёт требует период не менее 2 календарных дней");
   const mode = report.params.mode ?? "both";
   const cachedLayout: LayoutEntry[] | undefined = mode === "both" ? [] : undefined;
+  const unitLabels = turnoverUnitLabels(report.totals.byUnit);
   const entries = reportLayout(report, cachedLayout);
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: output, useStyles: true, useSharedStrings: true }) as StreamingWorkbook;
   const canceled = new AbortController();
@@ -317,13 +319,13 @@ export async function writeTurnoverSampleWorkbook(report: TurnoverReport, output
     if (mode === "quantity" || mode === "both") {
       await createSheets(workbook, entries, days, {
         mode: "quantity", mainSheet: MAIN_UNITS, salesSheet: SALES_UNITS, activeCell: "AI2", autoFilter: false, includeIncomplete: report.params.includeIncomplete
-      }, canceled.signal);
+      }, unitLabels, canceled.signal);
     }
     if (mode === "money" || mode === "both") {
       await createSheets(workbook, cachedLayout ?? entries, days, {
         mode: "money", mainSheet: mode === "both" ? MAIN_BOTH_MONEY : MAIN_MONEY,
         salesSheet: mode === "both" ? SALES_BOTH_MONEY : SALES_MONEY, activeCell: "AK13", autoFilter: true, includeIncomplete: report.params.includeIncomplete
-      }, canceled.signal);
+      }, unitLabels, canceled.signal);
     }
     canceled.signal.throwIfAborted();
     await Promise.race([

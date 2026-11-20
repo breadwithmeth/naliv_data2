@@ -130,10 +130,11 @@ export type TurnoverTotalMetrics = Pick<TurnoverRow,
   "stockDays" | "excessQty" | "deficitQty" | "recommendedOrderQty" | "openOrderQty" | "stagnantCost"
 >;
 export type TurnoverTotal = TurnoverTotalMetrics & { unit: string | null; daily: TurnoverDailyRow[] };
+export type TurnoverUnitTotal = TurnoverTotal & { unitKey: string };
 export type TurnoverTotals = {
   overall: TurnoverTotal;
-  byUnit: Array<TurnoverTotal & { unitKey: string }>;
-  byStore: Array<{ storeKey: string | null; total: TurnoverTotal }>;
+  byUnit: TurnoverUnitTotal[];
+  byStore: Array<{ storeKey: string | null; total: TurnoverTotal; byUnit: TurnoverUnitTotal[] }>;
 };
 export type TurnoverOption = { key: string; name: string };
 export type TurnoverTransfer = {

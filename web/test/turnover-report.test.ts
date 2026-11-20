@@ -114,7 +114,7 @@ test("standard preview pages 100 products and repeats sections with unchanged au
   data.rows = Array.from({ length: 101 }, (_, index) => row(index));
   data.totals.overall.periodSales = { ...data.totals.overall.periodSales, quantity: 2525 };
   data.totals.overall.daily = data.totals.overall.daily.map((day) => ({ ...day, quantity: 900 }));
-  data.totals.byStore = [{ storeKey: "store-a", total: data.totals.overall }];
+  data.totals.byStore = [{ storeKey: "store-a", total: data.totals.overall, byUnit: [] }];
   const first = render(data);
   const second = render(data, 1);
   assert.equal((section(first, "tbody").match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 100);
@@ -229,10 +229,12 @@ test("missing identifiers and unknown stores do not add columns or identifier no
   assert.equal(productCells(html).length, 11);
 });
 
-test("incompatible quantities show one total with no technical unit identifiers or invented sum", () => {
+test("mixed quantities retain numeric unit totals without an empty overall row or technical keys", () => {
   const data = report();
   data.totals.byUnit = [
-    { ...data.totals.overall, unitKey: "unit-pieces", unit: "шт." },
+    { ...data.totals.overall, unitKey: "unit-pieces-a", unit: "шт [unit-pieces-a]" },
+    { ...data.totals.overall, unitKey: "unit-pieces-b", unit: "шт [unit-pieces-b]",
+      periodSales: { ...data.totals.overall.periodSales, quantity: 109 } },
     { ...data.totals.overall, unitKey: "unit-kilograms", unit: "кг", averageQty: 6,
       daily: data.totals.overall.daily.map((day) => ({ ...day, quantity: 6 })),
       periodSales: { ...data.totals.overall.periodSales, quantity: 15 } }
@@ -241,15 +243,18 @@ test("incompatible quantities show one total with no technical unit identifiers 
     unit: null, openingQty: null, closingQty: null, averageQty: null, turnoverQty: null, turnoverQtyDays: null,
     periodSales: { ...data.totals.overall.periodSales, quantity: null }
   });
+  data.params.profile = "summary";
+  data.totals.byStore = [{ storeKey: "store-a", total: data.totals.overall, byUnit: data.totals.byUnit.slice(1) }];
   const html = render(data);
   const footer = section(html, "tfoot");
-  assert.equal((footer.match(/<tr[ >]/g) ?? []).length, 1);
-  assert.match(footer, />ИТОГО</);
-  assert.doesNotMatch(footer, /unit-pieces|unit-kilograms|Итого ·/);
-  assert.match(html, /Количество в итогах не складывается/);
-  const overall = footer;
-  assert.equal((overall.match(/aria-label="Показатель не рассчитан"/g) ?? []).length, 10);
-  assert.doesNotMatch(overall, />0<\/td>|>8<\/td>|>12<\/td>/);
+  assert.deepEqual([...footer.matchAll(/<th scope="row">(.*?)<\/th>/g)].map(match => match[1]),
+    ["ИТОГО · шт (1)", "ИТОГО · шт (2)", "ИТОГО · кг"]);
+  assert.match(footer, />109<\/td>/);
+  assert.match(footer, />15<\/td>/);
+  assert.doesNotMatch(html, /unit-pieces|unit-kilograms/);
+  const body = section(html, "tbody");
+  assert.ok(body.indexOf("ИТОГО по магазину · шт (2)") > body.indexOf("Товар 0"));
+  assert.doesNotMatch(body, /шт \(1\)/);
   assert.doesNotMatch(html.split("<table")[0], /turnover-total|<dl/);
 });
 

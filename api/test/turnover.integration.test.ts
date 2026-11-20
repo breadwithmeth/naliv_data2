@@ -369,6 +369,13 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           assert.deepEqual(mixed.totals.byUnit.map((total) => [total.unitKey, total.periodSales.quantity]).sort(), [["u1", 10], ["u2", 90]]);
           assert.deepEqual(mixed.totals.overall.daily.map((day) => [day.quantity, day.stockCost, day.salesQty]), [[null, 400, null], [null, 400, null], [null, 400, null]]);
           assert.deepEqual(mixed.totals.byUnit.find((total) => total.unitKey === "u2")!.daily.map((day) => day.quantity), [30, 30, 30]);
+          const split = await getTurnoverReport({ ...request, profile: "summary", sort: "name" });
+          const store = split.totals.byStore.find(({ storeKey }) => storeKey === "key:s1")!;
+          assert.equal(store.total.periodSales.quantity, null);
+          assert.equal(store.total.averageCost, 400);
+          assert.deepEqual(store.byUnit.map(unit => [unit.unitKey, unit.averageQty, unit.periodSales.quantity, unit.turnoverQty]),
+            [["u1", 10, 10, 1], ["u2", 30, 90, 3]]);
+          assert.deepEqual(store.byUnit[1]!.daily.map(day => day.quantity), [30, 30, 30]);
           assert.ok(mixed.warnings.some((warning) => /общ.*количеств.*единиц/i.test(warning)));
           await tx.$executeRawUnsafe("update catalog_nomenklatura set edinitsa_izmereniya_key=null where ref_key='i2'");
           const unknown = await getTurnoverReport({ ...request, profile: "sample" });

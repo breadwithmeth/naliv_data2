@@ -614,20 +614,6 @@ function aggregateRows(rows: TurnoverRow[], key: string, name: string, days: num
 }
 
 function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string, Pair>, dailyByUnit: ReadonlyMap<string, TurnoverDailyRow>, params: NormalizedTurnoverRequest): TurnoverTotals {
-  const units = new Set<string>();
-  const byUnit = new Map<string, { unit: string; rows: TurnoverRow[]; daily: TurnoverDailyRow[] }>();
-  for (const row of visibleAtomic) {
-    const pair = pairByKey.get(row.key)!;
-    units.add(pair.unitToken);
-    if (pair.unitToken.startsWith("unknown:")) continue;
-    const group = byUnit.get(pair.unitToken);
-    if (group) group.rows.push(row);
-    else byUnit.set(pair.unitToken, { unit: pair.unit, rows: [row], daily: [] });
-  }
-  const unitKey = units.size === 1 ? units.values().next().value : undefined;
-  const compatible = unitKey !== undefined && !unitKey.startsWith("unknown:");
-  const unit = compatible ? byUnit.get(unitKey)!.unit : null;
-  const overallDaily = new Map<string, TurnoverDailyRow>();
   const addDay = (target: Map<string, TurnoverDailyRow>, day: TurnoverDailyRow, quantityCompatible: boolean, label: string, key?: string) => {
     const existing = target.get(day.date);
     if (!existing) {
@@ -647,10 +633,6 @@ function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string
   };
   const splitStores = params.profile === "summary" && params.groupBy === "sku" && params.sort === "name";
   const retainDaily = params.profile === "sample" || splitStores;
-  for (const day of dailyByUnit.values()) {
-    addDay(overallDaily, day, compatible, unit ?? "Разные или неизвестные единицы", compatible ? unitKey : undefined);
-    if (!compatible && day.unitKey) byUnit.get(day.unitKey)?.daily.push(day);
-  }
   const days = dayCount(params.from, params.to);
   const denominator = Math.max(1, days - 1);
   const total = (members: TurnoverRow[], quantityCompatible: boolean, label: string | null, daily: TurnoverDailyRow[]): TurnoverTotal => {
@@ -685,6 +667,31 @@ function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string
       }
     };
   };
+  function scope(members: TurnoverRow[], sourceDays: ReadonlyMap<string, TurnoverDailyRow>) {
+    const groups = new Map<string, { unit: string; rows: TurnoverRow[]; daily: TurnoverDailyRow[] }>();
+    let unknownUnit = false;
+    for (const row of members) {
+      const pair = pairByKey.get(row.key)!;
+      if (pair.unitToken.startsWith("unknown:")) { unknownUnit = true; continue; }
+      const group = groups.get(pair.unitToken);
+      if (group) group.rows.push(row);
+      else groups.set(pair.unitToken, { unit: pair.unit, rows: [row], daily: [] });
+    }
+    const unitKey = !unknownUnit && groups.size === 1 ? groups.keys().next().value : undefined;
+    const label = unitKey === undefined ? null : groups.get(unitKey)!.unit;
+    const daily = new Map<string, TurnoverDailyRow>();
+    for (const day of sourceDays.values()) {
+      addDay(daily, day, label !== null, label ?? "Разные или неизвестные единицы", unitKey);
+      if (label === null && day.unitKey) groups.get(day.unitKey)?.daily.push(day);
+    }
+    return {
+      overall: total(members, label !== null, label, [...daily.values()]),
+      byUnit: label !== null ? [] : [...groups].map(([key, group]) => ({
+        ...total(group.rows, true, group.unit, group.daily), unitKey: key
+      })).sort((left, right) => left.unit!.localeCompare(right.unit!, "ru") || left.unitKey.localeCompare(right.unitKey))
+    };
+  }
+  const reportTotals = scope(visibleAtomic, dailyByUnit);
   const byStore: TurnoverTotals["byStore"] = [];
   if (splitStores) {
     const storeRows = new Map<string | null, TurnoverRow[]>();
@@ -693,22 +700,13 @@ function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string
       if (members) members.push(row); else storeRows.set(row.storeKey, [row]);
     }
     for (const [storeKey, members] of storeRows) {
-      const first = pairByKey.get(members[0]!.key)!;
-      const compatible = !first.unitToken.startsWith("unknown:") && members.every(row => pairByKey.get(row.key)!.unitToken === first.unitToken);
       const daily = new Map<string, TurnoverDailyRow>();
-      for (const row of members) for (const day of row.daily) {
-        addDay(daily, day, compatible, compatible ? first.unit : "Разные или неизвестные единицы", compatible ? first.unitToken : undefined);
-      }
-      byStore.push({ storeKey, total: total(members, compatible, compatible ? first.unit : null, [...daily.values()]) });
+      for (const row of members) mergeDaily(daily, row.daily);
+      const { overall: total, byUnit } = scope(members, daily);
+      byStore.push({ storeKey, total, byUnit });
     }
   }
-  return {
-    overall: total(visibleAtomic, compatible, unit, [...overallDaily.values()]),
-    byUnit: compatible ? [] : [...byUnit].map(([key, group]) => ({
-      ...total(group.rows, true, group.unit, group.daily), unitKey: key
-    })).sort((left, right) => left.unit!.localeCompare(right.unit!, "ru") || left.unitKey.localeCompare(right.unitKey)),
-    byStore
-  };
+  return { ...reportTotals, byStore };
 }
 
 /** Every turnover input that needs a certified day: retail sales, receipts and the daily closing stock. */

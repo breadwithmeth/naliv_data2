@@ -1,5 +1,5 @@
 import { chronologicalStock } from "./turnover-domain.js";
-import type { TurnoverRow } from "./turnover-types.js";
+import type { TurnoverRow, TurnoverTotal, TurnoverUnitTotal } from "./turnover-types.js";
 
 export type TurnoverCatalogNode = { key: string; name: string; parent: string | null; folder: boolean };
 type RootGroup = { key: string; name: string };
@@ -120,4 +120,34 @@ export function turnoverStandardValue(
     }
   }
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** Number identically named references consistently across the whole report. */
+export function turnoverUnitLabels(totals: readonly TurnoverUnitTotal[]): ReadonlyMap<string, string> {
+  const groups = new Map<string, string[]>();
+  for (const { unit, unitKey } of totals) {
+    const suffix = ` [${unitKey}]`;
+    const name = (unit?.endsWith(suffix) ? unit.slice(0, -suffix.length) : unit)?.trim();
+    const label = name && name !== unitKey ? name : "Единица без названия";
+    const group = groups.get(label);
+    if (group) group.push(unitKey); else groups.set(label, [unitKey]);
+  }
+  const labels = new Map<string, string>();
+  for (const [name, keys] of groups) {
+    keys.sort();
+    for (let index = 0; index < keys.length; index++) {
+      labels.set(keys[index]!, keys.length === 1 ? name : `${name} (${index + 1})`);
+    }
+  }
+  return labels;
+}
+
+export function turnoverStandardTotalRows(
+  label: string, total: TurnoverTotal, byUnit: readonly TurnoverUnitTotal[],
+  mode: "quantity" | "money", unitLabels: ReadonlyMap<string, string>
+): Array<{ key: string | null; label: string; row: TurnoverTotal }> {
+  if (mode === "quantity" && total.unit === null && byUnit.length) {
+    return byUnit.map(row => ({ key: row.unitKey, label: `${label} · ${unitLabels.get(row.unitKey) ?? "Единица без названия"}`, row }));
+  }
+  return [{ key: null, label, row: total }];
 }

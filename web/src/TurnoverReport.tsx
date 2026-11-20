@@ -8,7 +8,7 @@ import type {
 import { formatDecimal, formatNumber } from "./format";
 import { completeTurnoverReport, isCompleteTurnoverRow, turnoverCoefficientBand } from "../../api/src/services/turnover-domain";
 import {
-  turnoverStandardColumns, turnoverStandardDates, turnoverStandardValue
+  turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows, turnoverStandardValue, turnoverUnitLabels
 } from "../../api/src/services/turnover-presentation";
 import type { TurnoverStandardColumn } from "../../api/src/services/turnover-presentation";
 
@@ -219,8 +219,9 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
   const currentPage = Math.min(Math.max(0, page), pageCount - 1);
   const start = currentPage * PREVIEW_PAGE_SIZE;
   const rows = report.rows.slice(start, start + PREVIEW_PAGE_SIZE);
-  const storeTotals = new Map(report.totals.byStore.map(({ storeKey, total }) => [storeKey, total]));
-  const quantityTotalsUnavailable = report.rows.length > 0 && report.params.mode !== "money"
+  const storeTotals = new Map(report.totals.byStore.map(total => [total.storeKey, total]));
+  const unitLabels = turnoverUnitLabels(report.totals.byUnit);
+  const hasNonAdditiveQuantityTotals = report.rows.length > 0 && report.params.mode !== "money"
     && (report.totals.overall.unit === null || report.totals.byStore.some(({ total }) => total.unit === null));
   const period = `${previewDate(report.params.from)} — ${previewDate(report.params.to, true)}`;
   const notices = [
@@ -242,16 +243,17 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
       <ul>{report.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
     </details> : null}
     <p className="turnover-note" id={noteId}>—: показатель не рассчитан.
-      {quantityTotalsUnavailable ? " Количество в итогах не складывается: разные или неизвестные единицы." : null}</p>
+      {hasNonAdditiveQuantityTotals ? " Количество нельзя сложить: разные или неизвестные единицы." : null}</p>
     {modes.map((mode) => {
       const quantity = mode === "quantity";
       const caption = quantity ? "Количество, в единицах товара" : "Деньги по себестоимости, ₸";
-      const footer = (label: string, total: TurnoverPreview["totals"]["overall"]) =>
-        <tr className="turnover-overall-total">
-          <th scope="row">{label}</th>
-          <StandardMetricCells metrics={total} columns={columns} mode={mode} periodDays={days.length}
-            quantityUnavailable={quantity && total.unit === null} />
-        </tr>;
+      const footer = (label: string, total: TurnoverPreview["totals"]["overall"], byUnit: TurnoverPreview["totals"]["byUnit"]) =>
+        turnoverStandardTotalRows(label, total, byUnit, mode, unitLabels).map(({ key, label, row }) =>
+          <tr key={key ?? label} className="turnover-overall-total">
+            <th scope="row">{label}</th>
+            <StandardMetricCells metrics={row} columns={columns} mode={mode} periodDays={days.length}
+              quantityUnavailable={quantity && row.unit === null} />
+          </tr>);
       const overall = report.totals.overall;
       return <div key={mode} className="turnover-preview-scroll" role="region"
         aria-label={`Таблица оборачиваемости · ${caption}`} tabIndex={0} aria-describedby={noteId}>
@@ -275,7 +277,7 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
                   <th scope="row" className="turnover-preview-product">{row.name}</th>
                   <StandardMetricCells metrics={row} columns={columns} mode={mode} periodDays={days.length} />
                 </tr>
-                {subtotal ? footer("ИТОГО по магазину", subtotal) : null}
+                {subtotal ? footer("ИТОГО по магазину", subtotal.total, subtotal.byUnit) : null}
               </Fragment>;
             }) : <tr><td colSpan={columnCount} className="turnover-preview-empty">
               {excludedIncompleteRows > 0 && !includeIncomplete
@@ -284,7 +286,7 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
             </td></tr>}
           </tbody>
           {report.rows.length ? <tfoot aria-label="Итог по всему отбору">
-            {footer("ИТОГО", overall)}
+            {footer("ИТОГО", overall, report.totals.byUnit)}
           </tfoot> : null}
         </table>
       </div>;

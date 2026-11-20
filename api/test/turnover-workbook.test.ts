@@ -123,8 +123,9 @@ test("standard totals preserve mixed units, signed returns, numeric zero and una
     report.totals.byUnit = [
       { ...overall, unit: "л", unitKey: "litre", periodSales: { ...sales, quantity: 0, cost: 0 },
         turnoverQty: 0, turnoverQtyDays: null, turnoverCost: 0, turnoverCostDays: null },
-      { ...overall, unit: "шт", unitKey: "piece", periodSales: { ...sales, quantity: -3, cost: -30 },
-        turnoverQty: -1, turnoverQtyDays: null, turnoverCost: -0.2, turnoverCostDays: null }
+      { ...overall, unit: "шт [piece-a]", unitKey: "piece-a", periodSales: { ...sales, quantity: -3, cost: -30 },
+        turnoverQty: null, turnoverQtyDays: null },
+      { ...overall, unit: "шт [piece-b]", unitKey: "piece-b" }
     ];
     report.totals.overall = {
       ...overall, unit: null, openingQty: null, closingQty: null, averageQty: null,
@@ -132,13 +133,22 @@ test("standard totals preserve mixed units, signed returns, numeric zero and una
       turnoverQty: null, turnoverQtyDays: null, turnoverCost: Infinity, turnoverCostDays: NaN,
       daily: row.daily.map(day => ({ ...day, quantity: null }))
     };
+    if (profile === "summary") report.totals.byStore = [
+      { storeKey: row.storeKey, total: report.totals.overall, byUnit: report.totals.byUnit.slice(1) }
+    ];
     const workbook = await load(report);
     const quantity = workbook.getWorksheet("рассчет оборачиваемости")!;
     const money = workbook.getWorksheet("рассчет оборачиваемости деньги")!;
-    assert.deepEqual(sheetValues(quantity).filter(value => typeof value === "string" && value.startsWith("ИТОГО")), ["ИТОГО"]);
-    assert.equal(namedRow(quantity, "ИТОГО").getCell(8).value, "n/a");
-    assert.equal(namedRow(quantity, "ИТОГО").getCell(11).value, "n/a");
-    assert.deepEqual(sheetValues(money).filter(value => typeof value === "string" && value.startsWith("ИТОГО")), ["ИТОГО"]);
+    const unitLabels = ["ИТОГО · л", "ИТОГО · шт (1)", "ИТОГО · шт (2)"];
+    const storeLabels = ["ИТОГО по магазину · шт (1)", "ИТОГО по магазину · шт (2)"];
+    assert.deepEqual(sheetValues(quantity).filter(value => typeof value === "string" && value.startsWith("ИТОГО")),
+      profile === "summary" ? [...storeLabels, ...unitLabels] : unitLabels);
+    assert.deepEqual(unitLabels.map(label => namedRow(quantity, label).getCell(11).result), [0, -3, 12]);
+    const quantitySales = workbook.getWorksheet("Продажи за период ")!;
+    assert.deepEqual(unitLabels.map(label => namedRow(quantitySales, label).getCell(2).value), [0, -3, 12]);
+    if (profile === "summary") assert.deepEqual(storeLabels.map(label => namedRow(quantity, label).getCell(11).result), [-3, 12]);
+    assert.deepEqual(sheetValues(money).filter(value => typeof value === "string" && value.startsWith("ИТОГО")),
+      profile === "summary" ? ["ИТОГО по магазину", "ИТОГО"] : ["ИТОГО"]);
     assert.equal(namedRow(money, "ИТОГО").getCell(11).result, 0);
     assert.equal(namedRow(money, "ИТОГО").getCell(9).value, "n/a");
     assert.equal(namedRow(money, "ИТОГО").getCell(12).value, "n/a");
@@ -651,9 +661,13 @@ test("default aggregate incompatibility leaves unavailable numeric cells blank r
     for (const sheet of book.worksheets) assert.equal(sheetValues(sheet).includes("n/a"), false);
     const main = profile === "sample" ? book.worksheets[0] : book.getWorksheet("Оборачиваемость")!;
     const salesColumn = profile === "sample" ? 11 : profile === "summary" ? 12 : 13;
-    assert.equal(main.lastRow!.getCell(salesColumn).value, null);
-    if (profile === "sample") assert.equal(main.lastRow!.number, 3, "one product and one overall total");
-    else assert.equal(main.getRow(main.lastRow!.number - 1).getCell(salesColumn).value, 12);
+    if (profile === "sample") {
+      assert.equal(main.lastRow!.getCell(1).value, "ИТОГО · л");
+      assert.equal(main.lastRow!.getCell(salesColumn).result, 12);
+    } else {
+      assert.equal(main.lastRow!.getCell(salesColumn).value, null);
+      assert.equal(main.getRow(main.lastRow!.number - 1).getCell(salesColumn).value, 12);
+    }
   }
 });
 
@@ -691,9 +705,9 @@ test("standard sections share actual calculation and sales row positions without
       turnoverQty: 33 / 15, turnoverCost: 330 / 150, turnoverQtyDays: 45 / 33, turnoverCostDays: 450 / 330 }
   ];
   report.totals.byStore = [
-    { storeKey: "s2", total: { ...report.totals.overall, periodSales: { ...sales, quantity: 44, cost: 440 },
+    { storeKey: "s2", byUnit: [], total: { ...report.totals.overall, periodSales: { ...sales, quantity: 44, cost: 440 },
       turnoverQty: 44 / 15, turnoverCost: 440 / 150, turnoverQtyDays: 45 / 44, turnoverCostDays: 450 / 440 } },
-    { storeKey: "s1", total: { ...report.totals.overall, periodSales: { ...sales, quantity: 33, cost: 330 },
+    { storeKey: "s1", byUnit: [], total: { ...report.totals.overall, periodSales: { ...sales, quantity: 33, cost: 330 },
       turnoverQty: 33 / 15, turnoverCost: 330 / 150, turnoverQtyDays: 45 / 33, turnoverCostDays: 450 / 330 } }
   ];
   const workbook = await load(report, "turnover-standard-homonyms.xlsx");
