@@ -9,9 +9,12 @@ import type { TurnoverPreviewRow } from "../src/services/turnover-types.js";
 // These regressions catch doubled endpoint columns, invented gap balances,
 // division by zero, and percentages against returns-only comparison bases.
 
-test("chronological average halves each endpoint once and preserves missing daily balances", () => {
+test("chronological average uses only positive closing balances and preserves half-weight endpoints", () => {
   assert.equal(chronologicalAverage([10, 30, 50]), 30);
-  assert.equal(chronologicalAverage([0, 20, 20, 0]), 40 / 3);
+  assert.equal(chronologicalAverage([0, 20, 20, 0]), 20);
+  assert.equal(chronologicalAverage([10, 20, 0, -2]), 25 / 1.5);
+  assert.equal(chronologicalAverage([0, 0, 30]), 30);
+  assert.equal(chronologicalAverage([-3, 0]), 0);
   assert.equal(chronologicalAverage([0, 0]), 0);
   assert.equal(chronologicalAverage([12]), 12);
   assert.equal(chronologicalAverage([10, null, 50]), null);
@@ -206,7 +209,7 @@ test("default turnover population is filtered before daily, grouping and totals,
     const analytical = await getTurnoverReport({ ...request, profile: "summary" }, reloadReader);
     assert.deepEqual(standard.rows[0]!.daily.map(day => day.salesQty), [2, 2, 2]);
     assert.deepEqual(standard.totals.overall.daily.map(day => day.quantity), [10, 10, 10]);
-    assert.deepEqual({ ...standard.totals, overall: { ...standard.totals.overall, daily: [] } }, analytical.totals);
+    assert.deepEqual({ ...standard.totals, byStore: [], overall: { ...standard.totals.overall, daily: [] } }, analytical.totals);
     assert.deepEqual(standard.rows.map(row => row.key).sort(), analytical.rows.map(row => row.key).sort());
     assert.equal(turnoverQuerySchema.safeParse({ ...request, to: "2026-11-02", profile: "summary", sort: "name" }).success, false);
     const quantity = await getTurnoverReport({ ...request, mode: "quantity" }, reloadReader);

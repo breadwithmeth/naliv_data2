@@ -1,3 +1,4 @@
+import { chronologicalStock } from "./turnover-domain.js";
 import type { TurnoverRow } from "./turnover-types.js";
 
 export type TurnoverCatalogNode = { key: string; name: string; parent: string | null; folder: boolean };
@@ -106,8 +107,9 @@ export function turnoverStandardValue(
   } else {
     switch (column.kind) {
       case "weighted": {
-        const average = mode === "quantity" ? row.averageQty : row.averageCost;
-        value = average === null ? null : average * (periodDays - 1);
+        value = row.daily.length === periodDays
+          ? chronologicalStock(row.daily, mode === "quantity" ? day => day.quantity : day => day.stockCost).weighted
+          : null;
         break;
       }
       case "average": value = mode === "quantity" ? row.averageQty : row.averageCost; break;

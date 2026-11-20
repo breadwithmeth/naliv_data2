@@ -68,7 +68,7 @@ export function completeTurnoverReport<T extends TurnoverReport | TurnoverPrevie
   return {
     ...report, rows, excludedIncompleteRows,
     // Aggregate daily and transfers cannot be attributed to the kept DTO rows.
-    daily: excluded ? [] : daily, transfers: [], totals: { overall: unavailableTurnoverTotal(), byUnit: [] },
+    daily: excluded ? [] : daily, transfers: [], totals: { overall: unavailableTurnoverTotal(), byUnit: [], byStore: [] },
     summary: {
       ...report.summary, rowCount: report.params.groupBy === "day" ? daily.length : rows.length,
       totalRowCount: rows.length, skuCount: new Set(rows.map(row => row.sku).filter(Boolean)).size,
@@ -80,22 +80,33 @@ export function completeTurnoverReport<T extends TurnoverReport | TurnoverPrevie
   } as T;
 }
 
-export function chronologicalAverage(values: (number | null)[]): number | null {
-  if (!values.length || values.some((value) => value === null || !Number.isFinite(value))) return null;
-  if (values.length === 1) return values[0]!;
-  let total = 0;
+/** Half-weight endpoint samples; only positive stock represents time in stock. */
+export function chronologicalStock<T>(values: readonly T[], amount: (value: T) => number | null) {
+  let weighted = 0, time = 0;
   for (let index = 0; index < values.length; index++) {
-    total += values[index]! * (index === 0 || index === values.length - 1 ? 0.5 : 1);
+    const stock = amount(values[index]!);
+    if (!finite(stock)) return { weighted: null, average: null };
+    if (stock <= 0) continue;
+    const weight = values.length > 1 && (index === 0 || index === values.length - 1) ? 0.5 : 1;
+    weighted += stock * weight;
+    time += weight;
   }
-  if (Number.isFinite(total)) return total / (values.length - 1);
-  if (values.every((value) => value === values[0])) return values[0];
-  // Divide first only on overflow; ordinary values retain the established
-  // rounding while a finite weighted mean of extreme values remains usable.
-  let mean = 0;
+  if (!values.length) return { weighted: null, average: null };
+  if (Number.isFinite(weighted)) return { weighted, average: time ? weighted / time : 0 };
+  // Divide first on overflow so a finite average remains usable.
+  let average = 0;
   for (let index = 0; index < values.length; index++) {
-    mean += values[index]! / (values.length - 1) * (index === 0 || index === values.length - 1 ? 0.5 : 1);
+    const stock = amount(values[index]!)!;
+    if (stock > 0) average += stock * ((index === 0 || index === values.length - 1 ? 0.5 : 1) / time);
   }
-  return Number.isFinite(mean) ? mean : null;
+  if (!Number.isFinite(average) && values.every(value => amount(value) === amount(values[0]!))) {
+    average = amount(values[0]!)!;
+  }
+  return { weighted: null, average: Number.isFinite(average) ? average : null };
+}
+
+export function chronologicalAverage(values: readonly (number | null)[]): number | null {
+  return chronologicalStock(values, value => value).average;
 }
 
 export function salesChange(current: number | null, previous: number | null): TurnoverChange {

@@ -274,6 +274,31 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       assert.equal(byDay.summary.totalRowCount, report.summary.totalRowCount);
       assert.equal(byDay.summary.noSalesCount, report.summary.noSalesCount);
       assert.deepEqual(byDay.totals, report.totals);
+      await t.test("shop and network totals average the daily sum, not separate in-stock averages", async () => {
+        await tx.$executeRawUnsafe("savepoint availability_totals");
+        try {
+          await tx.$executeRawUnsafe(`insert into information_register_sebestoimost_nomenklatury_record_type values
+            ('2026-07-01',true,'s2','i1','',30,1)`);
+          await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
+            ('rr-s2-2026-08-01','i1','','w2',4,400)`);
+          const selection = { ...params, store: ["s1", "s2"], sku: "i1", sort: "name" as const, mode: "both" as const, includeIncomplete: false };
+          const split = await getTurnoverReport({ ...selection, profile: "summary" });
+          assert.deepEqual(split.totals.byStore.map(({ storeKey, total }) => [storeKey, total.averageQty, total.averageCost, total.periodSales.quantity]), [
+            ["key:s1", 11, 190, 3], ["key:s2", 20, 600, 4]
+          ]);
+          assert.deepEqual(split.totals.byStore[1]!.total.daily.map(day => day.quantity), [0, 0, 20]);
+          assert.equal(split.totals.overall.averageQty, 16);
+          assert.equal(split.totals.overall.averageCost, 340);
+          assert.equal(split.totals.overall.turnoverQty, 7 / 16);
+          const network = await getTurnoverReport({ ...selection, profile: "sample" });
+          assert.deepEqual(network.totals.byStore, []);
+          assert.equal(network.rows[0]!.averageQty, 16);
+          assert.equal(network.totals.overall.averageCost, 340);
+        } finally {
+          await tx.$executeRawUnsafe("rollback to savepoint availability_totals");
+          await tx.$executeRawUnsafe("release savepoint availability_totals");
+        }
+      });
       await t.test("totals recompute weighted ratios from the filtered atomic population in every profile and grouping", async () => {
         await tx.$executeRawUnsafe("savepoint turnover_totals");
         try {
@@ -743,6 +768,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
               assert.equal(ordered.totals.overall.daily.length, 3);
               assert.deepEqual({
                 ...ordered.totals, overall: { ...ordered.totals.overall, daily: [] },
+                byStore: [],
                 byUnit: ordered.totals.byUnit.map(total => ({ ...total, daily: [] }))
               }, metrics.totals);
             } else assert.deepEqual(ordered.totals, metrics.totals);

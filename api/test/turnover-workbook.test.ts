@@ -46,7 +46,7 @@ function fixture(mode: "quantity" | "money" | "both"): TurnoverReport {
       turnoverQty: 0.8, turnoverQtyDays: 3.75, turnoverCost: 0.8, turnoverCostDays: 3.75,
       stockDays: 10, excessQty: 0, deficitQty: 0, recommendedOrderQty: 0, openOrderQty: 0,
       stagnantCost: { d30: 0, d60: 0, d90: 0 }
-    }, byUnit: [] },
+    }, byUnit: [], byStore: [] },
     summary: { rowCount: 1, totalRowCount: 1, stagnantCount: 0, skuCount: 1, stockCost: 200, noSalesCount: 0, overstockCount: 0, deficitCount: 0, frozen30Cost: 0, frozen60Cost: 0, frozen90Cost: 0, costCoveragePct: 100, stockCoveragePct: 100 },
     options: { stores: [{ key: "store", name: "Магазин" }], warehouses: [{ key: "wh", name: "Склад", storeKey: "store" }], categories: [{ key: "beer", name: "Пиво" }], brands: [], skus: [{ key: "item", name: "=1+1" }] },
     coverage: { firstStockDate: "2026-09-28", lastStockDate: "2026-09-30", firstSalesDate: "2026-06-01", lastSalesDate: "2026-09-30", missingStockDates: [], observedDays: 3, expectedDays: 3, requestedTo: null },
@@ -135,11 +135,10 @@ test("standard totals preserve mixed units, signed returns, numeric zero and una
     const workbook = await load(report);
     const quantity = workbook.getWorksheet("рассчет оборачиваемости")!;
     const money = workbook.getWorksheet("рассчет оборачиваемости деньги")!;
-    assert.equal(namedRow(quantity, "ИТОГО · л").getCell(11).result, 0);
-    assert.equal(namedRow(quantity, "ИТОГО · шт").getCell(11).result, -3);
+    assert.deepEqual(sheetValues(quantity).filter(value => typeof value === "string" && value.startsWith("ИТОГО")), ["ИТОГО"]);
     assert.equal(namedRow(quantity, "ИТОГО").getCell(8).value, "n/a");
     assert.equal(namedRow(quantity, "ИТОГО").getCell(11).value, "n/a");
-    assert.equal(namedRow(money, "ИТОГО · шт").getCell(11).result, -30);
+    assert.deepEqual(sheetValues(money).filter(value => typeof value === "string" && value.startsWith("ИТОГО")), ["ИТОГО"]);
     assert.equal(namedRow(money, "ИТОГО").getCell(11).result, 0);
     assert.equal(namedRow(money, "ИТОГО").getCell(9).value, "n/a");
     assert.equal(namedRow(money, "ИТОГО").getCell(12).value, "n/a");
@@ -233,8 +232,8 @@ test("sample quantity workbook reproduces the example sheets, widths, headers an
   assert.equal(main.getCell("D2").value, 15);
   assert.deepEqual(main.getCell("E2").value, { formula: "F2/2", result: 10 });
   assert.equal(main.getCell("F2").value, 20);
-  assert.deepEqual(main.getCell("G2").value, { formula: "C2+D2+E2", result: 30 });
-  assert.deepEqual(main.getCell("H2").value, { formula: "G2/(3-1)", result: 15 });
+  assert.deepEqual(main.getCell("G2").value, { formula: 'SUMIF(C2:E2,">0")', result: 30 });
+  assert.deepEqual(main.getCell("H2").value, { formula: 'IF(G2=0,0,G2/(COUNTIF(C2:E2,">0")-IF(C2>0,0.5,0)-IF(E2>0,0.5,0)))', result: 15 });
   assert.deepEqual(main.getCell("I2").value, { formula: "K2/H2", result: 0.8 });
   assert.equal(main.getCell("J2").value, 3);
   assert.deepEqual(main.getCell("K2").value, { formula: "VLOOKUP(A2,'Продажи за период '!A2:B2,2,0)", result: 12 });
@@ -262,7 +261,7 @@ test("sample money workbook reproduces the money sheets, VLOOKUP range and total
   assert.equal(main.getCell("B2").value, 100);
   assert.equal(main.getCell("D2").value, 150);
   assert.equal(main.getCell("F2").value, 200);
-  assert.deepEqual(main.getCell("H2").value, { formula: "G2/(3-1)", result: 150 });
+  assert.equal(main.getCell("H2").result, 150);
   assert.deepEqual(main.getCell("I2").value, { formula: "K2/H2", result: 0.8 });
   assert.deepEqual(main.getCell("K2").value, { formula: "VLOOKUP(A2,'Продажи за период '!A1:C1,3,0)", result: 120 });
   assert.deepEqual(main.getCell("L2").value, { formula: "J2/I2", result: 3.75 });
@@ -653,8 +652,8 @@ test("default aggregate incompatibility leaves unavailable numeric cells blank r
     const main = profile === "sample" ? book.worksheets[0] : book.getWorksheet("Оборачиваемость")!;
     const salesColumn = profile === "sample" ? 11 : profile === "summary" ? 12 : 13;
     assert.equal(main.lastRow!.getCell(salesColumn).value, null);
-    const unitFooter = profile === "sample" ? namedRow(main, "ИТОГО · л") : main.getRow(main.lastRow!.number - 1);
-    assert.equal(profile === "sample" ? unitFooter.getCell(salesColumn).value.result : unitFooter.getCell(salesColumn).value, 12);
+    if (profile === "sample") assert.equal(main.lastRow!.number, 3, "one product and one overall total");
+    else assert.equal(main.getRow(main.lastRow!.number - 1).getCell(salesColumn).value, 12);
   }
 });
 
@@ -691,6 +690,12 @@ test("standard sections share actual calculation and sales row positions without
       rootGroupKey: "g1", rootGroupName: "Пиво", periodSales: { ...sales, quantity: 33, cost: 330 },
       turnoverQty: 33 / 15, turnoverCost: 330 / 150, turnoverQtyDays: 45 / 33, turnoverCostDays: 450 / 330 }
   ];
+  report.totals.byStore = [
+    { storeKey: "s2", total: { ...report.totals.overall, periodSales: { ...sales, quantity: 44, cost: 440 },
+      turnoverQty: 44 / 15, turnoverCost: 440 / 150, turnoverQtyDays: 45 / 44, turnoverCostDays: 450 / 440 } },
+    { storeKey: "s1", total: { ...report.totals.overall, periodSales: { ...sales, quantity: 33, cost: 330 },
+      turnoverQty: 33 / 15, turnoverCost: 330 / 150, turnoverQtyDays: 45 / 33, turnoverCostDays: 450 / 330 } }
+  ];
   const workbook = await load(report, "turnover-standard-homonyms.xlsx");
   for (const [mainName, salesName, offset, salesColumn, expected] of [
     ["рассчет оборачиваемости", "Продажи за период ", 0, "B", [11, 22, 33]],
@@ -700,7 +705,7 @@ test("standard sections share actual calculation and sales row positions without
     const salesSheet = workbook.getWorksheet(salesName)!;
     const dataRows: number[] = [];
     main.eachRow(r => { if (r.getCell(1).value === "=Один товар") dataRows.push(r.number); });
-    assert.deepEqual(dataRows, [4, 6, 9]);
+    assert.deepEqual(dataRows, [4, 6, 10]);
     assert.equal(sheetValues(main).filter(value => value === "Одинаковый магазин").length, 2);
     assert.equal(sheetValues(main).filter(value => value === "Пиво").length, 3);
     for (let index = 0; index < dataRows.length; index++) {
@@ -714,7 +719,7 @@ test("standard sections share actual calculation and sales row positions without
         result: expected[index]
       });
       assert.deepEqual(main.getCell(`G${number}`).value, {
-        formula: `C${number}+D${number}+E${number}`, result: salesColumn === "B" ? 30 : 300
+        formula: `SUMIF(C${number}:E${number},">0")`, result: salesColumn === "B" ? 30 : 300
       });
       assert.deepEqual(main.getCell(`I${number}`).value, {
         formula: `K${number}/H${number}`, result: expected[index] / (salesColumn === "B" ? 15 : 150)
@@ -723,10 +728,15 @@ test("standard sections share actual calculation and sales row positions without
         formula: `J${number}/I${number}`, result: (salesColumn === "B" ? 45 : 450) / expected[index]
       });
     }
-    assert.equal(main.lastRow!.number, 10);
-    assert.equal(main.lastRow!.getCell(11).value.formula, `'${salesName}'!${salesColumn}${10 + offset}`);
+    for (const [number, quantity] of [[7, 33], [11, 44]]) {
+      assert.equal(main.getCell(`A${number}`).value, "ИТОГО по магазину");
+      assert.equal(main.getCell(`K${number}`).result, salesColumn === "B" ? quantity : quantity * 10);
+      assert.equal(salesSheet.getCell(`A${number + offset}`).value, "ИТОГО по магазину");
+    }
+    assert.equal(main.lastRow!.number, 12);
+    assert.equal(main.lastRow!.getCell(11).value.formula, `'${salesName}'!${salesColumn}${12 + offset}`);
     assert.equal(main.lastRow!.getCell(11).value.result, salesColumn === "B" ? 12 : 120);
-    for (const number of [2, 3, 5, 7, 8]) {
+    for (const number of [2, 3, 5, 8, 9]) {
       assert.equal(main.getRow(number).getCell(2).value, null, "section leaves the original numeric columns empty");
       assert.equal(salesSheet.getRow(number + offset).getCell(1).value, main.getRow(number).getCell(1).value);
     }
@@ -820,5 +830,22 @@ test("standard sales sheets retain server group order rather than sorting produc
     assert.equal(salesSheet.getCell(`B${number}`).value, quantity);
     assert.equal(main.getCell(`K${number}`).value.result, quantity);
     assert.equal(main.getCell(`K${number}`).value.formula, `VLOOKUP(A${number},'Продажи за период '!A${number}:B${number},2,0)`);
+  }
+});
+
+test("standard Excel recalculates average from in-stock days without changing the daily columns or period length", async () => {
+  const report = fixture("both");
+  report.params.profile = "sample";
+  const daily = row.daily.map((day, index) => ({ ...day, quantity: [0, 20, -4][index]!, stockCost: [0, 200, -40][index]! }));
+  report.rows = [{ ...row, daily, averageQty: 20, averageCost: 200,
+    turnoverQty: 0.6, turnoverCost: 0.6, turnoverQtyDays: 5, turnoverCostDays: 5 }];
+  const book = await load(report, "turnover-availability-formulas.xlsx");
+  for (const [sheet, scale] of [[book.worksheets[0]!, 1], [book.worksheets[2]!, 10]] as const) {
+    assert.equal(sheet.getCell("B2").value, 0);
+    assert.equal(sheet.getCell("F2").value, -4 * scale);
+    assert.equal(sheet.getCell("G2").result, 20 * scale);
+    assert.equal(sheet.getCell("H2").result, 20 * scale);
+    assert.equal(sheet.getCell("J2").value, 3);
+    assert.equal(sheet.getCell("L2").result, 5);
   }
 });

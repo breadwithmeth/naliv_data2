@@ -3,7 +3,7 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { prisma } from "../prisma.js";
 import {
-  chronologicalAverage, evaluateTurnoverRisks, isCompleteTurnoverRow, planTurnoverTransfers, salesChange,
+  chronologicalStock, evaluateTurnoverRisks, isCompleteTurnoverRow, planTurnoverTransfers, salesChange,
   sumNullable, turnoverRatios, turnoverSales
 } from "./turnover-domain.js";
 import {
@@ -556,8 +556,8 @@ function aggregateRows(rows: TurnoverRow[], key: string, name: string, days: num
     sumNullable(values.map((value) => value.revenue)), denominator
   );
   const daily = dailyOverride ?? aggregateDaily(rows);
-  const averageQty = chronologicalAverage(daily.map((day) => day.quantity));
-  const averageCost = chronologicalAverage(daily.map((day) => day.stockCost));
+  const averageQty = chronologicalStock(daily, day => day.quantity).average;
+  const averageCost = chronologicalStock(daily, day => day.stockCost).average;
   const periodSales = sales(rows.map((row) => row.periodSales), Math.max(1, days - 1));
   const comparisonSales = sales(rows.map((row) => row.comparisonSales), Math.max(1, days - 1));
   const qtyRatio = turnoverRatios(periodSales.quantity, averageQty, days);
@@ -613,16 +613,16 @@ function aggregateRows(rows: TurnoverRow[], key: string, name: string, days: num
   };
 }
 
-function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string, Pair>, renderedRows: TurnoverRow[], params: NormalizedTurnoverRequest): TurnoverTotals {
+function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string, Pair>, dailyByUnit: ReadonlyMap<string, TurnoverDailyRow>, params: NormalizedTurnoverRequest): TurnoverTotals {
   const units = new Set<string>();
-  const byUnit = new Map<string, { unit: string; rows: TurnoverRow[]; daily: Map<string, TurnoverDailyRow> }>();
+  const byUnit = new Map<string, { unit: string; rows: TurnoverRow[]; daily: TurnoverDailyRow[] }>();
   for (const row of visibleAtomic) {
     const pair = pairByKey.get(row.key)!;
     units.add(pair.unitToken);
     if (pair.unitToken.startsWith("unknown:")) continue;
     const group = byUnit.get(pair.unitToken);
     if (group) group.rows.push(row);
-    else byUnit.set(pair.unitToken, { unit: pair.unit, rows: [row], daily: new Map() });
+    else byUnit.set(pair.unitToken, { unit: pair.unit, rows: [row], daily: [] });
   }
   const unitKey = units.size === 1 ? units.values().next().value : undefined;
   const compatible = unitKey !== undefined && !unitKey.startsWith("unknown:");
@@ -645,19 +645,16 @@ function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string
     existing.salesCost = sumNullable([existing.salesCost, day.salesCost]);
     existing.revenue = sumNullable([existing.revenue, day.revenue]);
   };
-  // Standard layouts retain daily rows for the same authoritative total population.
-  if (params.profile === "sample" || (params.profile === "summary" && params.groupBy === "sku" && params.sort === "name")) {
-    for (const row of renderedRows) for (const day of row.daily) {
-      addDay(overallDaily, day, compatible, unit ?? "Разные или неизвестные единицы", compatible ? unitKey : undefined);
-      if (!compatible && day.unitKey) {
-        const group = byUnit.get(day.unitKey);
-        if (group) addDay(group.daily, day, true, group.unit, day.unitKey);
-      }
-    }
+  const splitStores = params.profile === "summary" && params.groupBy === "sku" && params.sort === "name";
+  const retainDaily = params.profile === "sample" || splitStores;
+  for (const day of dailyByUnit.values()) {
+    addDay(overallDaily, day, compatible, unit ?? "Разные или неизвестные единицы", compatible ? unitKey : undefined);
+    if (!compatible && day.unitKey) byUnit.get(day.unitKey)?.daily.push(day);
   }
   const days = dayCount(params.from, params.to);
   const denominator = Math.max(1, days - 1);
-  const total = (members: TurnoverRow[], quantityCompatible: boolean, label: string | null, daily: Map<string, TurnoverDailyRow>): TurnoverTotal => {
+  const total = (members: TurnoverRow[], quantityCompatible: boolean, label: string | null, daily: TurnoverDailyRow[]): TurnoverTotal => {
+    daily.sort((left, right) => left.date.localeCompare(right.date));
     const sum = (get: (row: TurnoverRow) => number | null) => members.length ? sumNullable(members.map(get)) : null;
     const quantity = (get: (row: TurnoverRow) => number | null) => quantityCompatible ? sum(get) : null;
     const sales = (property: "periodSales" | "comparisonSales") => turnoverSales(
@@ -665,15 +662,15 @@ function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string
     );
     const periodSales = sales("periodSales");
     const comparisonSales = sales("comparisonSales");
-    const averageQty = quantity((row) => row.averageQty);
-    const averageCost = sum((row) => row.averageCost);
+    const averageQty = quantityCompatible ? chronologicalStock(daily, day => day.quantity).average : null;
+    const averageCost = chronologicalStock(daily, day => day.stockCost).average;
     const quantityRatio = turnoverRatios(periodSales.quantity, averageQty, days);
     const costRatio = turnoverRatios(periodSales.cost, averageCost, days);
     const closingQty = quantity((row) => row.closingQty);
     const velocity = quantity((row) => row.windows.find((window) => window.days === params.horizon)?.sales.averageDailyQty ?? null);
     const stockDays = closingQty !== null && velocity !== null && velocity > 0 ? closingQty / velocity : null;
     return {
-      unit: label, daily: [...daily.values()].sort((left, right) => left.date.localeCompare(right.date)),
+      unit: label, daily: retainDaily ? daily : [],
       openingQty: quantity((row) => row.openingQty), closingQty, averageQty,
       openingCost: sum((row) => row.openingCost), closingCost: sum((row) => row.closingCost), averageCost,
       periodSales, comparisonSales, quantityChange: salesChange(periodSales.quantity, comparisonSales.quantity),
@@ -688,11 +685,29 @@ function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string
       }
     };
   };
+  const byStore: TurnoverTotals["byStore"] = [];
+  if (splitStores) {
+    const storeRows = new Map<string | null, TurnoverRow[]>();
+    for (const row of visibleAtomic) {
+      const members = storeRows.get(row.storeKey);
+      if (members) members.push(row); else storeRows.set(row.storeKey, [row]);
+    }
+    for (const [storeKey, members] of storeRows) {
+      const first = pairByKey.get(members[0]!.key)!;
+      const compatible = !first.unitToken.startsWith("unknown:") && members.every(row => pairByKey.get(row.key)!.unitToken === first.unitToken);
+      const daily = new Map<string, TurnoverDailyRow>();
+      for (const row of members) for (const day of row.daily) {
+        addDay(daily, day, compatible, compatible ? first.unit : "Разные или неизвестные единицы", compatible ? first.unitToken : undefined);
+      }
+      byStore.push({ storeKey, total: total(members, compatible, compatible ? first.unit : null, [...daily.values()]) });
+    }
+  }
   return {
-    overall: total(visibleAtomic, compatible, unit, overallDaily),
+    overall: total(visibleAtomic, compatible, unit, [...overallDaily.values()]),
     byUnit: compatible ? [] : [...byUnit].map(([key, group]) => ({
       ...total(group.rows, true, group.unit, group.daily), unitKey: key
-    })).sort((left, right) => left.unit!.localeCompare(right.unit!, "ru") || left.unitKey.localeCompare(right.unitKey))
+    })).sort((left, right) => left.unit!.localeCompare(right.unit!, "ru") || left.unitKey.localeCompare(right.unitKey)),
+    byStore
   };
 }
 
@@ -969,8 +984,8 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
         else { exposure += Math.abs(quantity!); if (cost !== null) valued += Math.abs(quantity!); }
       }
     }
-    const averageQty = chronologicalAverage(daily.map((day) => day.quantity));
-    const averageCost = chronologicalAverage(daily.map((day) => day.stockCost));
+    const averageQty = chronologicalStock(daily, day => day.quantity).average;
+    const averageCost = chronologicalStock(daily, day => day.stockCost).average;
     const periodSales = rangeSales(pair, from, to, Math.max(1, days - 1));
     const comparisonSales = rangeSales(pair, comparisonFrom, comparisonTo, Math.max(1, days - 1));
     // A summary file has no 7/14/30 sheet; risks still need 14 days and the
@@ -1059,7 +1074,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
       continue;
     }
     if (params.risk === "all" || row.risks.includes(params.risk)) {
-      if (retainReportDaily) mergeDaily(reportDaily, row.daily);
+      mergeDaily(reportDaily, row.daily);
       if (consolidateStores || params.groupBy === "store" || params.groupBy === "category" || params.groupBy === "brand") {
         const groupKey = params.groupBy === "store" ? pair.store : params.groupBy === "category" ? pair.category ?? UNKNOWN : pair.brand ?? UNKNOWN;
         const key = consolidateStores ? pair.sku : `${params.groupBy}/${groupKey}/${pair.unitToken}`;
@@ -1122,7 +1137,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     if (left !== null && right !== null && left !== right) return (params.sort === "stock-cost" || params.sort === "no-movement") ? right - left : left - right;
     return a.name.localeCompare(b.name, "ru") || a.key.localeCompare(b.key);
   });
-  const totals = buildTurnoverTotals(visibleAtomic, pairByKey, rows, params);
+  const totals = buildTurnoverTotals(visibleAtomic, pairByKey, reportDaily, params);
   const expectedDates = calendar(params.from, params.to);
   const missingStockDates = expectedDates.filter((date) => !snapshots.has(shiftDate(date, 1)));
   const observedDays = expectedDates.length - missingStockDates.length;
@@ -1145,7 +1160,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   if (missingMoney) warningSet.add("Часть денежных показателей недоступна из-за пропусков снимков или учётных цен. Нулевая, отрицательная или пустая цена не считается бесплатным товаром и не заменяется более старой ценой.");
   if (!source.brands.length || selectedPairs.some((pair) => !pair.brand)) warningSet.add("Справочник брендов не заполнен или привязки отсутствуют. Бренд по названию товара не угадывается.");
   if (selectedPairs.some((pair) => pair.unit.startsWith("Единица не указана"))) warningSet.add("У части SKU нет подтверждённой базовой единицы. Такие SKU не суммируются между собой и не участвуют в перемещениях.");
-  if (visibleAtomic.length && totals.overall.unit === null) warningSet.add("Общее количество, количественные коэффициенты и дни запаса не рассчитаны: в отборе разные или неизвестные базовые единицы. Количественные подытоги показаны отдельно по известным единицам; денежные суммы не зависят от единиц.");
+  if (visibleAtomic.length && totals.overall.unit === null) warningSet.add("Общее количество, количественные коэффициенты и дни запаса не рассчитаны: в отборе разные или неизвестные базовые единицы. Денежные суммы не зависят от единиц.");
   if (params.norms.defaults.highStockCost === null) warningSet.add("Денежный порог высокого запаса по умолчанию не задан; правило замораживания средств применимо только к категориям с явно заданным порогом.");
   warningSet.add("Себестоимость продаж — оценка количества по учётной цене на начало дня, а не подтверждённый бухгалтерский COGS; розничная выручка не участвует в коэффициенте.");
   warningSet.add("Исторические статусы заказов не версионируются: учтены текущие незакрытые проведённые заказы, созданные до даты отчёта, за вычетом проведённых к той дате поступлений.");
@@ -1164,7 +1179,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     ? sumNullable(atomicRows.map((row) => row.stagnantCost[threshold])) : !excludedIncompleteRows && snapshots.has(params.to) ? 0 : null;
   return {
     params, comparison: { from: params.comparisonFrom, to: params.comparisonTo, days: expectedDates.length }, norms: params.norms,
-    rows, daily: [...reportDaily.values()].sort((a, b) => a.date.localeCompare(b.date) || a.unit.localeCompare(b.unit, "ru")), transfers,
+    rows, daily: retainReportDaily ? [...reportDaily.values()].sort((a, b) => a.date.localeCompare(b.date) || a.unit.localeCompare(b.unit, "ru")) : [], transfers,
     totals, excludedIncompleteRows,
     summary: {
       rowCount: params.groupBy === "day" ? reportDaily.size : rows.length,
@@ -1197,7 +1212,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     },
     methodology: [
       "Период API [from,to), правая граница исключена; даты — сохранённые календарные даты 1С без пересчёта часового пояса. Текущий остаток означает конец выбранного периода, не сегодняшний остаток.",
-      "Снимок на следующую полночь — конец предыдущего рабочего дня. Начало периода — точный снимок from; конец — точный снимок to. Средняя хронологическая берётся по N дневным закрытиям: (первое/2 + внутренние + последнее/2)/(N−1); при N=1 используется единственное закрытие. Один пропуск делает среднее неизвестным. SKU, отсутствующий в существующем сетевом снимке, имеет нулевой остаток.",
+      "Снимок на следующую полночь — конец предыдущего рабочего дня. Начало и конец периода — точные снимки from и to. Средний остаток — взвешенное среднее только положительных дневных закрытий: крайние даты имеют вес ½, остальные — 1. При единственном закрытии вес 1. Пропуск делает результат неизвестным. SKU, отсутствующий в существующем сетевом снимке, имеет нулевой остаток.",
       "Продажи и возвраты — строки проведённых неудалённых отчётов о розничных продажах. Возвраты уменьшают количество и розничную сумму один раз, независимо от записанного знака. Перемещения, списания и корректировки не считаются продажами, но уже отражены в остатках.",
       "День без розничного отчёта считается нулевым только при проверенной полной загрузке розничных отчётов и чеков за этот день и отсутствии проведённых чеков физического магазина. Чеки при отсутствии отчёта могут означать незакрытую смену: такой день остаётся н/д. Непроверенные, текущие и будущие дни не превращаются в нули.",
       "Среднедневные продажи за произвольный период делятся на max(1,N−1). Оперативные окна делятся на настоящие 7/14/30 календарных дней; предыдущее окно той же длины непосредственно предшествует текущему. Процент при нулевой/отрицательной базе не рассчитывается.",
@@ -1214,7 +1229,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
       "Перемещения — тот же SKU и подтверждённая единица между разными магазинами; общий объём ограничен излишком донора и потребностью получателя после открытых заказов. Заказы и остатки не изменяются.",
       "Итоговые денежные значения неизвестны, если неизвестен любой материальный компонент; отсутствующие данные не заменены нулями. Покрытие стоимости строки — доля абсолютного количества известных дневных остатков/продаж с ценой; сводное покрытие — среднее процентов строк, без сложения разных физических единиц.",
       "Счётчики рисков и суммы сводки относятся к SKU/магазинам после фильтров измерений и поиска, до фильтра риска и группировки. Количество видимых строк — после группировки. Групповые коэффициенты пересчитаны из сумм; риски и рекомендации групп — сводка атомарных правил, не новая классификация суммы.",
-      "ИТОГО относится ко всему населению таблицы после всех фильтров, включая риск и excludeZero, независимо от группировки и страницы просмотра. Средние остатки суммируются за один период, коэффициенты и сравнения пересчитываются из итоговых остатков и продаж. Количества суммируются только для одной известной базовой единицы; иначе известные единицы имеют отдельные подытоги, а общий количественный итог недоступен. Пустой отбор не подтверждает нулевую историю.",
+      "Общий итог и итоги магазинов относятся ко всему отбору после фильтров, независимо от страницы. Средний остаток пересчитывается по суммарным дневным остаткам соответствующего отбора; коэффициент равен продажам, делённым на средний остаток. Количества суммируются только для одной известной базовой единицы. Пустой отбор не подтверждает нулевую историю.",
       "В профиле sample каждая строка — один SKU: дневные количества, денежные остатки и продажи объединены по всем выбранным магазинам и складам; средние и коэффициенты пересчитаны из объединённых значений. Разные SKU и их учётные единицы не смешиваются. rows.daily сохраняется для всех товаров, а общий daily не дублируется.",
       "В аналитических профилях общий daily передаёт дневные значения выбранной совокупности и фильтра риска раздельно по единицам. В группировке по дням основной лист Excel использует только daily; rows пуст, окна 7/14/30 по каждой отдельной дате не формируются. В остальных аналитических группировках подробный rows.daily передаётся при выборе конкретного SKU либо только для строки с точным ключом auditGroup при неизменных применённых фильтрах и группировке."
     ],

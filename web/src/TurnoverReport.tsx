@@ -219,6 +219,9 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
   const currentPage = Math.min(Math.max(0, page), pageCount - 1);
   const start = currentPage * PREVIEW_PAGE_SIZE;
   const rows = report.rows.slice(start, start + PREVIEW_PAGE_SIZE);
+  const storeTotals = new Map(report.totals.byStore.map(({ storeKey, total }) => [storeKey, total]));
+  const quantityTotalsUnavailable = report.rows.length > 0 && report.params.mode !== "money"
+    && (report.totals.overall.unit === null || report.totals.byStore.some(({ total }) => total.unit === null));
   const period = `${previewDate(report.params.from)} — ${previewDate(report.params.to, true)}`;
   const notices = [
     ...(report.coverage.requestedTo
@@ -238,19 +241,18 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
       <summary>Подробности проверки ({formatNumber(report.warnings.length)})</summary>
       <ul>{report.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
     </details> : null}
-    <p className="turnover-note" id={noteId}>—: показатель не рассчитан.</p>
+    <p className="turnover-note" id={noteId}>—: показатель не рассчитан.
+      {quantityTotalsUnavailable ? " Количество в итогах не складывается: разные или неизвестные единицы." : null}</p>
     {modes.map((mode) => {
       const quantity = mode === "quantity";
       const caption = quantity ? "Количество, в единицах товара" : "Деньги по себестоимости, ₸";
-      const footer = (label: string, total: TurnoverPreview["totals"]["overall"], key: string, overall = false) =>
-        <tr key={key} className={overall ? "turnover-overall-total" : "turnover-unit-total"}>
+      const footer = (label: string, total: TurnoverPreview["totals"]["overall"]) =>
+        <tr className="turnover-overall-total">
           <th scope="row">{label}</th>
           <StandardMetricCells metrics={total} columns={columns} mode={mode} periodDays={days.length}
             quantityUnavailable={quantity && total.unit === null} />
         </tr>;
-      const overallLabel = quantity && report.totals.overall.unit === null
-        ? `ИТОГО · Общий итог количества не рассчитан${report.totals.byUnit.length ? "" : " · Единица не указана"}`
-        : `ИТОГО${quantity ? ` · ${report.totals.overall.unit}` : ""}`;
+      const overall = report.totals.overall;
       return <div key={mode} className="turnover-preview-scroll" role="region"
         aria-label={`Таблица оборачиваемости · ${caption}`} tabIndex={0} aria-describedby={noteId}>
         <table className="turnover-preview-table">
@@ -264,6 +266,8 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
               const previous = rows[index - 1];
               const newStore = stores && (!previous || previous.storeKey !== row.storeKey);
               const newGroup = !previous || newStore || previous.rootGroupKey !== row.rootGroupKey;
+              const next = report.rows[start + index + 1];
+              const subtotal = stores && row.storeKey !== next?.storeKey ? storeTotals.get(row.storeKey) : undefined;
               return <Fragment key={row.key}>
                 {newStore ? <tr className="turnover-preview-store"><th scope="rowgroup" colSpan={columnCount}>{row.storeKey === null ? "Магазин не определён" : row.storeName || "Магазин не определён"}</th></tr> : null}
                 {newGroup ? <tr className="turnover-preview-group"><th scope="rowgroup" colSpan={columnCount}>{row.rootGroupKey === null ? "Без группы" : row.rootGroupName || "Группа без названия"}</th></tr> : null}
@@ -271,6 +275,7 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
                   <th scope="row" className="turnover-preview-product">{row.name}</th>
                   <StandardMetricCells metrics={row} columns={columns} mode={mode} periodDays={days.length} />
                 </tr>
+                {subtotal ? footer("ИТОГО по магазину", subtotal) : null}
               </Fragment>;
             }) : <tr><td colSpan={columnCount} className="turnover-preview-empty">
               {excludedIncompleteRows > 0 && !includeIncomplete
@@ -279,8 +284,7 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
             </td></tr>}
           </tbody>
           {report.rows.length ? <tfoot aria-label="Итог по всему отбору">
-            {quantity ? report.totals.byUnit.map((total) => footer(`Итого · ${total.unit ?? "Единица не указана"}`, total, total.unitKey)) : null}
-            {footer(overallLabel, report.totals.overall, "overall", true)}
+            {footer("ИТОГО", overall)}
           </tfoot> : null}
         </table>
       </div>;

@@ -28,3 +28,12 @@ test("standard cells preserve zero and signed sales and never turn missing/nonfi
   assert.equal(turnoverStandardValue({ ...row, daily: [{ ...row.daily[0]!, quantity: Infinity }] }, columns[0]!, "quantity", 3), null);
   assert.equal(turnoverStandardValue({ ...row, turnoverQty: NaN }, columns[7]!, "quantity", 3), null);
 });
+
+test("the weighted total is not the in-stock average multiplied by the full period", () => {
+  const columns = turnoverStandardColumns(turnoverStandardDates("2026-09-28", "2026-10-01"));
+  const sparse = { ...row, daily: row.daily.map((day, index) => ({
+    ...day, quantity: [0, 20, -4][index]!, stockCost: [0, 200, -40][index]!
+  })), averageQty: 20, averageCost: 200 };
+  assert.equal(turnoverStandardValue(sparse, columns[5]!, "quantity", 3), 20);
+  assert.equal(turnoverStandardValue(sparse, columns[5]!, "money", 3), 200);
+});

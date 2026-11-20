@@ -37,7 +37,7 @@ function report(): TurnoverPreview {
       minDays: 3, staleDays: 30, criticalStaleDays: 60, excessDays: 30, stopDays: 90,
       changePct: 20, targetDays: 14, highStockCost: null, leadTimeDays: null
     }, categories: {} },
-    rows: [product], daily: [], transfers: [], totals: { overall: total, byUnit: [] },
+    rows: [product], daily: [], transfers: [], totals: { overall: total, byUnit: [], byStore: [] },
     summary: { rowCount: 1, totalRowCount: 1, stagnantCount: 0, skuCount: 1, stockCost: 120,
       noSalesCount: 0, overstockCount: 0, deficitCount: 0, frozen30Cost: 0, frozen60Cost: 0,
       frozen90Cost: 0, costCoveragePct: 100, stockCoveragePct: 100 },
@@ -105,7 +105,7 @@ test("two-day standard endpoints follow the calendar and retain supplied average
     assert.ok(headers.includes(`>${label}</th>`), `missing standard endpoint ${label}`);
   }
   assert.doesNotMatch(headers, /02\.11\./);
-  assert.deepEqual(productCells(html), ["100", "50", "100", "200", "777", "777", "4", "2", "25", "0,5"]);
+  assert.deepEqual(productCells(html), ["100", "50", "100", "200", "150", "777", "4", "2", "25", "0,5"]);
 });
 
 test("standard preview pages 100 products and repeats sections with unchanged authoritative totals", () => {
@@ -114,6 +114,7 @@ test("standard preview pages 100 products and repeats sections with unchanged au
   data.rows = Array.from({ length: 101 }, (_, index) => row(index));
   data.totals.overall.periodSales = { ...data.totals.overall.periodSales, quantity: 2525 };
   data.totals.overall.daily = data.totals.overall.daily.map((day) => ({ ...day, quantity: 900 }));
+  data.totals.byStore = [{ storeKey: "store-a", total: data.totals.overall }];
   const first = render(data);
   const second = render(data, 1);
   assert.equal((section(first, "tbody").match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 100);
@@ -128,6 +129,8 @@ test("standard preview pages 100 products and repeats sections with unchanged au
   }
   assert.doesNotMatch(section(first, "tbody"), /Товар 100</);
   assert.match(section(second, "tbody"), /Товар 100</);
+  assert.doesNotMatch(section(first, "tbody"), /ИТОГО по магазину/);
+  assert.match(section(second, "tbody"), /Товар 100<[\s\S]*ИТОГО по магазину[\s\S]*2[\u00a0\u202f ]525/);
   assert.equal(section(first, "tfoot"), section(second, "tfoot"));
   assert.match(second, /Страница 2 из 2/);
   assert.match(second, /role="region"[^>]*aria-label="Таблица оборачиваемости[^"]*"[^>]*tabindex="0"/);
@@ -226,7 +229,7 @@ test("missing identifiers and unknown stores do not add columns or identifier no
   assert.equal(productCells(html).length, 11);
 });
 
-test("incompatible quantities retain authoritative per-unit standard totals without inventing an overall sum", () => {
+test("incompatible quantities show one total with no technical unit identifiers or invented sum", () => {
   const data = report();
   data.totals.byUnit = [
     { ...data.totals.overall, unitKey: "unit-pieces", unit: "шт." },
@@ -240,13 +243,11 @@ test("incompatible quantities retain authoritative per-unit standard totals with
   });
   const html = render(data);
   const footer = section(html, "tfoot");
-  assert.equal((footer.match(/<tr[ >]/g) ?? []).length, 3);
-  assert.match(footer, /Итого · шт\./);
-  assert.match(footer, /Итого · кг/);
-  assert.match(footer, />15<\/td>/);
-  assert.match(footer, />6<\/td>/);
-  const overall = footer.slice(footer.indexOf('class="turnover-overall-total"'));
-  assert.match(overall, /Общий итог количества не рассчитан/);
+  assert.equal((footer.match(/<tr[ >]/g) ?? []).length, 1);
+  assert.match(footer, />ИТОГО</);
+  assert.doesNotMatch(footer, /unit-pieces|unit-kilograms|Итого ·/);
+  assert.match(html, /Количество в итогах не складывается/);
+  const overall = footer;
   assert.equal((overall.match(/aria-label="Показатель не рассчитан"/g) ?? []).length, 10);
   assert.doesNotMatch(overall, />0<\/td>|>8<\/td>|>12<\/td>/);
   assert.doesNotMatch(html.split("<table")[0], /turnover-total|<dl/);
@@ -258,9 +259,8 @@ test("unknown units are labelled neutrally rather than declared incompatible", (
   data.rows[0].unit = null;
   data.totals.overall.unit = null;
   const html = render(data);
-  assert.match(section(html, "tfoot"), /Единица не указана/);
-  assert.match(section(html, "tfoot"), /Общий итог количества не рассчитан/);
-  assert.doesNotMatch(html, /[Рр]азные единицы|[Нн]есовместим/);
+  assert.match(section(html, "tfoot"), />ИТОГО</);
+  assert.match(html, /разные или неизвестные единицы/);
 });
 
 test("standard footer uses supplied daily totals and ratios rather than rows or summary and preserves zero", () => {
