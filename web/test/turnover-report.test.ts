@@ -232,8 +232,7 @@ test("missing identifiers and unknown stores do not add columns or identifier no
 test("mixed quantities retain numeric unit totals without an empty overall row or technical keys", () => {
   const data = report();
   data.totals.byUnit = [
-    { ...data.totals.overall, unitKey: "unit-pieces-a", unit: "шт [unit-pieces-a]" },
-    { ...data.totals.overall, unitKey: "unit-pieces-b", unit: "шт [unit-pieces-b]",
+    { ...data.totals.overall, unitKey: "unit:pieces", unit: "шт",
       periodSales: { ...data.totals.overall.periodSales, quantity: 109 } },
     { ...data.totals.overall, unitKey: "unit-kilograms", unit: "кг", averageQty: 6,
       daily: data.totals.overall.daily.map((day) => ({ ...day, quantity: 6 })),
@@ -244,17 +243,17 @@ test("mixed quantities retain numeric unit totals without an empty overall row o
     periodSales: { ...data.totals.overall.periodSales, quantity: null }
   });
   data.params.profile = "summary";
-  data.totals.byStore = [{ storeKey: "store-a", total: data.totals.overall, byUnit: data.totals.byUnit.slice(1) }];
+  data.totals.byStore = [{ storeKey: "store-a", total: data.totals.overall, byUnit: data.totals.byUnit }];
   const html = render(data);
   const footer = section(html, "tfoot");
   assert.deepEqual([...footer.matchAll(/<th scope="row">(.*?)<\/th>/g)].map(match => match[1]),
-    ["ИТОГО · шт (1)", "ИТОГО · шт (2)", "ИТОГО · кг"]);
+    ["ИТОГО · шт", "ИТОГО · кг"]);
   assert.match(footer, />109<\/td>/);
   assert.match(footer, />15<\/td>/);
-  assert.doesNotMatch(html, /unit-pieces|unit-kilograms/);
+  assert.doesNotMatch(html, /unit:pieces|unit-kilograms/);
   const body = section(html, "tbody");
-  assert.ok(body.indexOf("ИТОГО по магазину · шт (2)") > body.indexOf("Товар 0"));
-  assert.doesNotMatch(body, /шт \(1\)/);
+  assert.ok(body.indexOf("ИТОГО по магазину · шт") > body.indexOf("Товар 0"));
+  assert.match(body, /ИТОГО по магазину · кг/);
   assert.doesNotMatch(html.split("<table")[0], /turnover-total|<dl/);
 });
 

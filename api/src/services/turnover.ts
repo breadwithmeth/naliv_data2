@@ -613,7 +613,12 @@ function aggregateRows(rows: TurnoverRow[], key: string, name: string, days: num
   };
 }
 
-function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string, Pair>, dailyByUnit: ReadonlyMap<string, TurnoverDailyRow>, params: NormalizedTurnoverRequest): TurnoverTotals {
+const PIECE_TOTAL_KEY = "unit:pieces";
+
+function buildTurnoverTotals(
+  visibleAtomic: TurnoverRow[], pairByKey: Map<string, Pair>, dailyByUnit: ReadonlyMap<string, TurnoverDailyRow>,
+  pieceUnitKeys: ReadonlySet<string>, params: NormalizedTurnoverRequest
+): TurnoverTotals {
   const addDay = (target: Map<string, TurnoverDailyRow>, day: TurnoverDailyRow, quantityCompatible: boolean, label: string, key?: string) => {
     const existing = target.get(day.date);
     if (!existing) {
@@ -673,17 +678,24 @@ function buildTurnoverTotals(visibleAtomic: TurnoverRow[], pairByKey: Map<string
     for (const row of members) {
       const pair = pairByKey.get(row.key)!;
       if (pair.unitToken.startsWith("unknown:")) { unknownUnit = true; continue; }
-      const group = groups.get(pair.unitToken);
+      const key = pieceUnitKeys.has(pair.unitToken) ? PIECE_TOTAL_KEY : pair.unitToken;
+      const group = groups.get(key);
       if (group) group.rows.push(row);
-      else groups.set(pair.unitToken, { unit: pair.unit, rows: [row], daily: [] });
+      else groups.set(key, { unit: key === PIECE_TOTAL_KEY ? "шт" : pair.unit, rows: [row], daily: [] });
     }
     const unitKey = !unknownUnit && groups.size === 1 ? groups.keys().next().value : undefined;
     const label = unitKey === undefined ? null : groups.get(unitKey)!.unit;
     const daily = new Map<string, TurnoverDailyRow>();
+    const pieces = label === null ? groups.get(PIECE_TOTAL_KEY) : undefined;
+    const pieceDaily = pieces ? new Map<string, TurnoverDailyRow>() : undefined;
     for (const day of sourceDays.values()) {
       addDay(daily, day, label !== null, label ?? "Разные или неизвестные единицы", unitKey);
-      if (label === null && day.unitKey) groups.get(day.unitKey)?.daily.push(day);
+      if (label === null && day.unitKey) {
+        if (pieceDaily && pieceUnitKeys.has(day.unitKey)) addDay(pieceDaily, day, true, "шт", PIECE_TOTAL_KEY);
+        else groups.get(day.unitKey)?.daily.push(day);
+      }
     }
+    if (pieces && pieceDaily) pieces.daily = [...pieceDaily.values()];
     return {
       overall: total(members, label !== null, label, [...daily.values()]),
       byUnit: label !== null ? [] : [...groups].map(([key, group]) => ({
@@ -774,6 +786,9 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   const groups = new Map(source.groups.map((group) => [group.key, group.name]));
   const brands = new Map(source.brands.map((brand) => [brand.key, brand.name]));
   const units = new Map(source.units.map((unit) => [unit.key, unit.name]));
+  // Only report totals treat duplicate piece references as interchangeable.
+  const pieceUnitKeys = new Set<string>();
+  for (const [key, name] of units) if (/^шт\.?$/iu.test(name.trim())) pieceUnitKeys.add(key);
   const repeatedUnitNames = new Set(source.units.filter((unit, index, values) => values.findIndex((other) => other.name === unit.name) !== index).map((unit) => unit.name));
   const snapshots = new Set(source.snapshots);
   const salesDays = new Map<string, Set<string>>();
@@ -1135,7 +1150,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     if (left !== null && right !== null && left !== right) return (params.sort === "stock-cost" || params.sort === "no-movement") ? right - left : left - right;
     return a.name.localeCompare(b.name, "ru") || a.key.localeCompare(b.key);
   });
-  const totals = buildTurnoverTotals(visibleAtomic, pairByKey, reportDaily, params);
+  const totals = buildTurnoverTotals(visibleAtomic, pairByKey, reportDaily, pieceUnitKeys, params);
   const expectedDates = calendar(params.from, params.to);
   const missingStockDates = expectedDates.filter((date) => !snapshots.has(shiftDate(date, 1)));
   const observedDays = expectedDates.length - missingStockDates.length;

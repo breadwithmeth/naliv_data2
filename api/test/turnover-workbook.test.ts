@@ -123,9 +123,8 @@ test("standard totals preserve mixed units, signed returns, numeric zero and una
     report.totals.byUnit = [
       { ...overall, unit: "л", unitKey: "litre", periodSales: { ...sales, quantity: 0, cost: 0 },
         turnoverQty: 0, turnoverQtyDays: null, turnoverCost: 0, turnoverCostDays: null },
-      { ...overall, unit: "шт [piece-a]", unitKey: "piece-a", periodSales: { ...sales, quantity: -3, cost: -30 },
-        turnoverQty: null, turnoverQtyDays: null },
-      { ...overall, unit: "шт [piece-b]", unitKey: "piece-b" }
+      { ...overall, unit: "шт", unitKey: "unit:pieces", periodSales: { ...sales, quantity: -3, cost: -30 },
+        turnoverQty: null, turnoverQtyDays: null }
     ];
     report.totals.overall = {
       ...overall, unit: null, openingQty: null, closingQty: null, averageQty: null,
@@ -134,19 +133,19 @@ test("standard totals preserve mixed units, signed returns, numeric zero and una
       daily: row.daily.map(day => ({ ...day, quantity: null }))
     };
     if (profile === "summary") report.totals.byStore = [
-      { storeKey: row.storeKey, total: report.totals.overall, byUnit: report.totals.byUnit.slice(1) }
+      { storeKey: row.storeKey, total: report.totals.overall, byUnit: report.totals.byUnit }
     ];
     const workbook = await load(report);
     const quantity = workbook.getWorksheet("рассчет оборачиваемости")!;
     const money = workbook.getWorksheet("рассчет оборачиваемости деньги")!;
-    const unitLabels = ["ИТОГО · л", "ИТОГО · шт (1)", "ИТОГО · шт (2)"];
-    const storeLabels = ["ИТОГО по магазину · шт (1)", "ИТОГО по магазину · шт (2)"];
+    const unitLabels = ["ИТОГО · л", "ИТОГО · шт"];
+    const storeLabels = ["ИТОГО по магазину · л", "ИТОГО по магазину · шт"];
     assert.deepEqual(sheetValues(quantity).filter(value => typeof value === "string" && value.startsWith("ИТОГО")),
       profile === "summary" ? [...storeLabels, ...unitLabels] : unitLabels);
-    assert.deepEqual(unitLabels.map(label => namedRow(quantity, label).getCell(11).result), [0, -3, 12]);
+    assert.deepEqual(unitLabels.map(label => namedRow(quantity, label).getCell(11).result), [0, -3]);
     const quantitySales = workbook.getWorksheet("Продажи за период ")!;
-    assert.deepEqual(unitLabels.map(label => namedRow(quantitySales, label).getCell(2).value), [0, -3, 12]);
-    if (profile === "summary") assert.deepEqual(storeLabels.map(label => namedRow(quantity, label).getCell(11).result), [-3, 12]);
+    assert.deepEqual(unitLabels.map(label => namedRow(quantitySales, label).getCell(2).value), [0, -3]);
+    if (profile === "summary") assert.deepEqual(storeLabels.map(label => namedRow(quantity, label).getCell(11).result), [0, -3]);
     assert.deepEqual(sheetValues(money).filter(value => typeof value === "string" && value.startsWith("ИТОГО")),
       profile === "summary" ? ["ИТОГО по магазину", "ИТОГО"] : ["ИТОГО"]);
     assert.equal(namedRow(money, "ИТОГО").getCell(11).result, 0);
