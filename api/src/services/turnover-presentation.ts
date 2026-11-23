@@ -1,5 +1,5 @@
 import { chronologicalStock } from "./turnover-domain.js";
-import type { TurnoverRow, TurnoverTotal, TurnoverUnitTotal } from "./turnover-types.js";
+import type { TurnoverMode, TurnoverRow, TurnoverTotal, TurnoverUnitTotal } from "./turnover-types.js";
 
 export type TurnoverCatalogNode = { key: string; name: string; parent: string | null; folder: boolean };
 type RootGroup = { key: string; name: string };
@@ -59,6 +59,8 @@ export function compareTurnoverPresentationRows(a: PresentationRow, b: Presentat
     || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 }
 
+export const TURNOVER_IDLE_LABEL = "Без движения";
+
 export type TurnoverStandardColumn =
   | { kind: "day"; date: string; index: number; half: boolean; label: string }
   | { kind: "weighted" | "average" | "coefficient" | "periodDays" | "sales" | "turnoverDays"; label: string };
@@ -71,8 +73,9 @@ export function turnoverStandardDates(from: string, to: string): string[] {
   return days;
 }
 
-/** All columns after nomenclature in the supplied standard workbook. */
-export function turnoverStandardColumns(days: readonly string[]): TurnoverStandardColumn[] {
+/** Standard workbook column order, with labels matching the calculation basis. */
+export function turnoverStandardColumns(days: readonly string[], mode: Exclude<TurnoverMode, "both">): TurnoverStandardColumn[] {
+  const money = mode === "money";
   const columns: TurnoverStandardColumn[] = [];
   for (let index = 0; index < days.length; index++) {
     const date = days[index]!;
@@ -82,12 +85,12 @@ export function turnoverStandardColumns(days: readonly string[]): TurnoverStanda
     if (index === 0) columns.push({ kind: "day", date, index, half: true, label: `${label} / 2` });
   }
   columns.push(
-    { kind: "weighted", label: "сумма остатков за период " },
-    { kind: "average", label: "средний товарный запас в шт " },
+    { kind: "weighted", label: money ? "сумма остатков за период, ₸" : "сумма остатков за период " },
+    { kind: "average", label: money ? "средний товарный запас, ₸" : "средний товарный запас в шт " },
     { kind: "coefficient", label: "Коэффицент оборачиваемости" },
     { kind: "periodDays", label: "количество дней в периоде " },
-    { kind: "sales", label: "продажи в шт за период " },
-    { kind: "turnoverDays", label: "количесто дней оборота в шт " }
+    { kind: "sales", label: money ? "себестоимость продаж, ₸" : "продажи в шт за период " },
+    { kind: "turnoverDays", label: "количество дней оборота" }
   );
   return columns;
 }

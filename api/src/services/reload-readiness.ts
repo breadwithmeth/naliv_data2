@@ -168,7 +168,7 @@ export const getReloadReadiness = createReloadReadinessReader();
 export function businessToday(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Qyzylorda", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
 }
-export function evaluateCoverage(readiness: ReloadReadinessState, kind: "receipts" | "retail", window: { from: Date; to: Date }, today = businessToday()): ReloadCoverage {
+export function evaluateCoverage(readiness: ReloadReadinessState, kind: "receipts" | "retail" | "document_postuplenie_tovarov", window: { from: Date; to: Date }, today = businessToday()): ReloadCoverage {
   if (!Number.isFinite(window.from.getTime()) || !Number.isFinite(window.to.getTime()) || window.from >= window.to) throw Object.assign(new Error("Некорректный период отчёта"), { statusCode: 400 });
   const from = window.from.toISOString().slice(0, 10), to = window.to.toISOString().slice(0, 10);
   const end = window.to.getTime() === Date.parse(to) ? to : nextDay(to);

@@ -3,9 +3,14 @@ import type {
   TurnoverReport, TurnoverRisk, TurnoverRow, TurnoverSales, TurnoverTotal, TurnoverTransfer
 } from "./turnover-types.js";
 
+export const TURNOVER_COEFFICIENT_THRESHOLDS = { lowEnd: 1, mediumStart: 2, goodStart: 3 } as const;
+
 export function turnoverCoefficientBand(value: number | null): "red" | "orange" | "green" | null {
   if (value === null || !Number.isFinite(value)) return null;
-  return value < 2 ? "red" : value < 3 ? "orange" : "green";
+  const { lowEnd, mediumStart, goodStart } = TURNOVER_COEFFICIENT_THRESHOLDS;
+  if (value < lowEnd) return "red";
+  if (value < mediumStart) return null;
+  return value < goodStart ? "orange" : "green";
 }
 
 type CalculationRow = Pick<TurnoverRow,
@@ -33,6 +38,10 @@ export function isCompleteTurnoverRow(row: CalculationRow, mode: TurnoverMode = 
     && (!row.daily || row.daily.every(day => isCompleteTurnoverDailyRow(day, mode)));
 }
 
+export function includeTurnoverRow(row: CalculationRow & Pick<TurnoverRow, "idleStock">, mode: TurnoverMode): boolean {
+  return row.idleStock === true || isCompleteTurnoverRow(row, mode);
+}
+
 export function isCompleteTurnoverDailyRow(day: TurnoverDailyRow, mode: TurnoverMode = "both"): boolean {
   return (mode === "money" || (hasKnownTurnoverUnit(day.unit) && finite(day.quantity) && finite(day.salesQty)))
     && (mode === "quantity" || (finite(day.stockCost) && finite(day.salesCost) && finite(day.revenue)));
@@ -56,10 +65,10 @@ function unavailableTurnoverTotal(): TurnoverTotal {
  * never sum display rows or retain aggregates for the discarded population.
  */
 export function completeTurnoverReport<T extends TurnoverReport | TurnoverPreview>(report: T): T {
-  if (report.params.includeIncomplete) return report;
+  if (report.params.includeIncomplete || report.populationFiltered) return report;
   const mode = report.params.mode ?? "both";
-  const rows = report.rows.every(row => isCompleteTurnoverRow(row, mode))
-    ? report.rows : report.rows.filter(row => isCompleteTurnoverRow(row, mode));
+  const rows = report.rows.every(row => includeTurnoverRow(row, mode))
+    ? report.rows : report.rows.filter(row => includeTurnoverRow(row, mode));
   const daily = report.daily.every(day => isCompleteTurnoverDailyRow(day, mode))
     ? report.daily : report.daily.filter(day => isCompleteTurnoverDailyRow(day, mode));
   const excluded = report.rows.length - rows.length;
@@ -75,7 +84,7 @@ export function completeTurnoverReport<T extends TurnoverReport | TurnoverPrevie
       stockCost: null, frozen30Cost: null, frozen60Cost: null, frozen90Cost: null, costCoveragePct: null
     },
     warnings: [...report.warnings,
-      "Итоги исходной выборки не показаны: состав строк изменён, а атомарные данные для пересчёта отсутствуют. Показаны только строки с полным расчётом; это не полный итог источника.",
+      "Итоги исходной выборки не показаны: состав строк изменён, а атомарные данные для пересчёта отсутствуют.",
       "Пустые ячейки дополнительных расчётов означают, что показатель недоступен; неизвестные значения не заменены нулями."]
   } as T;
 }

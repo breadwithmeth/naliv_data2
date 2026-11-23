@@ -108,6 +108,8 @@ export type TurnoverRow = {
   stockDays: number | null;
   lastSaleDate: string | null;
   daysWithoutMovement: number | null;
+  /** Positive closing stock and no recorded sales, returns or purchases in the verified period. */
+  idleStock?: true;
   noSalesHistory: boolean;
   observedDays: number;
   expectedDays: number;
@@ -154,6 +156,8 @@ export type TurnoverReport = {
   rows: TurnoverRow[];
   /** Atomic rows excluded for unavailable selected-mode calculation fields. */
   excludedIncompleteRows?: number;
+  /** Server already applied the default eligibility rule to atomic rows before aggregation. */
+  populationFiltered?: true;
   daily: TurnoverDailyRow[];
   /** Actual table population after every filter, independent of display grouping. */
   totals: TurnoverTotals;
@@ -198,7 +202,7 @@ export type TurnoverReport = {
 
 export type TurnoverPreviewRow = Pick<TurnoverRow,
   "key" | "name" | "sku" | "article" | "storeKey" | "storeName" | "categoryName" | "rootGroupKey" | "rootGroupName" | "unit" |
-  "noSalesHistory" | "openingQty" | "closingQty" | "averageQty" |
+  "noSalesHistory" | "idleStock" | "openingQty" | "closingQty" | "averageQty" |
   "openingCost" | "closingCost" | "averageCost" | "periodSales" |
   "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays" |
   "stockDays" | "risks" | "daily"

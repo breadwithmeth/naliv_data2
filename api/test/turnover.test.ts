@@ -147,9 +147,10 @@ test("default turnover population is filtered before daily, grouping and totals,
   let unavailableOpening = false;
   let unknownUnit = false;
   let mixedUnits = false;
+  let firstItemName = "complete";
   const source = () => ({
     items: ["complete", "missing-cost", "zero-sales", "returns"].map(key => ({
-      key, name: key, parent: null, folder: false, article: null, code: null, group: "group", brand: null,
+      key, name: key === "complete" ? firstItemName : key, parent: null, folder: false, article: null, code: null, group: "group", brand: null,
       unit: unknownUnit ? null : mixedUnits && key === "missing-cost" ? "piece" : "litre", minimums: {}
     })),
     stores: [{ key: "s", name: "Shop" }], warehouses: [], brands: [], groups: [{ key: "group", name: "Group" }],
@@ -159,7 +160,7 @@ test("default turnover population is filtered before daily, grouping and totals,
     sales: ["complete", "missing-cost", "zero-sales", "returns"].map(sku => ["s", sku, "", dates.map(date =>
       [date, sku === "zero-sales" ? 0 : sku === "returns" ? -1 : 2, sku === "zero-sales" ? 0 : sku === "returns" ? -15 : 30, sku !== "returns" && sku !== "zero-sales"])]),
     costs: ["complete", "zero-sales", "returns"].map(sku => [0, "s", sku, "", "2026-10-01T00:00:00", 10]),
-    orders: [], receipts: [], lastSales: [], firstStock: [], salesDays: dates.map(date => ["s", date]),
+    orders: [], receipts: [], idleStockActivity: [], lastSales: [], firstStock: [], salesDays: dates.map(date => ["s", date]),
     receiptDays: [], barcodes: [], bounds: { firstStock: dates[0], lastStock: "2026-11-04", firstSales: dates[0], lastSales: dates[2] }
   });
   const originalQuery = prisma.$queryRaw;
@@ -244,6 +245,13 @@ test("default turnover population is filtered before daily, grouping and totals,
     assert.equal(raw.excludedIncompleteRows, 0);
     assert.equal(raw.totals.overall.periodSales.cost, null);
     assert.equal(raw.rows.find(row => row.sku === "zero-sales")!.turnoverQtyDays, null);
+    firstItemName = "Пластиковая бутылка 1л";
+    const withoutBottle = await getTurnoverReport({ ...request, includeIncomplete: true }, reloadReader);
+    assert.equal(withoutBottle.rows.some(row => row.sku === "complete"), false);
+    assert.equal(withoutBottle.options.skus.some(option => option.key === "complete"), false);
+    assert.equal(withoutBottle.totals.overall.closingQty, 30);
+    assert.equal(withoutBottle.totals.overall.periodSales.quantity, 3);
+    firstItemName = "complete";
     transferScenario = true;
     const filteredTransfers = await getTurnoverReport(request, reloadReader);
     assert.equal(filteredTransfers.excludedIncompleteRows, 1);

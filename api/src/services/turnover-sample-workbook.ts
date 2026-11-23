@@ -5,7 +5,7 @@ import type { Writable } from "node:stream";
 import { setImmediate } from "node:timers/promises";
 import type { TurnoverMode, TurnoverReport, TurnoverRow, TurnoverTotal, TurnoverUnitTotal } from "./turnover-types.js";
 import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
-import { turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows, turnoverUnitLabels } from "./turnover-presentation.js";
+import { TURNOVER_IDLE_LABEL, turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows, turnoverUnitLabels } from "./turnover-presentation.js";
 import { chronologicalStock, completeTurnoverReport } from "./turnover-domain.js";
 
 const MAIN_UNITS = "рассчет оборачиваемости";
@@ -223,7 +223,7 @@ async function createSheets(workbook: StreamingWorkbook, entries: Iterable<Layou
   });
   setFullPageSetup(main);
   if (options.autoFilter) main.autoFilter = `A1:${columnLetter(totalColumns)}1`;
-  const header = main.addRow(["Номенклатура ", ...turnoverStandardColumns(days).map(column => column.label)]);
+  const header = main.addRow(["Номенклатура ", ...turnoverStandardColumns(days, options.mode).map(column => column.label)]);
   if (options.mode === "money") header.getCell(1).note = "Денежные показатели — по себестоимости, ₸.";
   header.commit();
 
@@ -256,6 +256,7 @@ async function createSheets(workbook: StreamingWorkbook, entries: Iterable<Layou
     const mainRow = main.addRow([]);
     mainRow.values = mainCellValues(entry, days, options, salesRow.number, footer)
       .map(value => value === null && footer && options.includeIncomplete ? "n/a" : replaceRowReference(value, mainRow.number)) as ExcelJS.CellValue[];
+    if ("idleStock" in entry.row && entry.row.idleStock) mainRow.getCell(turnoverDaysColumn).value = TURNOVER_IDLE_LABEL;
     if (footer) for (const row of [mainRow, salesRow]) {
       row.font = { name: "Calibri", size: 11, bold: true };
       row.eachCell(cell => { cell.border = { top: { style: "thin", color: { argb: "FF9CA3AF" } } }; });

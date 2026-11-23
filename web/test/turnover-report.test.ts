@@ -71,13 +71,34 @@ function builder(to = "2026-11-03"): string {
   }));
 }
 
+test("confirmed idle stock is visible by default and is not presented as zero turnover days", () => {
+  const data = report();
+  const product = data.rows[0]!;
+  Object.assign(product, { idleStock: true, turnoverQty: 0, turnoverQtyDays: null,
+    periodSales: { quantity: 0, cost: 0, revenue: 0, averageDailyQty: 0, averageDailyCost: 0 } });
+  const cells = productCells(render(data));
+  assert.deepEqual(cells.slice(-5), ["10", "0", "3", "0", "Без движения"]);
+});
+
+test("a network SKU with active sales and unvalued idle stock keeps its quantity and does not claim network inactivity", () => {
+  const data = report();
+  data.params.mode = "both";
+  data.populationFiltered = true;
+  const product = data.rows[0]!;
+  product.averageCost = product.turnoverCost = product.turnoverCostDays = null;
+  const [quantity, money] = tables(render(data));
+  assert.deepEqual(productCells(quantity).slice(-3), ["3", "25", "1,2"]);
+  assert.deepEqual(productCells(money).slice(-3), ["3", "250", "—"]);
+  assert.doesNotMatch(money, /Без движения/);
+});
+
 test("primary result uses the supplied standard daily table instead of an extra summary format", () => {
   const html = render(report());
   const headers = section(html, "thead");
   for (const label of [
     "Номенклатура", "01.11.", "01.11. / 2", "02.11.", "03.11. / 2", "03.11.",
     "сумма остатков за период ", "средний товарный запас в шт ", "Коэффицент оборачиваемости",
-    "количество дней в периоде ", "продажи в шт за период ", "количесто дней оборота в шт "
+    "количество дней в периоде ", "продажи в шт за период ", "количество дней оборота"
   ]) assert.ok(headers.includes(`>${label}</th>`), `missing standard column ${label}`);
   assert.equal((headers.match(/scope="col"/g) ?? []).length, 12);
   assert.deepEqual(productCells(html), ["8", "4", "10", "6", "12", "20", "10", "2,5", "3", "25", "1,2"]);
@@ -158,12 +179,20 @@ test("preview combines shortening and exclusions in one short notice and keeps f
 test("money standard table uses supplied stock cost and sales cost with an explicit cost-basis caption", () => {
   const data = report();
   data.params.mode = "money";
+  const product = data.rows[0]!;
+  product.periodSales = { ...product.periodSales, cost: 150 };
+  product.turnoverCost = 1.5;
+  product.turnoverCostDays = 2;
   const html = render(data);
   assert.match(section(html, "caption"), /Деньги по себестоимости, ₸/);
-  assert.deepEqual(productCells(html), ["80", "40", "100", "60", "120", "200", "100", "2,5", "3", "250", "1,2"]);
+  assert.deepEqual(productCells(html), ["80", "40", "100", "60", "120", "200", "100", "1,5", "3", "150", "2"]);
   assert.doesNotMatch(section(html, "tbody"), />400<\/td>/);
   assert.doesNotMatch(html, /Розничная выручка|SKU|Артикул|>Единица<\/th>|>Магазин<\/th>/);
-  assert.equal((section(html, "tbody").match(/turnover-coefficient-orange/g) ?? []).length, 1);
+  const headers = section(html, "thead");
+  for (const label of ["сумма остатков за период, ₸", "средний товарный запас, ₸", "себестоимость продаж, ₸", "количество дней оборота"]) {
+    assert.ok(headers.includes(`>${label}</th>`), `missing money column ${label}`);
+  }
+  assert.doesNotMatch(headers, /в шт/);
 });
 
 test("both mode renders two labelled standard tables with separate authoritative footers and one pagination", () => {
@@ -175,6 +204,8 @@ test("both mode renders two labelled standard tables with separate authoritative
   assert.equal(blocks.length, 2);
   assert.match(section(blocks[0], "caption"), /Количество, в единицах товара/);
   assert.match(section(blocks[1], "caption"), /Деньги по себестоимости, ₸/);
+  assert.match(section(blocks[0], "thead"), /продажи в шт за период/);
+  assert.match(section(blocks[1], "thead"), /себестоимость продаж, ₸/);
   for (const block of blocks) assert.equal((section(block, "thead").match(/scope="col"/g) ?? []).length, 12);
   assert.deepEqual(productCells(blocks[0]), ["8", "4", "10", "6", "12", "20", "10", "2,5", "3", "25", "1,2"]);
   assert.deepEqual(productCells(blocks[1]), ["80", "40", "100", "60", "120", "200", "100", "2,5", "3", "250", "1,2"]);
@@ -186,15 +217,17 @@ test("both mode renders two labelled standard tables with separate authoritative
 test("coefficient color uses raw thresholds and unknown numbers have a neutral accessible dash", () => {
   const data = report();
   data.params.includeIncomplete = true;
-  data.rows = [1.999, 2, 3, null, NaN, Infinity].map((value, index) => ({ ...row(index), turnoverQty: value }));
+  data.rows = [0.999, 1, 1.999, 2, 2.999, 3, null, NaN, Infinity].map((value, index) => ({ ...row(index), turnoverQty: value }));
   const body = section(render(data), "tbody");
   assert.equal((body.match(/turnover-coefficient-red/g) ?? []).length, 1);
-  assert.equal((body.match(/turnover-coefficient-orange/g) ?? []).length, 1);
+  assert.equal((body.match(/turnover-coefficient-orange/g) ?? []).length, 2);
   assert.equal((body.match(/turnover-coefficient-green/g) ?? []).length, 1);
-  assert.match(body, /turnover-coefficient-red[^>]*>2</);
+  assert.match(body, /turnover-coefficient-red[^>]*>1</);
+  assert.match(body, /<td class="turnover-numeric">1<\/td>/);
+  assert.match(body, /<td class="turnover-numeric">2<\/td>/);
   for (const label of ["Плохо", "Средне", "Хорошо"]) assert.match(body, new RegExp(`turnover-visually-hidden">[^<]*${label}`));
   assert.equal((body.match(/aria-label="Показатель не рассчитан"/g) ?? []).length, 3);
-  assert.equal((body.match(/>1,2<\/td>/g) ?? []).length, 6);
+  assert.equal((body.match(/>1,2<\/td>/g) ?? []).length, data.rows.length);
   assert.doesNotMatch(body, /n\/a/);
 });
 

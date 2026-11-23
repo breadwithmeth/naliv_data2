@@ -19,7 +19,7 @@ turnoverRouter.get("/turnover", asyncHandler(async (req, res) => {
         key: row.key, name: row.name, sku: row.sku, article: row.article,
         storeKey: row.storeKey, storeName: row.storeName, categoryName: row.categoryName, unit: row.unit,
         rootGroupKey: row.rootGroupKey, rootGroupName: row.rootGroupName,
-        noSalesHistory: row.noSalesHistory, openingQty: row.openingQty, closingQty: row.closingQty,
+        noSalesHistory: row.noSalesHistory, idleStock: row.idleStock, openingQty: row.openingQty, closingQty: row.closingQty,
         averageQty: row.averageQty, openingCost: row.openingCost, closingCost: row.closingCost,
         averageCost: row.averageCost, periodSales: row.periodSales, turnoverQty: row.turnoverQty,
         turnoverQtyDays: row.turnoverQtyDays, turnoverCost: row.turnoverCost,
@@ -66,12 +66,13 @@ turnoverRouter.get("/turnover.xlsx", asyncHandler(async (req, res) => {
     return JSON.stringify({
       base64: Buffer.concat(chunks).toString("base64"),
       rows: report.summary.rowCount,
-      generatedAt: report.generatedAt
+      generatedAt: report.generatedAt,
+      to: report.params.to
     });
   }, { kind: "all" });
-  const payload = JSON.parse(snapshot.value) as { base64: string; rows: number; generatedAt: string };
+  const payload = JSON.parse(snapshot.value) as { base64: string; rows: number; generatedAt: string; to: string };
   const buffer = Buffer.from(payload.base64, "base64");
-  const filename = `turnover_${query.from}_${query.to}.xlsx`;
+  const filename = `turnover_${query.from}_${payload.to}.xlsx`;
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Report-Cache", snapshot.status);
   res.setHeader("X-Report-Rows", String(payload.rows));

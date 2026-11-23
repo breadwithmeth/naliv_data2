@@ -3,13 +3,14 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { prisma } from "../prisma.js";
 import {
-  chronologicalStock, evaluateTurnoverRisks, isCompleteTurnoverRow, planTurnoverTransfers, salesChange,
+  chronologicalStock, evaluateTurnoverRisks, includeTurnoverRow, planTurnoverTransfers, salesChange,
   sumNullable, turnoverRatios, turnoverSales
 } from "./turnover-domain.js";
 import {
   buildPhysicalStoreIndex, isUsableWarehouse, type PhysicalStore, type PhysicalStoreIndex, type StoreDirectoryEntry
 } from "./turnover-stores.js";
-import { evaluateCoverage, getReloadReadiness } from "./reload-readiness.js";
+import { evaluateCoverage, getReloadReadiness, type ReloadReadinessState } from "./reload-readiness.js";
+import { isExcludedTurnoverItem } from "./turnover-exclusions.js";
 import { buildTurnoverRootGroups, compareTurnoverPresentationRows } from "./turnover-presentation.js";
 import type {
   TurnoverDailyRow, TurnoverNorms, TurnoverOption, TurnoverPolicy, TurnoverReport,
@@ -107,8 +108,6 @@ export const turnoverQuerySchema = z.object({
   }
 }).transform((value) => ({
   ...value,
-  comparisonFrom: value.comparisonFrom ?? shiftDate(value.from, -dayCount(value.from, value.to)),
-  comparisonTo: value.comparisonTo ?? value.from,
   norms: value.norms ? {
     defaults: value.norms.defaults,
     categories: Object.fromEntries(Object.entries(value.norms.categories).sort(([a], [b]) => a.localeCompare(b)))
@@ -132,6 +131,7 @@ type Sources = {
   selectedSkus: string[];
   stock: StockFact[]; sales: SaleFact[]; costs: CostFact[]; orders: OrderFact[]; receipts: ReceiptFact[];
   lastSales: [store: string, sku: string, date: string | null][];
+  idleStockActivity: [sku: string | null, headerStore: string | null, warehouseStore: string | null][];
   firstStock: [store: string, sku: string, date: string][];
   salesDays: [store: string, date: string][]; receiptDays: [store: string, date: string][]; barcodes: [sku: string, codes: string[]][];
   bounds: { firstStock: string | null; lastStock: string | null; firstSales: string | null; lastSales: string | null };
@@ -188,7 +188,9 @@ async function loadStoreDirectory(to?: string): Promise<StoreDirectory> {
 
 // One statement gives catalog, balances, sales and prices the same PostgreSQL
 // MVCC snapshot. SQL groups sparse facts first; it never builds a SKU×day grid.
-async function loadSources(params: NormalizedTurnoverRequest, searchKeys: string[] | undefined, sourceStoreKeys: string[]): Promise<Sources> {
+async function loadSources(
+  params: NormalizedTurnoverRequest, searchKeys: string[] | undefined, sourceStoreKeys: string[], certifyIdleStock: boolean
+): Promise<Sources> {
   const balances = table("accumulation_register_tovary_na_skladah_balance");
   const reports = table("document_otchet_o_roznichnyh_prodazhah");
   const saleLines = table("document_otchet_o_roznichnyh_prodazhah_tovary");
@@ -227,6 +229,35 @@ async function loadSources(params: NormalizedTurnoverRequest, searchKeys: string
     return params.category.length > 0 || params.brand || searchKeys !== undefined
       ? Prisma.sql`${expression} in (select ref_key from selected_items)` : Prisma.sql`${expression} is not null`;
   };
+  const unknownKey = (expression: Prisma.Sql) => Prisma.sql`(${expression} is null or ${expression} in ('', ${EMPTY_GUID}, ${UNKNOWN}))`;
+  const activityRetailLines = (lines: Prisma.Sql) => Prisma.sql`
+    select l.nomenklatura_key as sku, r.magazin_key as header_store, l.sklad_key as warehouse
+    from report_headers r join ${lines} l on l."_parent_ref_key" = r.ref_key
+    where r.date >= ${params.from}::timestamp and r.date < ${params.to}::timestamp`;
+  // Independent of the open-order receipt arithmetic; evidence is line
+  // presence, including unattributed lines and a missing or zero quantity.
+  // Retained KKM goods have no warehouse column. A cheque line vetoes
+  // inactivity at its outlet even if an unrelated shift already reported sales.
+  const idleStockActivity = certifyIdleStock && sourceStoreKeys.length ? Prisma.sql`
+    coalesce((select jsonb_agg(jsonb_build_array(sku, header_store, store_key)) from (
+      select distinct a.sku, a.header_store, w.store_key
+      from (
+        ${activityRetailLines(saleLines)}
+        union all ${activityRetailLines(returnLines)}
+        union all
+        select l.nomenklatura_key, d.magazin_key, d.sklad_key
+        from ${receipts} d join ${receiptLines} l on l."_parent_ref_key" = d.ref_key
+        where d.posted = true and d.deletion_mark is not true
+          and d.date >= ${params.from}::timestamp and d.date < ${params.to}::timestamp
+        union all
+        select l.nomenklatura_key, d.magazin_key, null::text
+        from ${table("document_chek_kkm")} d join ${table("document_chek_kkm_tovary")} l on l."_parent_ref_key" = d.ref_key
+        where d.posted = true and d.deletion_mark is not true
+          and d.date >= ${params.from}::timestamp and d.date < ${params.to}::timestamp
+      ) a left join warehouse_map w on w.ref_key = a.warehouse
+      where (${itemCondition(Prisma.sql`a.sku`)} or ${unknownKey(Prisma.sql`a.sku`)})
+        ${params.warehouse ? Prisma.sql`and (${scopeWarehouse(Prisma.sql`a.warehouse`)} or ${unknownKey(Prisma.sql`a.warehouse`)})` : Prisma.empty}
+    ) activity), '[]'::jsonb)` : Prisma.sql`'[]'::jsonb`;
   const includeCosts = params.mode !== "quantity";
   const includeBarcodes = params.profile === "full";
   // Full reports keep SKUs whose only recorded movement is a prior return.
@@ -452,6 +483,7 @@ async function loadSources(params: NormalizedTurnoverRequest, searchKeys: string
       'costs', coalesce((select jsonb_agg(jsonb_build_array(priority, store_key, sku, characteristic, to_char(at, 'YYYY-MM-DD"T"HH24:MI:SS.US'), price) order by priority, store_key, sku, characteristic, at) from costs), '[]'::jsonb),
       'orders', coalesce((select jsonb_agg(jsonb_build_array(store_key, sku, to_char(at, 'YYYY-MM-DD"T"HH24:MI:SS.US'), ref_key, qty, to_char(delivery, 'YYYY-MM-DD'))) from ordered), '[]'::jsonb),
       'receipts', coalesce((select jsonb_agg(jsonb_build_array(order_key, sku, to_char(at, 'YYYY-MM-DD"T"HH24:MI:SS.US'), qty)) from received), '[]'::jsonb),
+      'idleStockActivity', ${idleStockActivity},
       'lastSales', coalesce((select jsonb_agg(jsonb_build_array(store_key, sku, to_char(day, 'YYYY-MM-DD'))) from last_sales), '[]'::jsonb),
       'firstStock', coalesce((select jsonb_agg(jsonb_build_array(store_key, sku, to_char(day, 'YYYY-MM-DD'))) from first_stock), '[]'::jsonb),
       'salesDays', coalesce((select jsonb_agg(jsonb_build_array(store_key, to_char(day, 'YYYY-MM-DD'))) from sales_coverage), '[]'::jsonb),
@@ -546,7 +578,7 @@ function isZeroTurnoverRow(row: TurnoverRow, mode: "quantity" | "money" | "both"
     && (!checkMoney || (day.stockCost === 0 && day.salesCost === 0 && day.revenue === 0)));
 }
 
-function aggregateRows(rows: TurnoverRow[], key: string, name: string, days: number, params: NormalizedTurnoverRequest, dailyOverride?: TurnoverDailyRow[], retainAudit = false): TurnoverRow {
+function aggregateRows(rows: TurnoverRow[], key: string, name: string, days: number, params: NormalizedTurnoverRequest, idleMembers: boolean, dailyOverride?: TurnoverDailyRow[], retainAudit = false): TurnoverRow {
   const first = rows[0]!;
   const same = <K extends keyof TurnoverRow>(property: K) => rows.every((row) => row[property] === first[property]);
   const sum = (property: "openingQty" | "closingQty" | "openingCost" | "closingCost" | "excessQty" | "deficitQty" | "recommendedOrderQty" | "openOrderQty") =>
@@ -588,6 +620,7 @@ function aggregateRows(rows: TurnoverRow[], key: string, name: string, days: num
     rootGroupName: same("rootGroupKey") ? first.rootGroupName : "Несколько групп",
     brandKey: same("brandKey") ? first.brandKey : null, brandName: same("brandName") ? first.brandName : "Несколько брендов", unit: first.unit,
     openingQty: sum("openingQty"), closingQty, averageQty, openingCost: sum("openingCost"), closingCost: sum("closingCost"), averageCost,
+    ...(idleMembers && closingQty !== null && closingQty > 0 ? { idleStock: true as const } : {}),
     periodSales, comparisonSales, quantityChange: salesChange(periodSales.quantity, comparisonSales.quantity),
     costChange: salesChange(periodSales.cost, comparisonSales.cost), windows,
     turnoverQty: qtyRatio.coefficient, turnoverQtyDays: qtyRatio.days,
@@ -737,21 +770,55 @@ export function certifiedTurnoverEnd(readiness: Awaited<ReturnType<typeof getRel
   return ends.some((end) => end === null) ? null : ends.sort()[0]!;
 }
 
-export async function getTurnoverReport(request: TurnoverRequest, reloadReader = getReloadReadiness): Promise<TurnoverReport> {
-  const readiness = await reloadReader();
-  let params: NormalizedTurnoverRequest = turnoverQuerySchema.parse(request);
-  // An open period (e.g. the whole current month) cannot have today's or future
-  // reports and closing stock: analyse the certified part and say so explicitly.
+// Require coverage of the retained goods parts, not just the document
+// headers. The supplier receipt ledger uses its table name as the source key.
+const IDLE_STOCK_SOURCES = [
+  { key: "retail", entity: "Document_ОтчетОРозничныхПродажах", tables: [
+    "document_otchet_o_roznichnyh_prodazhah", "document_otchet_o_roznichnyh_prodazhah_tovary",
+    "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary"
+  ] },
+  { key: "receipts", entity: "Document_ЧекККМ", tables: ["document_chek_kkm", "document_chek_kkm_tovary"] },
+  { key: "document_postuplenie_tovarov", entity: "Document_ПоступлениеТоваров",
+    tables: ["document_postuplenie_tovarov", "document_postuplenie_tovarov_tovary"] }
+] as const;
+
+function resolveTurnoverPeriod(
+  query: z.output<typeof turnoverQuerySchema>, readiness: ReloadReadinessState
+): { params: NormalizedTurnoverRequest; requestedTo: string | null } {
+  // Only an automatically derived comparison can follow a shortened period.
   const certifiedEnd = certifiedTurnoverEnd(readiness);
-  let requestedTo: string | null = null;
-  const standardLayout = params.profile === "sample"
-    || (params.profile === "summary" && params.groupBy === "sku" && params.sort === "name");
-  if (certifiedEnd && params.to > certifiedEnd && !request.comparisonTo
-    && dayCount(params.from, certifiedEnd) >= (standardLayout ? 2 : 1)) {
-    requestedTo = params.to;
-    params = turnoverQuerySchema.parse({ ...request, to: certifiedEnd });
-  }
+  const standardLayout = query.profile === "sample"
+    || (query.profile === "summary" && query.groupBy === "sku" && query.sort === "name");
+  const to = certifiedEnd && query.to > certifiedEnd && !query.comparisonTo
+    && dayCount(query.from, certifiedEnd) >= (standardLayout ? 2 : 1) ? certifiedEnd : query.to;
+  return {
+    params: {
+      ...query, to,
+      comparisonFrom: query.comparisonFrom ?? shiftDate(query.from, -dayCount(query.from, to)),
+      comparisonTo: query.comparisonTo ?? query.from
+    },
+    requestedTo: to === query.to ? null : query.to
+  };
+}
+
+export async function getTurnoverReport(request: TurnoverRequest, reloadReader = getReloadReadiness): Promise<TurnoverReport> {
+  const query = turnoverQuerySchema.parse(request);
+  const readiness = await reloadReader();
+  const { params, requestedTo } = resolveTurnoverPeriod(query, readiness);
+  return buildTurnoverReport(params, requestedTo, readiness);
+}
+
+async function buildTurnoverReport(
+  params: NormalizedTurnoverRequest, requestedTo: string | null, readiness: ReloadReadinessState
+): Promise<TurnoverReport> {
   const sourceTo = params.to > params.comparisonTo ? params.to : params.comparisonTo;
+  const period = { from: new Date(params.from), to: new Date(params.to) };
+  const certifyIdleStock = IDLE_STOCK_SOURCES.every(({ key, entity, tables }) => {
+    const ledger = readiness.coverageSources.find(({ source }) => source.key === key)?.source;
+    return ledger?.entity === entity && ledger.kind === "dated" && !ledger.unavailable
+      && tables.every((table) => ledger.tables.includes(table))
+      && evaluateCoverage(readiness, key, period).status === "verified";
+  });
   let source: Sources;
   let storeIndex!: PhysicalStoreIndex;
   let selectedPhysical!: PhysicalStore[];
@@ -767,7 +834,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     // stock recorded under a non-selling duplicate is still counted.
     sourceStoreKeys = selectedPhysical.flatMap((store) => store.sourceKeys);
     const searchKeys = params.search ? await searchItemKeys(params.search) : undefined;
-    source = await loadSources(params, searchKeys, sourceStoreKeys);
+    source = await loadSources(params, searchKeys, sourceStoreKeys, certifyIdleStock);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2010"
       && ["42P01", "42703", "3F000"].includes(String(error.meta?.code))) {
@@ -803,6 +870,28 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     const days = receiptDays.get(store);
     if (days) days.add(date); else receiptDays.set(store, new Set([date]));
   }
+  const activityByStore = new Map<string | null, Set<string | null>>();
+  const activityInNetwork = new Set<string | null>();
+  if (certifyIdleStock) {
+    const selectedStoreKeys = new Set(selectedPhysical.map(({ key }) => key));
+    const recordActivity = (store: string | null, sku: string | null) => {
+      if (store !== null && !selectedStoreKeys.has(store)) return;
+      const recorded = activityByStore.get(store);
+      if (recorded) recorded.add(sku); else activityByStore.set(store, new Set([sku]));
+      activityInNetwork.add(sku);
+    };
+    for (const [rawSku, header, warehouse] of source.idleStockActivity) {
+      const sku = cleanKey(rawSku);
+      const headerStore = storeIndex.bySource.get(cleanKey(header) ?? UNKNOWN);
+      const warehouseStore = storeIndex.bySource.get(cleanKey(warehouse) ?? UNKNOWN);
+      // Conflicting store/warehouse references never pick one outlet and
+      // manufacture a zero at the other. A wholly unresolved location may
+      // belong to any selected store; an unresolved SKU may match any item.
+      recordActivity(headerStore ?? warehouseStore ?? null, sku);
+      if (headerStore && warehouseStore && headerStore !== warehouseStore) recordActivity(warehouseStore, sku);
+    }
+  }
+  const unassignedActivity = activityByStore.get(null);
   const certifiedEmptyDays = new Map<string, boolean>();
   let receiptsWithoutRetailReport = false;
   const costIndex = new Map<string, CostPoint[]>();
@@ -978,17 +1067,29 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     }
     return turnoverSales(quantity, cost, revenue, denominator);
   };
+  const uncertifiedIdleSkus = new Set<string>();
+  const rollupKey = (pair: Pair) => {
+    if (params.profile === "sample") return pair.sku;
+    const group = params.groupBy === "store" ? pair.store : params.groupBy === "category" ? pair.category ?? UNKNOWN : pair.brand ?? UNKNOWN;
+    return `${params.groupBy}/${group}/${pair.unitToken}`;
+  };
   const makeRow = (pair: Pair, from: string, to: string, comparisonFrom: string, comparisonTo: string): TurnoverRow => {
     const dates = calendar(from, to);
     const days = dates.length;
     const opening = stockAt(pair, from);
     const closing = stockAt(pair, to);
+    const periodRow = from === params.from && to === params.to;
+    const storeActivity = activityByStore.get(pair.store);
+    let idleMember = certifyIdleStock && periodRow && closing.quantity !== null
+      && !unassignedActivity?.has(null) && !unassignedActivity?.has(pair.sku)
+      && !storeActivity?.has(null) && !storeActivity?.has(pair.sku);
     const daily: TurnoverDailyRow[] = [];
     let exposure = 0, valued = 0, unknownExposure = false;
     for (let index = 0; index < dates.length; index++) {
       const date = dates[index]!;
       const stock = stockAt(pair, followingDates.get(date)!);
       const sale = salesAt(pair, date);
+      if (idleMember && (sale.quantity !== 0 || pair.sales.has(date))) idleMember = false;
       daily.push({ date, unit: pair.unit, unitKey: pair.unitToken, quantity: stock.quantity, stockCost: stock.cost,
         salesQty: sale.quantity, salesCost: sale.cost, revenue: sale.revenue,
         weight: days === 1 ? 1 : index === 0 || index === days - 1 ? 0.5 : 1 });
@@ -997,6 +1098,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
         else { exposure += Math.abs(quantity!); if (cost !== null) valued += Math.abs(quantity!); }
       }
     }
+    if (params.profile === "sample" && certifyIdleStock && periodRow && !idleMember) uncertifiedIdleSkus.add(pair.sku);
     const averageQty = chronologicalStock(daily, day => day.quantity).average;
     const averageCost = chronologicalStock(daily, day => day.stockCost).average;
     const periodSales = rangeSales(pair, from, to, Math.max(1, days - 1));
@@ -1054,6 +1156,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
       categoryKey: pair.category, categoryName: pair.categoryName, brandKey: pair.brand, brandName: pair.brandName, unit: pair.unit,
       rootGroupKey: pair.rootGroupKey, rootGroupName: pair.rootGroupName,
       openingQty: opening.quantity, closingQty: closing.quantity, averageQty, openingCost: opening.cost, closingCost: closing.cost, averageCost,
+      ...(idleMember && closing.quantity !== null && closing.quantity > 0 ? { idleStock: true as const } : {}),
       periodSales, comparisonSales, quantityChange: salesChange(periodSales.quantity, comparisonSales.quantity),
       costChange: salesChange(periodSales.cost, comparisonSales.cost), windows,
       turnoverQty: quantityRatio.coefficient, turnoverQtyDays: quantityRatio.days,
@@ -1064,9 +1167,16 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
       openOrderQty, nextDeliveryDate, ...risk, daily
     };
   };
+  // Only known catalog items are classified. Source-only keys keep their
+  // existing fallback rows, and store/date coverage stays SKU-independent.
+  const excludedSkus = new Set<string>();
+  for (const item of source.items) {
+    if (!item.folder && isExcludedTurnoverItem(item.name)) excludedSkus.add(item.key);
+  }
   const search = params.search?.toLocaleLowerCase("ru");
-  const selectedPairs = [...pairs.values()].filter((pair) => !search || [pair.item.name, pair.item.article ?? "", pair.item.code ?? "", pair.sku, ...pair.barcodes]
-    .some((value) => value.toLocaleLowerCase("ru").includes(search)));
+  const selectedPairs = [...pairs.values()].filter((pair) => !excludedSkus.has(pair.sku)
+    && (!search || [pair.item.name, pair.item.article ?? "", pair.item.code ?? "", pair.sku, ...pair.barcodes]
+      .some((value) => value.toLocaleLowerCase("ru").includes(search))));
   const consolidateStores = params.profile === "sample";
   const retainSkuAudit = Boolean(params.sku && items.get(params.sku)?.folder !== true);
   const retainReportDaily = params.profile === "full" || params.groupBy === "day";
@@ -1076,21 +1186,19 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   const pairByKey = new Map(selectedPairs.map((pair) => [`${pair.key}/${params.from}/${params.to}`, pair]));
   let excludedIncompleteRows = 0;
   let missingPeriodSales = false, missingWindowSales = false, missingMoney = false;
-  for (const pair of selectedPairs) {
-    const row = makeRow(pair, params.from, params.to, params.comparisonFrom, params.comparisonTo);
-    if (params.excludeZero && isZeroTurnoverRow(row, params.mode)) continue;
+  const collect = (pair: Pair, row: TurnoverRow, eligible: boolean, networkIdle: boolean) => {
+    if (params.excludeZero && !row.idleStock && !(networkIdle && row.closingQty !== 0) && isZeroTurnoverRow(row, params.mode)) return;
     missingPeriodSales ||= row.periodSales.quantity === null;
     missingWindowSales ||= row.windows.some(window => window.sales.quantity === null || window.previousSales.quantity === null);
     missingMoney ||= row.periodSales.cost === null || row.averageCost === null;
-    if (!params.includeIncomplete && !isCompleteTurnoverRow(row, params.mode)) {
+    if (!params.includeIncomplete && !eligible) {
       if (params.risk === "all" || row.risks.includes(params.risk)) excludedIncompleteRows++;
-      continue;
+      return;
     }
     if (params.risk === "all" || row.risks.includes(params.risk)) {
       mergeDaily(reportDaily, row.daily);
       if (consolidateStores || params.groupBy === "store" || params.groupBy === "category" || params.groupBy === "brand") {
-        const groupKey = params.groupBy === "store" ? pair.store : params.groupBy === "category" ? pair.category ?? UNKNOWN : pair.brand ?? UNKNOWN;
-        const key = consolidateStores ? pair.sku : `${params.groupBy}/${groupKey}/${pair.unitToken}`;
+        const key = rollupKey(pair);
         let days = groupedDaily.get(key);
         if (!days) { days = new Map(); groupedDaily.set(key, days); }
         mergeDaily(days, row.daily);
@@ -1101,6 +1209,31 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
       || (params.profile === "summary" && params.groupBy === "sku" && params.sort === "name"));
     if (!keepDaily) row.daily = [];
     atomicRows.push(row);
+  };
+  const idleNetworkSkus = new Set<string>();
+  if (!consolidateStores) {
+    for (const pair of selectedPairs) {
+      const row = makeRow(pair, params.from, params.to, params.comparisonFrom, params.comparisonTo);
+      collect(pair, row, includeTurnoverRow(row, params.mode), false);
+    }
+  } else {
+    // Certify and admit a network SKU before committing any of its stores to totals.
+    // Buffer daily rows for just one SKU, including offsets at stores with negative stock.
+    const members = new Map<string, Pair[]>();
+    for (const pair of selectedPairs) {
+      const group = members.get(pair.sku);
+      if (group) group.push(pair); else members.set(pair.sku, [pair]);
+    }
+    for (const [sku, pairs] of members) {
+      const rows = pairs.map(pair => makeRow(pair, params.from, params.to, params.comparisonFrom, params.comparisonTo));
+      const idle = certifyIdleStock && !uncertifiedIdleSkus.has(sku) && !activityInNetwork.has(null)
+        && !activityInNetwork.has(sku) && rows.reduce((n, row) => n + (row.closingQty ?? 0), 0) > 0;
+      if (idle) idleNetworkSkus.add(sku);
+      const active = rows.some(row => !row.idleStock && includeTurnoverRow(row, params.mode)
+        && (params.risk === "all" || row.risks.includes(params.risk)));
+      rows.forEach((row, i) => collect(pairs[i]!, row,
+        idle || (active && includeTurnoverRow(row, params.mode)), idle));
+    }
   }
   const visibleAtomic = params.risk === "all" ? atomicRows : atomicRows.filter((row) => row.risks.includes(params.risk as Exclude<typeof params.risk, "all">));
   const transfers = params.profile === "sample" ? [] : planTurnoverTransfers(params.includeIncomplete ? atomicRows : visibleAtomic);
@@ -1121,15 +1254,15 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
     const grouped = new Map<string, { name: string; rows: TurnoverRow[] }>();
     for (const row of visibleAtomic) {
       const pair = byAtomicKey.get(row.key)!;
-      const groupKey = params.groupBy === "store" ? pair.store : params.groupBy === "category" ? pair.category ?? UNKNOWN : pair.brand ?? UNKNOWN;
       const name = consolidateStores ? row.name : params.groupBy === "store" ? pair.storeName : params.groupBy === "category" ? pair.categoryName : pair.brandName;
-      const key = consolidateStores ? pair.sku : `${params.groupBy}/${groupKey}/${pair.unitToken}`;
+      const key = rollupKey(pair);
       const group = grouped.get(key);
       if (group) group.rows.push(row); else grouped.set(key, { name, rows: [row] });
     }
     rows = [...grouped].map(([key, group]) => {
       const row = aggregateRows(group.rows, consolidateStores ? `sample\u0000${key}/${params.from}/${params.to}` : key,
         group.name, dayCount(params.from, params.to), params,
+        consolidateStores && idleNetworkSkus.has(key),
         [...groupedDaily.get(key)!.values()].sort((a, b) => a.date.localeCompare(b.date)),
         consolidateStores || retainSkuAudit || params.auditGroup === key);
       if (consolidateStores && !params.warehouse) row.warehouseName = "Все склады";
@@ -1155,8 +1288,9 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   const missingStockDates = expectedDates.filter((date) => !snapshots.has(shiftDate(date, 1)));
   const observedDays = expectedDates.length - missingStockDates.length;
   const warningSet = new Set<string>();
+  if (!certifyIdleStock) warningSet.add("Нельзя подтвердить отсутствие продаж, возвратов и закупок: за выбранный период загрузка розничных отчётов, чеков или поступлений не полностью проверена.");
   if (!params.includeIncomplete) {
-    warningSet.add("По строкам с полным расчётом: итоги относятся только к включённым SKU/магазинам, а не ко всей исходной выборке. Пустые дополнительные показатели не заменены нулями.");
+    warningSet.add("Итоги рассчитаны по включённым товарам и магазинам. В выборку входят и остатки без продаж и закупок. Нерассчитанные значения не заменены нулями.");
     if (excludedIncompleteRows) warningSet.add(`Исключено строк без полного расчёта: ${excludedIncompleteRows}. Включите строки без полного расчёта, чтобы проверить исходные данные.`);
   }
   if (!atomicRows.length) warningSet.add("Фильтрам не соответствуют наблюдаемые остатки, продажи или открытые заказы; отсутствие строк не доказывает нулевые продажи до начала доступной истории.");
@@ -1193,7 +1327,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
   return {
     params, comparison: { from: params.comparisonFrom, to: params.comparisonTo, days: expectedDates.length }, norms: params.norms,
     rows, daily: retainReportDaily ? [...reportDaily.values()].sort((a, b) => a.date.localeCompare(b.date) || a.unit.localeCompare(b.unit, "ru")) : [], transfers,
-    totals, excludedIncompleteRows,
+    totals, excludedIncompleteRows, populationFiltered: params.includeIncomplete ? undefined : true,
     summary: {
       rowCount: params.groupBy === "day" ? reportDaily.size : rows.length,
       totalRowCount: atomicRows.length, skuCount: new Set(atomicRows.map((row) => row.sku)).size,
@@ -1216,7 +1350,8 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
       warehouses: physicalWarehouses,
       categories: optionSort([...categoryOptions].map(([key, name]) => ({ key, name }))),
       brands: optionSort([...brandOptions].map(([key, name]) => ({ key, name }))),
-      skus: optionSort(source.items.filter((item) => !item.folder).map((item) => ({ key: item.key, name: `${item.name}${item.article ? ` · ${item.article}` : ""}` })))
+      skus: optionSort(source.items.filter((item) => !item.folder && !excludedSkus.has(item.key))
+        .map((item) => ({ key: item.key, name: `${item.name}${item.article ? ` · ${item.article}` : ""}` })))
     },
     coverage: {
       firstStockDate: source.bounds.firstStock, lastStockDate: source.bounds.lastStock,
@@ -1234,7 +1369,7 @@ export async function getTurnoverReport(request: TurnoverRequest, reloadReader =
       "Единица — ссылка базовой единицы карточки 1С. Разные ссылки, включая одинаковые подписи, разделены и различимы по суффиксу; неизвестная единица изолирована по SKU. Литры, килограммы и штуки не суммируются.",
       "Магазин — физическая точка: ключи catalog_magaziny с одинаковым точным адресом от «г.» объединяются, остатки и продажи юридических лиц суммируются, а себестоимость каждого исходного ключа применяется до объединения. По умолчанию retail-охват включает только физические магазины с проведёнными розничными отчётами; офисы и отделы доступны явно через storeScope=all. Склад по умолчанию — склад выбранного магазина; удалённые и помеченные «не использовать» склады исключены.",
       "excludeZero удаляет строку только тогда, когда все дневные остатки и продажи равны точному нулю за весь период в выбранном режиме. Пропуски, null и нулевая продажа при ненулевом остатке не считаются нулевой строкой.",
-      "includeIncomplete=false исключает SKU/магазин с недоступными расчётными полями выбранного режима до объединения дневных данных, групп, перемещений и итогов. Нулевые/отрицательные известные значения не заменяются и не являются самостоятельной причиной исключения; отсутствие вычислимых дней оборота — причина. Артикул и штрихкод необязательны. includeIncomplete=true возвращает исходный расчёт с недоступными значениями.",
+      "По умолчанию в отбор входят строки с полным расчётом и товары с положительным конечным остатком без продаж, возвратов и закупок за проверенный период. Закупка — проведённое поступление товара, а не заказ поставщику. Дни оборота при нулевых продажах не определены. includeIncomplete=true дополнительно возвращает прочие строки с недоступными значениями.",
       "Классификация — текущая товарная группа карточки, иначе ближайшая папка номенклатуры; фильтр категории-папки включает потомков, конкретный SKU отбирается по точной ссылке. Нормативы наследуются от родительских папок к ближайшей категории. Историческая классификация и бренды из названий не восстанавливаются.",
       "Дни без движения считаются до последнего дня выбранного периода по последней положительной продаже SKU в конкретном магазине за всю доступную историю; возвраты её не обновляют. При полном отсутствии продаж возраст без движения ограничен первой наблюдаемой положительной доступностью SKU.",
       "Дни запаса = конечный остаток / среднедневные нетто-продажи выбранного горизонта. Цель 30 дней — редактируемое прикладное значение, не норма 1С. Целевое количество = max(спрос × max(целевые дни, известный срок поставки), известный минимум карточки); открытые заказы вычитаются из заказа. Нулевой наблюдаемый спрос не создаёт заказ только ради минимума. Денежный порог и срок поставки неизвестны, пока явно не заданы; минимум карточки используется лишь при подтверждённом сопоставлении магазина с нормативным полем 1С.",
@@ -1296,8 +1431,11 @@ export async function getTurnoverOptions(): Promise<TurnoverOptions> {
 }
 
 export async function getTurnoverRow(request: TurnoverRequest, reloadReader = getReloadReadiness): Promise<TurnoverRowDetail> {
-  const params = turnoverQuerySchema.parse(request);
-  if (!params.auditGroup) throw Object.assign(new Error("Укажите строку отчёта"), { statusCode: 400 });
+  const query = turnoverQuerySchema.parse(request);
+  const auditGroup = query.auditGroup;
+  if (!auditGroup) throw Object.assign(new Error("Укажите строку отчёта"), { statusCode: 400 });
+  const readiness = await reloadReader();
+  const { params, requestedTo } = resolveTurnoverPeriod(query, readiness);
   let requestedStores = new Set(params.store);
   if (params.groupBy === "sku" && params.profile !== "sample" && params.store.length) {
     const directory = await loadStoreDirectory(params.to);
@@ -1307,8 +1445,8 @@ export async function getTurnoverRow(request: TurnoverRequest, reloadReader = ge
   let scoped = params;
   if (params.groupBy === "sku") {
     const suffix = `/${params.from}/${params.to}`;
-    const [store, sku, extra] = params.auditGroup.endsWith(suffix)
-      ? params.auditGroup.slice(0, -suffix.length).split("\u0000") : [];
+    const [store, sku, extra] = auditGroup.endsWith(suffix)
+      ? auditGroup.slice(0, -suffix.length).split("\u0000") : [];
     if (!store || !sku || extra !== undefined || (params.sku && params.sku !== sku)
       || (params.profile === "sample" ? store !== "sample" : requestedStores.size > 0 && !requestedStores.has(store))) {
       throw Object.assign(new Error("Строка не входит в выбранный отчёт"), { statusCode: 404 });
@@ -1317,8 +1455,8 @@ export async function getTurnoverRow(request: TurnoverRequest, reloadReader = ge
     // seeds unobserved shops, so consolidated details retain the original scope.
     if (params.profile !== "sample") scoped = { ...params, sku };
   }
-  const report = await getTurnoverReport(scoped, reloadReader);
-  const row = report.rows.find(candidate => candidate.key === params.auditGroup);
+  const report = await buildTurnoverReport(scoped, requestedTo, readiness);
+  const row = report.rows.find(candidate => candidate.key === auditGroup);
   if (!row) throw Object.assign(new Error("Строка не найдена. Сформируйте отчёт заново."), { statusCode: 404 });
   return { row, generatedAt: report.generatedAt };
 }

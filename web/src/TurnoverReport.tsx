@@ -6,9 +6,9 @@ import type {
   ReportDateRange, TurnoverOption, TurnoverOptions, TurnoverPreview, TurnoverPreviewRow, TurnoverRequest
 } from "./api";
 import { formatDecimal, formatNumber } from "./format";
-import { completeTurnoverReport, isCompleteTurnoverRow, turnoverCoefficientBand } from "../../api/src/services/turnover-domain";
+import { completeTurnoverReport, includeTurnoverRow, turnoverCoefficientBand } from "../../api/src/services/turnover-domain";
 import {
-  turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows, turnoverStandardValue, turnoverUnitLabels
+  TURNOVER_IDLE_LABEL, turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows, turnoverStandardValue, turnoverUnitLabels
 } from "../../api/src/services/turnover-presentation";
 import type { TurnoverStandardColumn } from "../../api/src/services/turnover-presentation";
 
@@ -44,7 +44,7 @@ type PreviewState =
 const PREVIEW_PAGE_SIZE = 100;
 const COEFFICIENT_LABELS = { red: "Плохо", orange: "Средне", green: "Хорошо" } as const;
 type StandardMetrics = Pick<TurnoverPreviewRow,
-  "daily" | "averageQty" | "averageCost" | "periodSales" |
+  "daily" | "averageQty" | "averageCost" | "periodSales" | "idleStock" |
   "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays"
 >;
 
@@ -193,6 +193,9 @@ function StandardMetricCells({ metrics, columns, mode, periodDays, quantityUnava
   periodDays: number; quantityUnavailable?: boolean;
 }) {
   return <>{columns.map((column, index) => {
+    if (column.kind === "turnoverDays" && metrics.idleStock) {
+      return <td key={index} title="Есть остаток на конец периода, продаж и закупок не было">{TURNOVER_IDLE_LABEL}</td>;
+    }
     const value = quantityUnavailable && column.kind !== "periodDays"
       ? null : turnoverStandardValue(metrics, column, mode, periodDays);
     return column.kind === "coefficient"
@@ -210,8 +213,6 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
   const headingId = useId();
   const noteId = useId();
   const days = turnoverStandardDates(report.params.from, report.params.to);
-  const columns = turnoverStandardColumns(days);
-  const columnCount = columns.length + 1;
   const modes: SampleMode[] = report.params.mode === "both" ? ["quantity", "money"]
     : [report.params.mode === "money" ? "money" : "quantity"];
   const stores = report.params.profile !== "sample";
@@ -229,7 +230,7 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
       ? [`Период сокращён: по ${previewDate(report.params.to, true)} вместо ${previewDate(report.coverage.requestedTo, true)}.`] : []),
     ...(!includeIncomplete && excludedIncompleteRows > 0
       ? [`Исключено строк без полного расчёта: ${formatNumber(excludedIncompleteRows)}.`] : []),
-    ...(includeIncomplete && report.rows.some((row) => !isCompleteTurnoverRow(row, report.params.mode))
+    ...(includeIncomplete && report.rows.some((row) => !includeTurnoverRow(row, report.params.mode ?? "both"))
       ? ["Включены строки без полного расчёта."] : [])
   ];
   return <section className="turnover-preview-results" aria-labelledby={headingId}>
@@ -245,6 +246,8 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
     <p className="turnover-note" id={noteId}>—: показатель не рассчитан.
       {hasNonAdditiveQuantityTotals ? " Количество нельзя сложить: разные или неизвестные единицы." : null}</p>
     {modes.map((mode) => {
+      const columns = turnoverStandardColumns(days, mode);
+      const columnCount = columns.length + 1;
       const quantity = mode === "quantity";
       const caption = quantity ? "Количество, в единицах товара" : "Деньги по себестоимости, ₸";
       const footer = (label: string, total: TurnoverPreview["totals"]["overall"], byUnit: TurnoverPreview["totals"]["byUnit"]) =>

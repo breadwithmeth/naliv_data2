@@ -165,9 +165,9 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
         "document_ustanovka_sebestoimosti_tovary (\"_parent_ref_key\" text, \"_parent_line_index\" bigint, nomenklatura_key text, harakteristika_key text, tsena numeric)",
         "document_zakaz_postavschiku (ref_key text, date timestamp, magazin_key text, sklad_key text, deletion_mark boolean, posted boolean, zakryt boolean, data_postupleniya timestamp)",
         "document_zakaz_postavschiku_tovary (\"_parent_ref_key\" text, nomenklatura_key text, kolichestvo numeric)",
-        "document_postuplenie_tovarov (ref_key text, date timestamp, deletion_mark boolean, posted boolean, zakaz_postavschiku_key text)",
+        "document_postuplenie_tovarov (ref_key text, date timestamp, deletion_mark boolean, posted boolean, zakaz_postavschiku_key text, magazin_key text, sklad_key text)",
         "document_postuplenie_tovarov_tovary (\"_parent_ref_key\" text, nomenklatura_key text, kolichestvo numeric)",
-        "document_chek_kkm (ref_key text, date timestamp, deletion_mark boolean, posted boolean, magazin_key text)",
+        "document_chek_kkm (ref_key text, date timestamp, deletion_mark boolean, posted boolean, magazin_key text, otchet_o_roznichnyh_prodazhah_key text)",
         "document_chek_kkm_tovary (\"_parent_ref_key\" text, nomenklatura_key text, shtrihkod text)"
       ];
       for (const definition of definitions) await tx.$executeRawUnsafe(`create temp table ${definition} on commit drop`);
@@ -212,11 +212,11 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
         ('closed','2026-08-01','s1','w1',false,true,true,'2026-08-06')`);
       await tx.$executeRawUnsafe(`insert into document_zakaz_postavschiku_tovary values
         ('o1','i1',10), ('future','i1',100), ('closed','i1',100)`);
-      await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov values
+      await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov (ref_key,date,deletion_mark,posted,zakaz_postavschiku_key) values
         ('r1','2026-08-02',false,true,'o1'), ('future-receipt','2026-08-05',false,true,'o1')`);
       await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov_tovary values
         ('r1','i1',3), ('future-receipt','i1',7)`);
-      await tx.$executeRawUnsafe("insert into document_chek_kkm values ('c1','2026-08-01',false,true,'s1')");
+      await tx.$executeRawUnsafe("insert into document_chek_kkm values ('c1','2026-08-01',false,true,'s1','rr-s1-2026-08-01')");
       await tx.$executeRawUnsafe("insert into document_chek_kkm_tovary values ('c1','i1','460123')");
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
       prisma.$queryRawUnsafe = tx.$queryRawUnsafe.bind(tx) as typeof prisma.$queryRawUnsafe;
@@ -460,7 +460,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           await tx.$executeRawUnsafe(`delete from document_otchet_o_roznichnyh_prodazhah
             where date='2026-08-02'`);
           await tx.$executeRawUnsafe(`insert into document_chek_kkm values
-            ('unclosed-shift','2026-08-02',false,true,'s2')`);
+            ('unclosed-shift','2026-08-02',false,true,'s2',null)`);
           const certified = {
             status: "reloading" as const, from: "2026-06-01", toExclusive: "2026-08-04",
             completedJobs: 1, totalJobs: 2, sources: [], databaseBytes: 1, pauseAtBytes: 9_000_000_000,
@@ -504,6 +504,170 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           await tx.$executeRawUnsafe("release savepoint certified_empty_sales");
         }
       });
+      await t.test("idle closing stock requires verified, scoped absence of retail and incoming goods lines", async () => {
+        await tx.$executeRawUnsafe("savepoint idle_stock_activity");
+        try {
+          await tx.$executeRawUnsafe(`update catalog_magaziny set description='One г.Павлодар Альфа' where ref_key='s1'`);
+          await tx.$executeRawUnsafe(`insert into catalog_magaziny values ('s1-old','Old г.Павлодар Альфа')`);
+          await tx.$executeRawUnsafe(`insert into catalog_sklady values ('w1-back','Other warehouse','s1-old')`);
+          await tx.$executeRawUnsafe(`insert into catalog_nomenklatura
+            select sku,'Idle evidence ' || sku,'folder',false,null,sku,null,null,'u1' from (values
+            ('idle'),('net-zero'),('return-only'),('closed-order'),('standalone'),('alias'),('warehouse'),
+            ('other-warehouse'),('conflicting-location'),('unresolved'),('other-store'),('excluded-store'),
+            ('zero-stock'),('negative-stock'),('unknown-stock')) n(sku)`);
+          await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance
+            select day,'w1',ref_key,'',5
+            from pg_temp.catalog_nomenklatura cross join generate_series('2026-08-01'::timestamp,'2026-08-04',interval '1 day') day
+            where description like 'Idle evidence %' and ref_key not in ('zero-stock','negative-stock','unknown-stock')`);
+          await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance values
+            ('2026-08-01','w1','zero-stock','',5), ('2026-08-04','w1','negative-stock','',-5),
+            ('2026-08-04','w1','unknown-stock','',null),
+            ('2026-08-02','w2','excluded-store','',null), ('2026-08-04','w2','excluded-store','',4)`);
+          await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
+            ('rr-s1-2026-08-01','net-zero','','w1',2,200),
+            ('rr-s2-2026-08-01','excluded-store','','w2',2,200),
+            ('rr-s1-2026-08-04','idle','','w1',1,100)`);
+          await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values
+            ('rr-s1-2026-08-01','net-zero','','w1',2,200),
+            ('rr-s1-2026-08-02','return-only','','w1',1,100),
+            ('rr-s2-2026-08-01','excluded-store','','w2',2,200)`);
+          await tx.$executeRawUnsafe("insert into document_zakaz_postavschiku_tovary values ('closed','closed-order',2)");
+          await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov values
+            ('idle-before','2026-07-31 23:59:59',false,true,null,'s1','w1'),
+            ('idle-after','2026-08-04',false,true,null,'s1','w1'),
+            ('idle-deleted','2026-08-02',true,true,null,'s1','w1'),
+            ('idle-unposted','2026-08-02',false,false,null,'s1','w1'),
+            ('idle-closed','2026-08-01',false,true,'closed','s1','w1'),
+            ('idle-standalone','2026-08-02',false,true,null,'s1','w1'),
+            ('idle-alias','2026-08-02',false,true,null,'s1-old',null),
+            ('idle-warehouse','2026-08-02',false,true,null,null,'w1'),
+            ('idle-other-warehouse','2026-08-02',false,true,null,'s1','w1-back'),
+            ('idle-conflict','2026-08-02',false,true,null,'s2','w1'),
+            ('idle-unresolved','2026-08-02',false,true,null,'unknown-shop',null),
+            ('idle-other-store','2026-08-02',false,true,null,'s2','w2')`);
+          await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov_tovary values
+            ('idle-before','idle',2), ('idle-after','idle',2), ('idle-deleted','idle',2), ('idle-unposted','idle',2),
+            ('idle-closed','closed-order',2), ('idle-standalone','standalone',null), ('idle-alias','alias',2),
+            ('idle-warehouse','warehouse',2), ('idle-other-warehouse','other-warehouse',2),
+            ('idle-conflict','conflicting-location',2), ('idle-unresolved','unresolved',2), ('idle-other-store','other-store',2)`);
+          const certified = {
+            status: "reloading" as const, from: "2026-06-01", toExclusive: "2026-08-04",
+            completedJobs: 1, totalJobs: 2, sources: [], databaseBytes: 1, pauseAtBytes: 12_000_000_000,
+            binding: "turnover-idle-stock-fixture", returnPriceIntervals: [],
+            coverageSources: [
+              { key: "retail", entity: "Document_ОтчетОРозничныхПродажах", tables: ["document_otchet_o_roznichnyh_prodazhah",
+                "document_otchet_o_roznichnyh_prodazhah_tovary", "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary"] },
+              { key: "receipts", entity: "Document_ЧекККМ", tables: ["document_chek_kkm", "document_chek_kkm_tovary"] },
+              { key: "document_postuplenie_tovarov", entity: "Document_ПоступлениеТоваров",
+                tables: ["document_postuplenie_tovarov", "document_postuplenie_tovarov_tovary"] }
+            ].map((source) => ({
+              source: { ...source, kind: "dated" as const, floor: "2026-06-01", required: true },
+              intervals: [{ from: "2026-06-01", to: "2026-08-04" }]
+            }))
+          };
+          const reader = async () => certified;
+          const request = { ...params, mode: "quantity" as const, search: "Idle evidence" };
+          const report = await getTurnoverReport(request, reader);
+          assert.deepEqual(report.rows.filter((row) => row.idleStock).map((row) => row.sku).sort(),
+            ["excluded-store", "idle", "other-store"]);
+          assert.equal(report.rows.find((row) => row.sku === "net-zero")!.periodSales.quantity, 0);
+          assert.equal(report.rows.find((row) => row.sku === "return-only")!.periodSales.quantity, -1);
+          assert.equal(report.rows.find((row) => row.sku === "closed-order")!.openOrderQty, 0);
+          assert.equal(report.rows.find((row) => row.sku === "zero-stock")!.closingQty, 0);
+          assert.equal(report.rows.find((row) => row.sku === "unknown-stock")!.closingQty, null);
+          const scoped = await getTurnoverReport({ ...request, warehouse: "w1" }, reader);
+          assert.deepEqual(scoped.rows.filter((row) => row.idleStock).map((row) => row.sku).sort(),
+            ["excluded-store", "idle", "other-store", "other-warehouse"]);
+          const withLaterComparison = await getTurnoverReport({
+            ...request, sku: "idle", comparisonFrom: "2026-08-04", comparisonTo: "2026-08-07"
+          }, reader);
+          assert.equal(withLaterComparison.rows[0]!.idleStock, true, "Retail movement at the exclusive end does not veto the selected period");
+
+          for (const kind of ["retail", "receipts", "document_postuplenie_tovarov"]) {
+            const gap = async () => ({
+              ...certified, coverageSources: certified.coverageSources.map((source) => source.source.key === kind
+                ? { ...source, intervals: [{ from: "2026-06-01", to: "2026-08-02" }, { from: "2026-08-03", to: "2026-08-04" }] } : source)
+            });
+            const unverified = await getTurnoverReport({ ...request, sku: "idle" }, gap);
+            assert.equal(unverified.rows[0]!.periodSales.quantity, 0, "Existing retail report values are unchanged");
+            assert.notEqual(unverified.rows[0]!.idleStock, true, `An interval gap in ${kind} is not evidence of inactivity`);
+            assert.ok(unverified.warnings.some((warning) => /Нельзя подтвердить отсутствие продаж/.test(warning)));
+          }
+          const headersOnly = await getTurnoverReport({ ...request, sku: "idle" }, async () => ({
+            ...certified, coverageSources: certified.coverageSources.map((entry) => entry.source.key === "document_postuplenie_tovarov"
+              ? { ...entry, source: { ...entry.source, tables: ["document_postuplenie_tovarov"] } } : entry)
+          }));
+          assert.notEqual(headersOnly.rows[0]!.idleStock, true, "The receipt header ledger does not verify its goods lines");
+          const shortened = await getTurnoverReport({ ...request, sku: "idle", to: "2026-08-31" }, async () => ({
+            ...certified, status: "ready",
+            sources: ["document_otchet_o_roznichnyh_prodazhah", "document_chek_kkm", "accumulation_register_tovary_na_skladah_balance"]
+              .map((table) => ({ table, status: "verified" as const, verifiedThrough: "2026-08-04" }))
+          }));
+          assert.equal(shortened.coverage.requestedTo, "2026-08-31");
+          assert.equal(shortened.params.to, "2026-08-04");
+          assert.equal(shortened.rows[0]!.idleStock, true);
+
+          const sample = { ...request, store: ["s1", "s2"], profile: "sample" as const };
+          const idle = await getTurnoverReport({ ...sample, sku: "idle", includeIncomplete: false }, reader);
+          assert.equal(idle.rows[0]!.closingQty, 5);
+          assert.equal(idle.rows[0]!.idleStock, true);
+          const hidden = await getTurnoverReport({ ...sample, sku: "excluded-store", includeIncomplete: false }, reader);
+          assert.equal(hidden.rows.length, 0, "An idle store must not admit an otherwise incomplete SKU with network activity");
+          assert.equal(hidden.totals.overall.closingQty, null);
+          const partial = await getTurnoverReport({ ...sample, sku: "excluded-store" }, reader);
+          assert.equal(partial.rows[0]!.periodSales.quantity, 0);
+          assert.equal(partial.rows[0]!.closingQty, 9);
+          assert.notEqual(partial.rows[0]!.idleStock, true);
+          const purchaseWithoutStoreRow = await getTurnoverReport({ ...sample, search: "Idle evidence other-store" }, reader);
+          assert.equal(purchaseWithoutStoreRow.rows[0]!.closingQty, 5);
+          assert.notEqual(purchaseWithoutStoreRow.rows[0]!.idleStock, true, "A purchase counts even without a stock/sales row at its store");
+          const category = await getTurnoverReport({ ...request, store: ["s1","s2"], groupBy: "category", search: "Idle evidence other-store" }, reader);
+          assert.notEqual(category.rows[0]!.idleStock, true, "A merchandise status must not assert inactivity for an entire category");
+          await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance values ('2026-08-04','w2','idle','',-5)`);
+          const netZero = await getTurnoverReport({ ...sample, sku: "idle", includeIncomplete: false }, reader);
+          assert.equal(netZero.rows.length, 0, "Opposing balances leave no idle stock across these stores");
+          await tx.$executeRawUnsafe(`update pg_temp.accumulation_register_tovary_na_skladah_balance set kolichestvo_balance=-2
+            where sklad_key='w2' and nomenklatura_key='idle'`);
+          const netPositive = await getTurnoverReport({ ...sample, sku: "idle", includeIncomplete: false }, reader);
+          assert.equal(netPositive.rows[0]!.closingQty, 3);
+          assert.equal(netPositive.totals.overall.closingQty, 3);
+          assert.equal(netPositive.rows[0]!.idleStock, true);
+          await tx.$executeRawUnsafe(`insert into information_register_sebestoimost_nomenklatury_record_type values
+            ('2026-07-01',true,'s1','idle','',10,1), ('2026-07-01',true,'s1','idle','offset',50,1)`);
+          await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance
+            select day,'w1','idle','offset',-1 from generate_series('2026-08-01'::timestamp,'2026-08-04',interval '1 day') day`);
+          const zeroMoney = await getTurnoverReport({ ...request, sku: "idle", mode: "money", includeIncomplete: false, excludeZero: true }, reader);
+          assert.equal(zeroMoney.rows[0]!.closingQty, 4);
+          assert.equal(zeroMoney.rows[0]!.closingCost, 0);
+          assert.equal(zeroMoney.rows[0]!.idleStock, true);
+
+          await tx.$executeRawUnsafe(`insert into document_chek_kkm values
+            ('idle-unclosed','2026-08-02 13:00',false,true,'s1-old',null),
+            ('idle-unassigned','2026-08-02 14:00',false,true,null,null),
+            ('idle-unposted-check','2026-08-02',false,false,'s1',null),
+            ('idle-deleted-check','2026-08-02',true,true,'s1',null),
+            ('idle-later-check','2026-08-04',false,true,'s1',null)`);
+          await tx.$executeRawUnsafe(`insert into document_chek_kkm_tovary values
+            ('idle-unclosed','idle',null), ('idle-unassigned','excluded-store',null),
+            ('idle-unposted-check','other-store',null), ('idle-deleted-check','other-store',null),
+            ('idle-later-check','other-store',null)`);
+          const mixedShift = await getTurnoverReport({ ...request, warehouse: "w1" }, reader);
+          for (const sku of ["idle", "excluded-store"]) {
+            const row = mixedShift.rows.find((candidate) => candidate.sku === sku)!;
+            assert.equal(row.periodSales.quantity, 0, "The retail report remains the only source of reported sales");
+            assert.notEqual(row.idleStock, true, "A posted cheque line vetoes inactivity, even when its warehouse is unknown");
+          }
+          assert.equal(mixedShift.rows.find((row) => row.sku === "other-store")!.idleStock, true);
+
+          await tx.$executeRawUnsafe(`delete from document_otchet_o_roznichnyh_prodazhah where ref_key='rr-s1-2026-08-02'`);
+          const openShift = await getTurnoverReport({ ...request, sku: "idle" }, reader);
+          assert.equal(openShift.rows[0]!.periodSales.quantity, null);
+          assert.notEqual(openShift.rows[0]!.idleStock, true);
+        } finally {
+          await tx.$executeRawUnsafe("rollback to savepoint idle_stock_activity");
+          await tx.$executeRawUnsafe("release savepoint idle_stock_activity");
+        }
+      });
       await t.test("an open period is analysed through the last certified day and says so", async () => {
         const ready = (through: string) => async () => ({
           status: "ready" as const, from: "2026-06-01", toExclusive: through, completedJobs: 1, totalJobs: 1,
@@ -512,12 +676,23 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
             .map((table) => ({ table, status: "verified" as const, verifiedThrough: through })),
           coverageSources: [], returnPriceIntervals: []
         });
-        // A whole "current month" request: days after the certified end have no reports or snapshots.
-        const open = await getTurnoverReport({ ...params, to: "2026-08-31", sku: "i1" }, ready("2026-08-04"));
-        assert.equal(open.params.to, "2026-08-04");
-        assert.equal(open.coverage.requestedTo, "2026-08-31");
-        assert.notEqual(open.rows[0]!.periodSales.quantity, null);
-        assert.ok(open.warnings.some((warning) => /Период сокращён до последнего загруженного/.test(warning)));
+        // Route-validated month requests must not turn the default comparison into an explicit one.
+        for (const profile of ["sample", "summary"] as const) {
+          const query = turnoverQuerySchema.parse({ ...params, to: "2026-08-31", sku: "i1", profile, sort: "name", mode: "quantity", includeIncomplete: false });
+          const open = await getTurnoverReport(query, ready("2026-08-04"));
+          assert.equal(open.params.to, "2026-08-04");
+          assert.equal(open.coverage.requestedTo, "2026-08-31");
+          assert.deepEqual(open.comparison, { from: "2026-07-29", to: "2026-08-01", days: 3 });
+          assert.equal(open.rows[0]!.periodSales.quantity, 3);
+          assert.ok(open.warnings.some((warning) => /Период сокращён до последнего загруженного/.test(warning)));
+          const detail = await getTurnoverRow({ ...query, auditGroup: open.rows[0]!.key }, ready("2026-08-04"));
+          assert.deepEqual(detail.row.daily.map(day => day.date), ["2026-08-01", "2026-08-02", "2026-08-03"]);
+        }
+        const explicit = turnoverQuerySchema.parse({ ...params, to: "2026-08-31", sku: "i1", comparisonFrom: "2026-07-02", comparisonTo: "2026-08-01" });
+        const compared = await getTurnoverReport(explicit, ready("2026-08-04"));
+        assert.equal(compared.params.to, "2026-08-31");
+        assert.equal(compared.coverage.requestedTo, null);
+        assert.deepEqual(compared.comparison, { from: "2026-07-02", to: "2026-08-01", days: 30 });
         // Without a ready ledger, or when nothing would remain, the request is analysed as asked.
         const asked = await getTurnoverReport({ ...params, to: "2026-08-31", sku: "i1" });
         assert.equal(asked.params.to, "2026-08-31");

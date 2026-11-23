@@ -250,7 +250,7 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
     const includeIncomplete = Boolean(report.params.includeIncomplete);
     const note = `Период [${report.params.from}, ${report.params.to}); сравнение [${report.comparison.from}, ${report.comparison.to}). ${includeIncomplete
       ? "n/a — данных нет или расчёт невозможен; 0 — известный ноль."
-      : `По строкам с полным расчётом. Исключено строк без полного расчёта: ${report.excludedIncompleteRows ?? 0}. Пустые дополнительные показатели не рассчитаны, не равны нулю.`} Стоимость по себестоимости, выручка отдельно.`;
+      : `Включены строки с полным расчётом и остатки без продаж и закупок. Исключено строк без полного расчёта: ${report.excludedIncompleteRows ?? 0}. Пустые показатели не равны нулю.`} Стоимость по себестоимости, выручка отдельно.`;
     if (report.params.groupBy === "day") {
       const main = table(workbook, "Оборачиваемость", dailyColumns(report, true), "Оборачиваемость запасов · по дням", note + " В ИТОГО дневной остаток означает конечный запас; начальный и средний запас периода приведены отдельно.", canceled.signal, includeIncomplete);
       for (const row of report.daily) {
