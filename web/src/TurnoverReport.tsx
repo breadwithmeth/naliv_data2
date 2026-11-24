@@ -1,19 +1,12 @@
-import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { Download } from "lucide-react";
 import { api } from "./api";
 import type {
-  ReportDateRange, TurnoverOption, TurnoverOptions, TurnoverPreview, TurnoverPreviewRow, TurnoverRequest
+  ReportDateRange, TurnoverOption, TurnoverOptions, TurnoverPreview, TurnoverRequest
 } from "./api";
-import { formatDecimal, formatNumber } from "./format";
-import {
-  completeTurnoverReport, hasKnownTurnoverUnit, includeTurnoverRow, turnoverCoefficientBand
-} from "../../api/src/services/turnover-domain";
-import {
-  TURNOVER_IDLE_LABEL, turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows, turnoverStandardValue,
-  turnoverUnitDisplayName, turnoverUnitLabels
-} from "../../api/src/services/turnover-presentation";
-import type { TurnoverStandardColumn } from "../../api/src/services/turnover-presentation";
+import { formatNumber } from "./format";
+import { TurnoverPreviewTable } from "./TurnoverPreviewTable";
 
 const DAY_MS = 86_400_000;
 type ReportFormat = "sample" | "stores";
@@ -31,21 +24,12 @@ type Filters = {
   format: ReportFormat; includeNonRetail: boolean; excludeZero: boolean; includeIncomplete: boolean;
 };
 type PreparedRequest = { valid: true; request: TurnoverRequest } | { valid: false; error: string };
-type DownloadState = {
-  status: "idle" | "loading" | "success" | "error";
-  requestKey?: string; message?: string;
-};
-type PreviewState =
-  | { status: "loading" }
-  | { status: "success"; report: TurnoverPreview }
-  | { status: "error"; message: string };
-const PREVIEW_PAGE_SIZE = 100;
-const COEFFICIENT_LABELS = { red: "Плохо", orange: "Средне", green: "Хорошо" } as const;
-type StandardMetrics = Pick<TurnoverPreviewRow,
-  "daily" | "averageQty" | "averageCost" | "periodSales" | "idleStock" |
-  "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays"
->;
-type GridColumn = { column: TurnoverStandardColumn; label: string; key: string };
+type DownloadState = { status: "idle" | "loading" } | { status: "success" | "error"; message: string };
+type ReportState =
+  | { status: "idle" }
+  | { status: "loading"; requestKey: string }
+  | { status: "error"; requestKey: string; message: string }
+  | { status: "ready"; requestKey: string; request: TurnoverRequest; report: TurnoverPreview };
 
 function dateNumber(value: string | undefined): number | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -119,17 +103,6 @@ function prepareRequest(range: InclusiveDateRange, filters: Filters): PreparedRe
   };
 }
 
-function prepareViewerRequest(search: string): PreparedRequest {
-  const params = new URLSearchParams(search);
-  return prepareRequest({ from: params.get("from") ?? "", to: params.get("to") ?? "" }, {
-    store: params.getAll("store"), warehouse: params.get("warehouse") ?? "",
-    category: params.getAll("category"), brand: params.get("brand") ?? "", search: params.get("search") ?? "",
-    format: params.get("profile") === "summary" ? "stores" : "sample",
-    includeNonRetail: params.get("storeScope") === "all", excludeZero: params.get("excludeZero") === "true",
-    includeIncomplete: params.get("includeIncomplete") === "true"
-  });
-}
-
 function OptionSelect({ label, value, options, disabled, onChange, placeholder = "Все", hint }: {
   label: string; value: string; options: TurnoverOption[]; disabled?: boolean;
   onChange: (value: string) => void; placeholder?: string; hint?: string;
@@ -180,292 +153,48 @@ function CheckboxSelect({ label, values, options, allLabel, searchLabel, clearLa
     </details>
   </div>;
 }
-function PreviewNumber({ value }: { value: number | null }) {
-  return value !== null && Number.isFinite(value)
-    ? <>{formatDecimal(value, 2)}</>
-    : <span aria-label="Показатель не рассчитан" title="Показатель не рассчитан"><span aria-hidden="true">—</span><span className="turnover-visually-hidden">Показатель не рассчитан</span></span>;
-}
-
 function previewDate(value: string, exclusive = false): string {
   const number = dateNumber(value);
   return number === null ? value : new Date(number - (exclusive ? DAY_MS : 0)).toISOString().slice(0, 10).split("-").reverse().join(".");
 }
 
-function CoefficientCell({ value }: { value: number | null }) {
-  const band = turnoverCoefficientBand(value);
-  return <td className={`turnover-numeric${band ? ` turnover-coefficient-${band}` : ""}`}>
-    <PreviewNumber value={value} />{band ? <span className="turnover-visually-hidden"> — {COEFFICIENT_LABELS[band]}</span> : null}
-  </td>;
-}
-
-function StandardMetricCells({ metrics, columns, periodDays }: {
-  metrics: StandardMetrics; columns: readonly GridColumn[]; periodDays: number;
+function ReportDialog({ report, period, open, onClose, opener }: {
+  report: TurnoverPreview; period: string; open: boolean;
+  onClose: () => void; opener: RefObject<HTMLButtonElement | null>;
 }) {
-  return <>{columns.map(({ column, key }) => {
-    const value = turnoverStandardValue(metrics, column, "quantity", periodDays);
-    if (column.kind === "turnoverDays" && value === null && metrics.idleStock) {
-      return <td key={key} className="turnover-idle-label" title="Есть остаток на конец периода, продаж и закупок не было">{TURNOVER_IDLE_LABEL}</td>;
-    }
-    return column.kind === "coefficient"
-      ? <CoefficientCell key={key} value={value} />
-      : <td key={key} className={`turnover-numeric${column.kind === "day" ? " turnover-preview-day" : ""}`}><PreviewNumber value={value} /></td>;
-  })}</>;
-}
+  const dialog = useRef<HTMLDialogElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const position = useRef({ top: 0, left: 0 });
+  const heading = useId();
 
-type ContextBoundary = { kind: string; top: number; height: number; label: string };
-
-function contextAt(boundaries: readonly ContextBoundary[], edge: number, kind: "store" | "group") {
-  // The original is still the label until it starts passing below the pinned stack.
-  let start = 0;
-  let end = boundaries.length;
-  while (start < end) {
-    const middle = (start + end) >>> 1;
-    if (boundaries[middle].top < edge) start = middle + 1;
-    else end = middle;
-  }
-  const current = boundaries[start - 1];
-  // Leave room for the next original boundary instead of covering it with a stale label.
-  return current?.kind === kind && (boundaries[start]?.top ?? Infinity) >= edge + current.height ? current : undefined;
-}
-
-function PreviewScroll({ showDays, report, children }: {
-  showDays: boolean; report: TurnoverPreview; children: ReactNode;
-}) {
-  const viewport = useRef<HTMLDivElement>(null);
-  const [context, setContext] = useState<{ store?: string; group?: string }>({});
-  const lastContext = useRef(context);
   useLayoutEffect(() => {
-    const scroll = viewport.current;
-    const grid = scroll?.querySelector("table");
-    const head = grid?.tHead;
-    if (!scroll || !grid || !head) return;
-
-    const markers = grid.querySelectorAll<HTMLElement>("[data-turnover-boundary]");
-    let all: ContextBoundary[] = [];
-    let stores: ContextBoundary[] = [];
-    let headHeight = 0;
-    let frame: number | null = null;
-    let needsMeasure = true;
-
-    const update = () => {
-      frame = null;
-      if (needsMeasure) {
-        needsMeasure = false;
-        const origin = scroll.getBoundingClientRect().top + scroll.clientTop - scroll.scrollTop;
-        const height = head.getBoundingClientRect().height;
-        if (height !== headHeight) {
-          headHeight = height;
-          scroll.style.setProperty("--turnover-head-height", `${height}px`);
-        }
-        all = Array.from(markers, (marker) => {
-          const rect = marker.getBoundingClientRect();
-          const kind = marker.dataset.turnoverBoundary!;
-          return { kind, top: rect.top - origin, height: rect.height,
-            label: marker.querySelector(".turnover-section-label")?.textContent ?? "" };
-        });
-        stores = all.filter(({ kind }) => kind === "store" || kind === "overall");
-      }
-      const edge = scroll.scrollTop + headHeight;
-      const store = contextAt(stores, edge, "store");
-      const group = contextAt(all, edge + (store?.height ?? 0), "group");
-      if (store?.label !== lastContext.current.store || group?.label !== lastContext.current.group) {
-        lastContext.current = { store: store?.label, group: group?.label };
-        setContext(lastContext.current);
-      }
-    };
-
-    function schedule() {
-      frame ??= requestAnimationFrame(update);
-    }
-    const observer = new ResizeObserver(() => { needsMeasure = true; schedule(); });
-    observer.observe(scroll);
-    observer.observe(grid);
-    observer.observe(head);
-    for (const marker of markers) observer.observe(marker);
-    scroll.addEventListener("scroll", schedule, { passive: true });
-    update();
+    const surface = dialog.current;
+    if (!open || !surface) return;
+    const { scrollX, scrollY } = window;
+    const trigger = opener.current;
+    surface.showModal();
+    closeButton.current?.focus({ preventScroll: true });
+    const viewport = surface.querySelector<HTMLElement>(".turnover-preview-scroll");
+    viewport?.scrollTo(position.current);
     return () => {
-      observer.disconnect();
-      scroll.removeEventListener("scroll", schedule);
-      if (frame !== null) cancelAnimationFrame(frame);
+      if (viewport) position.current = { top: viewport.scrollTop, left: viewport.scrollLeft };
+      surface.close();
+      trigger?.focus({ preventScroll: true });
+      window.scrollTo(scrollX, scrollY);
     };
-  }, [showDays, report]);
+  }, [open, opener]);
 
-  return <div ref={viewport} className="turnover-preview-scroll" role="region"
-    aria-label="Таблица оборачиваемости" tabIndex={0}>
-    <div className="turnover-preview-sticky" aria-hidden="true">
-      {context.store ? <div className="turnover-preview-store"><span className="turnover-section-label">{context.store}</span></div> : null}
-      {context.group ? <div className="turnover-preview-group"><span className="turnover-section-label">{context.group}</span></div> : null}
-    </div>
-    {children}
-  </div>;
-}
-
-export function TurnoverPreviewTable({ report: source, page, onPageChange }: {
-  report: TurnoverPreview; page: number; onPageChange: (page: number) => void;
-}) {
-  const report = useMemo(() => completeTurnoverReport(source), [source]);
-  const [disclosure, setDisclosure] = useState({ source, showDays: false });
-  if (disclosure.source !== source) setDisclosure({ source, showDays: false });
-  const showDays = disclosure.source === source && disclosure.showDays;
-  const tableId = useId();
-  const includeIncomplete = Boolean(report.params.includeIncomplete);
-  const excludedIncompleteRows = report.excludedIncompleteRows ?? 0;
-  const headingId = useId();
-  const days = useMemo(() => turnoverStandardDates(report.params.from, report.params.to), [report.params.from, report.params.to]);
-  const columns = useMemo(() => turnoverStandardColumns(showDays ? days : []).map((column) => column.kind === "day"
-    ? { column, label: column.half ? `${column.label} ½` : column.label, key: `${column.date}:${column.half}` }
-    : { column, label: column.label, key: column.kind }
-  ), [showDays, days]);
-  const columnCount = columns.length + 1;
-  const stores = report.params.profile !== "sample";
-  const pageCount = Math.max(1, Math.ceil(report.rows.length / PREVIEW_PAGE_SIZE));
-  const currentPage = Math.min(Math.max(0, page), pageCount - 1);
-  const start = currentPage * PREVIEW_PAGE_SIZE;
-  const rows = report.rows.slice(start, start + PREVIEW_PAGE_SIZE);
-  const storeTotals = new Map(report.totals.byStore.map(total => [total.storeKey, total]));
-  const unitLabels = turnoverUnitLabels(report.totals.byUnit);
-  const hasUnlabelledQuantityTotal = report.rows.length > 0 && (
-    (report.totals.overall.unit === null && !report.totals.byUnit.length) ||
-    report.totals.byStore.some(({ total, byUnit }) => total.unit === null && !byUnit.length)
-  );
-  const period = `${previewDate(report.params.from)} — ${previewDate(report.params.to, true)}`;
-  const notices = [
-    ...(report.coverage.requestedTo
-      ? [`Период сокращён: по ${previewDate(report.params.to, true)} вместо ${previewDate(report.coverage.requestedTo, true)}.`] : []),
-    ...(!includeIncomplete && excludedIncompleteRows > 0
-      ? [`Исключено строк без полного расчёта: ${formatNumber(excludedIncompleteRows)}.`] : []),
-    ...(includeIncomplete && report.rows.some((row) => !includeTurnoverRow(row, report.params))
-      ? ["Включены строки без полного расчёта."] : []),
-    ...(report.coverage.missingStockDates.length ? [
-      `Нет дневных снимков остатков: ${formatNumber(report.coverage.missingStockDates.length)} из ${formatNumber(report.coverage.expectedDays)}.`
-    ] : []),
-    ...(hasUnlabelledQuantityTotal ? ["Общий итог недоступен: разные или неизвестные единицы."] : [])
-  ];
-  // The analytical endpoint also describes monetary data, orders and comparisons absent from this view.
-  const warnings = report.warnings.filter((warning) => /^(Нельзя подтвердить отсутствие|Фильтрам не соответствуют|Нет снимка точно|Не во все дни выбранного периода|В части дней есть проведённые чеки|У части SKU нет подтверждённой|Итоги исходной выборки не показаны)/.test(warning));
-  const footer = (label: string, total: TurnoverPreview["totals"]["overall"], byUnit: TurnoverPreview["totals"]["byUnit"], subtotal = false) =>
-    turnoverStandardTotalRows(label, total, byUnit, "quantity", unitLabels).map(({ key, label, row }, index) =>
-      <tr key={key ?? label} className="turnover-overall-total" data-turnover-boundary={subtotal && index === 0 ? "subtotal" : undefined}>
-        <th scope="row">{label}</th>
-        <StandardMetricCells metrics={row} columns={columns} periodDays={days.length} />
-      </tr>);
-  return <section className="turnover-preview-results" aria-labelledby={headingId}>
-    <header className="turnover-preview-toolbar">
-      <div className="turnover-preview-heading">
-        <h1 id={headingId}>Оборачиваемость</h1>
-        <p>{period} · {stores ? "По магазинам" : "Вся сеть"} · строк: {formatNumber(report.rows.length)}</p>
+  return <dialog ref={dialog} className="turnover-dialog" aria-labelledby={heading}
+    onCancel={(event) => { event.preventDefault(); onClose(); }}
+    onClose={(event) => { if (open && !event.currentTarget.open) onClose(); }}>
+    <header className="turnover-dialog-header">
+      <div><h2 id={heading}>Оборачиваемость</h2>
+        <p>{period}</p>
       </div>
-      {rows.length ? <button type="button" className="turnover-button" aria-expanded={showDays} aria-controls={tableId}
-        onClick={() => setDisclosure({ source, showDays: !showDays })}>
-        {showDays ? "Скрыть дни" : `Показать дни (${formatNumber(days.length)})`}
-      </button> : null}
+      <button ref={closeButton} type="button" className="turnover-button" onClick={onClose}>Закрыть</button>
     </header>
-    {notices.length || warnings.length ? <div className="turnover-preview-notices">
-      {notices.length ? <p className="turnover-note" role="status">{notices.join(" ")}</p> : null}
-      {warnings.length ? <details className="turnover-preview-warnings">
-        <summary>Предупреждения ({formatNumber(warnings.length)})</summary>
-        <ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
-      </details> : null}
-    </div> : null}
-    <PreviewScroll key={currentPage} showDays={showDays} report={report}>
-      <table id={tableId} className="turnover-preview-table">
-        <caption className="turnover-visually-hidden">Оборачиваемость: количество в единицах товара</caption>
-        <thead><tr>
-          <th scope="col">Номенклатура</th>
-          {columns.map(({ key, label, column }) => <th key={key} scope="col"
-            className={column.kind === "day" ? "turnover-preview-date" : undefined}>{label}</th>)}
-        </tr></thead>
-        <tbody>
-          {rows.length ? rows.map((row, index) => {
-            const previous = rows[index - 1];
-            const newStore = stores && (!previous || previous.storeKey !== row.storeKey);
-            const newGroup = !previous || newStore || previous.rootGroupKey !== row.rootGroupKey;
-            const next = report.rows[start + index + 1];
-            const subtotal = stores && row.storeKey !== next?.storeKey ? storeTotals.get(row.storeKey) : undefined;
-            return <Fragment key={row.key}>
-              {newStore ? <tr className="turnover-preview-store" data-turnover-boundary="store"><th scope="rowgroup" colSpan={columnCount}>
-                <span className="turnover-section-label">{row.storeKey === null ? "Магазин не определён" : row.storeName || "Магазин не определён"}</span>
-              </th></tr> : null}
-              {newGroup ? <tr className="turnover-preview-group" data-turnover-boundary="group"><th scope="rowgroup" colSpan={columnCount}>
-                <span className="turnover-section-label">{row.rootGroupKey === null ? "Без группы" : row.rootGroupName || "Группа без названия"}</span>
-              </th></tr> : null}
-              <tr>
-                <th scope="row" className="turnover-preview-product">{row.name}
-                  {hasKnownTurnoverUnit(row.unit) ? <span className="turnover-preview-unit">{turnoverUnitDisplayName(row.unit)}</span> : null}
-                </th>
-                <StandardMetricCells metrics={row} columns={columns} periodDays={days.length} />
-              </tr>
-              {subtotal ? footer("ИТОГО по магазину", subtotal.total, subtotal.byUnit, true) : null}
-            </Fragment>;
-          }) : <tr><td colSpan={columnCount} className="turnover-preview-empty">
-            {excludedIncompleteRows > 0 && !includeIncomplete
-              ? "Все строки по выбранным условиям исключены: нет полного расчёта. На вкладке с параметрами включите строки без полного расчёта и откройте отчёт снова."
-              : "По выбранным условиям товаров нет. Измените отбор на вкладке с параметрами и откройте отчёт снова."}
-          </td></tr>}
-        </tbody>
-        {report.rows.length ? <tfoot aria-label="Итог по всему отбору" data-turnover-boundary="overall">
-          {footer("ИТОГО", report.totals.overall, report.totals.byUnit)}
-        </tfoot> : null}
-      </table>
-    </PreviewScroll>
-    {pageCount > 1 ? <nav className="turnover-preview-pagination" aria-label="Страницы отчёта">
-      <p className="turnover-note" role="status">Страница {currentPage + 1} из {pageCount}
-        {` · ${formatNumber(start + 1)}–${formatNumber(Math.min(start + PREVIEW_PAGE_SIZE, report.rows.length))}`}
-      </p>
-      <div>
-        <button type="button" className="turnover-button" disabled={currentPage === 0} onClick={() => onPageChange(currentPage - 1)}>Предыдущая</button>
-        <button type="button" className="turnover-button" disabled={currentPage + 1 >= pageCount} onClick={() => onPageChange(currentPage + 1)}>Следующая</button>
-      </div>
-    </nav> : null}
-  </section>;
-}
-
-export function TurnoverReportViewer({ search }: { search: string }) {
-  const prepared = useMemo(() => prepareViewerRequest(search), [search]);
-  const [state, setState] = useState<PreviewState>({ status: "loading" });
-  const [attempt, setAttempt] = useState(0);
-  const [page, setPage] = useState(0);
-
-  useEffect(() => {
-    const title = document.title;
-    document.title = "Оборачиваемость";
-    return () => { document.title = title; };
-  }, []);
-
-  useEffect(() => {
-    if (!prepared.valid) return;
-    const controller = new AbortController();
-    api.turnoverReport(prepared.request, controller.signal).then((report) => {
-      if (!controller.signal.aborted) setState({ status: "success", report });
-    }).catch((caught) => {
-      if (!controller.signal.aborted) setState({
-        status: "error", message: caught instanceof Error ? caught.message : "Не удалось загрузить отчёт."
-      });
-    });
-    return () => controller.abort();
-  }, [prepared, attempt]);
-
-  function retry() {
-    setPage(0);
-    setState({ status: "loading" });
-    setAttempt((value) => value + 1);
-  }
-
-  return <main className="turnover-workspace turnover-viewer">
-    {prepared.valid && state.status === "success"
-      ? <TurnoverPreviewTable report={state.report} page={page} onPageChange={setPage} />
-      : <div className="turnover-viewer-state">
-        <h1>Оборачиваемость</h1>
-        {!prepared.valid ? <p className="turnover-message turnover-error" role="alert">{prepared.error} Откройте отчёт снова с вкладки параметров.</p>
-          : state.status === "error" ? <div className="turnover-message turnover-error" role="alert">
-            <strong>Не удалось загрузить отчёт.</strong>
-            <p>{state.message}</p>
-            <button type="button" className="turnover-button" onClick={retry}>Повторить</button>
-          </div>
-            : <p className="turnover-note" role="status">Загружаем отчёт…</p>}
-      </div>}
-  </main>;
+    <TurnoverPreviewTable report={report} open={open} />
+  </dialog>;
 }
 
 export function TurnoverReport({ dateRange, onDateRangeChange }: {
@@ -482,24 +211,34 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   const [options, setOptions] = useState<TurnoverOptions | null>(null);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [optionsAttempt, setOptionsAttempt] = useState(0);
-  const [state, setState] = useState<DownloadState>({ status: "idle" });
-  const controller = useRef<AbortController | null>(null);
+  const [state, setState] = useState<ReportState>({ status: "idle" });
+  const [excel, setExcel] = useState<DownloadState>({ status: "idle" });
+  const [view, setView] = useState<"unopened" | "open" | "closed">("unopened");
+  const jsonController = useRef<AbortController | null>(null);
+  const excelController = useRef<AbortController | null>(null);
+  const openButton = useRef<HTMLButtonElement>(null);
   const prepared = useMemo(() => prepareRequest(dateRange, filters), [dateRange.from, dateRange.to, filters]);
   const requestKey = JSON.stringify(prepared.valid ? prepared.request : {
     ...filters, store: [...filters.store].sort(), category: [...filters.category].sort(),
     search: filters.search.trim(), from: dateRange.from, to: dateRange.to
   });
-  const currentState: DownloadState = state.requestKey === requestKey ? state : { status: "idle" };
-  const downloading = currentState.status === "loading";
+  const activeKey = useRef(requestKey);
+  const current = state.status !== "idle" && state.requestKey === requestKey ? state : null;
+  const ready = current?.status === "ready" ? current : null;
+  const downloading = excel.status === "loading";
 
-  useEffect(() => () => {
-    controller.current?.abort();
-  }, []);
-
-  useEffect(() => {
-    controller.current?.abort();
-    controller.current = null;
-    setState((previous) => previous.status === "idle" ? previous : { status: "idle" });
+  useLayoutEffect(() => {
+    if (activeKey.current !== requestKey) {
+      activeKey.current = requestKey;
+      setState({ status: "idle" });
+      setExcel({ status: "idle" });
+      setView("unopened");
+    }
+    return () => {
+      jsonController.current?.abort();
+      excelController.current?.abort();
+      jsonController.current = excelController.current = null;
+    };
   }, [requestKey]);
 
   useEffect(() => {
@@ -538,27 +277,43 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   ];
 
   function update<K extends keyof Filters>(key: K, value: Filters[K]) {
-    if (!downloading) setFilters((previous) => ({ ...previous, [key]: value }));
+    setFilters((previous) => ({ ...previous, [key]: value }));
   }
 
   function updateStores(store: string[]) {
-    if (!downloading) setFilters((previous) => ({ ...previous, store, warehouse: "" }));
+    setFilters((previous) => ({ ...previous, store, warehouse: "" }));
   }
 
   function updateDates(range: InclusiveDateRange) {
-    if (!downloading && (range.from !== dateRange.from || range.to !== dateRange.to)) onDateRangeChange(range);
+    if (range.from !== dateRange.from || range.to !== dateRange.to) onDateRangeChange(range);
+  }
+
+  async function load() {
+    if (!prepared.valid || jsonController.current || ready) return;
+    const controller = new AbortController();
+    jsonController.current = controller;
+    const isCurrent = () => jsonController.current === controller && activeKey.current === requestKey;
+    setState({ status: "loading", requestKey });
+    try {
+      const report = await api.turnoverReport(prepared.request, controller.signal);
+      if (isCurrent()) setState({ status: "ready", requestKey, request: prepared.request, report });
+    } catch (error) {
+      if (isCurrent()) setState({ status: "error", requestKey,
+        message: error instanceof Error ? error.message : "Не удалось загрузить отчёт." });
+    } finally {
+      if (isCurrent()) jsonController.current = null;
+    }
   }
 
   async function download() {
-    if (downloading) return;
-    if (!prepared.valid) { setState({ status: "error", requestKey, message: prepared.error }); return; }
-    controller.current?.abort();
+    if (!ready || excelController.current) return;
     const requestController = new AbortController();
-    controller.current = requestController;
-    setState({ status: "loading", requestKey });
+    excelController.current = requestController;
+    const isCurrent = () => excelController.current === requestController && activeKey.current === ready.requestKey;
+    setExcel({ status: "loading" });
     try {
-      const result = await api.turnoverWorkbook(prepared.request, requestController.signal);
-      if (requestController.signal.aborted || controller.current !== requestController) return;
+      const result = await api.turnoverWorkbook(ready.request, requestController.signal);
+      if (!isCurrent()) return;
       const url = URL.createObjectURL(result.blob);
       const link = document.createElement("a");
       link.href = url;
@@ -567,21 +322,29 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setState({ status: "success", requestKey, message: `Файл ${result.filename} скачан.` });
+      setExcel({ status: "success", message: `Файл ${result.filename} скачан.` });
     } catch (caught) {
-      if (!requestController.signal.aborted) {
-        setState({ status: "error", requestKey, message: caught instanceof Error ? caught.message : "Не удалось сформировать Excel. Повторите выгрузку." });
+      if (isCurrent()) {
+        setExcel({ status: "error", message: caught instanceof Error ? caught.message : "Не удалось сформировать Excel. Повторите выгрузку." });
       }
     } finally {
-      if (controller.current === requestController) controller.current = null;
+      if (isCurrent()) excelController.current = null;
     }
   }
 
-  function cancel() {
-    controller.current?.abort();
-    controller.current = null;
+  function cancelLoad() {
+    jsonController.current?.abort();
+    jsonController.current = null;
     setState({ status: "idle" });
   }
+
+  function cancelExcel() {
+    excelController.current?.abort();
+    excelController.current = null;
+    setExcel({ status: "idle" });
+  }
+
+  const period = ready ? `${previewDate(ready.report.params.from)} — ${previewDate(ready.report.params.to, true)}` : "";
 
   return <section className="reports-section turnover-workspace" aria-labelledby={headingId}>
     <div className="turnover-heading">
@@ -589,12 +352,8 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
       </div>
     </div>
 
-    <form className="turnover-form" action="/reports/turnover" method="get" target="_blank" rel="noopener" noValidate
-      onSubmit={(event) => { if (!prepared.valid || downloading) event.preventDefault(); }}>
-      {prepared.valid ? Object.entries({ ...prepared.request, to: dateRange.to }).flatMap(([name, value]) =>
-        (Array.isArray(value) ? value : [value]).map((entry, index) =>
-          <input type="hidden" name={name} value={String(entry)} key={`${name}:${index}`} />)) : null}
-      <fieldset className="turnover-configuration" disabled={downloading}>
+    <form className="turnover-form" noValidate onSubmit={(event) => { event.preventDefault(); void load(); }}>
+      <fieldset className="turnover-configuration">
         <legend className="turnover-visually-hidden">Параметры отчёта</legend>
         <fieldset className="turnover-fieldset" aria-describedby={periodHintId}>
           <legend>Период</legend>
@@ -663,24 +422,26 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
         </div> : null}
       </fieldset>
 
-      <div className="turnover-download-actions" aria-busy={downloading}>
-        <button type="submit" className="turnover-button turnover-primary" disabled={downloading || !prepared.valid}
-          aria-describedby={!prepared.valid ? periodErrorId : undefined}>Открыть отчёт в новой вкладке</button>
-        <button type="button" className="turnover-button" disabled={downloading || !prepared.valid}
-          aria-describedby={!prepared.valid ? periodErrorId : undefined} onClick={() => void download()}>
-          <Download size={17} aria-hidden="true" />{downloading ? "Формируем Excel…" : "Скачать Excel"}
-        </button>
-        {downloading ? <>
-          <p className="turnover-note" role="status">Формируем файл… Параметры временно недоступны.</p>
-          <button type="button" className="turnover-button" onClick={cancel}>Отменить</button>
-        </> : null}
+      <div className="turnover-download-actions">
+        {ready ? <>
+          <button type="button" ref={openButton} className="turnover-button turnover-primary"
+            onClick={() => setView("open")}>Открыть отчёт</button>
+          <button type="button" className="turnover-button" disabled={downloading} onClick={() => void download()}>
+            <Download size={17} aria-hidden="true" />{downloading ? "Формируем Excel…" : "Скачать Excel"}
+          </button>
+          {downloading && <button type="button" className="turnover-button" onClick={cancelExcel}>Отменить</button>}
+          <p className="turnover-note" role="status">{period} · строк: {formatNumber(ready.report.rows.length)}</p>
+        </> : current?.status === "loading" ? <>
+          <p className="turnover-note" role="status">Загружаем отчёт…</p>
+          <button type="button" className="turnover-button" onClick={cancelLoad}>Отменить</button>
+        </> : <button type="submit" className="turnover-button turnover-primary" disabled={!prepared.valid}
+          aria-describedby={!prepared.valid ? periodErrorId : undefined}>Загрузить отчёт</button>}
       </div>
-      {currentState.status === "error" ? <div className="turnover-message turnover-error" role="alert">
-        <strong>Не удалось сформировать Excel.</strong>
-        <button type="button" className="turnover-button" disabled={!prepared.valid} onClick={() => void download()}>Повторить</button>
-        <details><summary>Подробности ошибки</summary><p>{currentState.message}</p></details>
-      </div> : null}
-      {currentState.status === "success" ? <p className="turnover-message turnover-success" role="status">{currentState.message}</p> : null}
+      {current?.status === "error" && <p className="turnover-message turnover-error" role="alert">{current.message}</p>}
+      {ready && excel.status === "error" && <p className="turnover-message turnover-error" role="alert">{excel.message}</p>}
+      {ready && excel.status === "success" && <p className="turnover-message turnover-success" role="status">{excel.message}</p>}
     </form>
+    {ready && view !== "unopened" && <ReportDialog report={ready.report} period={period}
+      open={view === "open"} onClose={() => setView("closed")} opener={openButton} />}
   </section>;
 }

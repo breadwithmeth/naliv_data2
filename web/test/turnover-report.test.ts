@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { TurnoverPreviewTable, TurnoverReport, TurnoverReportViewer } from "../src/TurnoverReport";
+import { readFile } from "node:fs/promises";
+import { after, before, test, type TestContext } from "node:test";
+import ExcelJS from "exceljs";
+import type { Locator, Page, Route } from "playwright";
+import { turnoverCoefficientBand } from "../../api/src/services/turnover-domain";
 import type { TurnoverPreview, TurnoverPreviewRow } from "../src/api";
+import {
+  previewPath, startTurnoverBrowser, workbookMime, workbookPath, type TurnoverBrowser, type TurnoverBrowserSession
+} from "./turnover-browser";
 
 function row(index = 0): TurnoverPreviewRow {
   return {
@@ -48,116 +52,276 @@ function report(): TurnoverPreview {
   };
 }
 
-function render(data: TurnoverPreview, page = 0): string {
-  return renderToStaticMarkup(createElement(TurnoverPreviewTable, { report: data, page, onPageChange: () => {} }));
+// Setup: npm ci; npx playwright install chromium; npm run test:web:turnover.
+// Alternatively set TURNOVER_CHROMIUM_EXECUTABLE to a local Chromium binary.
+let browser: TurnoverBrowser;
+before(async () => { browser = await startTurnoverBrowser(); });
+after(async () => { await browser?.close(); });
+
+const loadButton = (page: Page) => page.getByRole("button", { name: "Загрузить отчёт", exact: true });
+const openButton = (page: Page) => page.getByRole("button", { name: "Открыть отчёт", exact: true });
+const excelButton = (page: Page) => page.getByRole("button", { name: "Скачать Excel", exact: true });
+const closeButton = (dialog: Locator) => dialog.getByRole("button", { name: "Закрыть", exact: true });
+const expandAll = (dialog: Locator) => dialog.getByRole("button", { name: "Раскрыть всё", exact: true });
+const collapseAll = (dialog: Locator) => dialog.getByRole("button", { name: "Свернуть всё", exact: true });
+const products = (dialog: Locator) => dialog.locator("tbody .turnover-preview-product");
+const groups = (dialog: Locator) => dialog.locator("tr[data-turnover-boundary=group] button");
+const viewport = (dialog: Locator) => dialog.getByRole("region", { name: "Таблица оборачиваемости" });
+const query = (route: Route) => new URL(route.request().url()).searchParams;
+const frame = (page: Page) => page.evaluate(() => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  return promise;
+});
+
+async function setDates(page: Page, from = "2026-11-01", to = "2026-11-03") {
+  await page.locator('input[type="date"]').nth(0).fill(from);
+  await page.locator('input[type="date"]').nth(1).fill(to);
 }
-function section(html: string, tag: string): string {
-  const value = html.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`));
-  assert.ok(value, `missing ${tag}`);
-  return value[1];
+
+async function session(t: TestContext, dates?: [string, string]) {
+  const app = await browser.session(t);
+  await app.goto();
+  await loadButton(app.page).waitFor();
+  await setDates(app.page, ...(dates ?? []));
+  return app;
 }
-function tables(html: string): string[] {
-  return [...html.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/g)].map((match) => match[0]);
+
+async function ready(app: TurnoverBrowserSession, data: TurnoverPreview) {
+  const index = app.previews.count;
+  await loadButton(app.page).click();
+  const req = await app.previews.at(index);
+  await req.fulfill({ json: data });
+  await openButton(app.page).waitFor();
+  return req;
 }
-function productCells(html: string): string[] {
-  const product = section(html, "tbody").match(/<tr><th scope="row" class="turnover-preview-product">[\s\S]*?<\/tr>/);
-  assert.ok(product, "missing product row");
-  return values(product[0]);
+
+async function open(page: Page) {
+  await openButton(page).click();
+  const dialog = page.getByRole("dialog", { name: "Оборачиваемость" });
+  await dialog.waitFor();
+  return dialog;
 }
-function values(html: string): string[] {
-  return [...html.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)]
-    .map((match) => match[1].replace(/<span class="turnover-visually-hidden">[\s\S]*?<\/span>/g, "").replace(/<[^>]*>/g, ""));
+
+async function view(t: TestContext, data: TurnoverPreview) {
+  const to = new Date(Date.parse(data.params.to) - 86_400_000).toISOString().slice(0, 10);
+  const app = await session(t, [data.params.from, to]);
+  if (data.params.profile === "summary") await app.page.getByLabel("Разбить по магазинам").check();
+  if (data.params.includeIncomplete) {
+    await app.page.getByText("Дополнительные настройки", { exact: true }).click();
+    await app.page.getByLabel("Включить строки без полного расчёта").check();
+  }
+  await ready(app, data);
+  return { ...app, dialog: await open(app.page) };
 }
-function builder(to = "2026-11-03", from = "2026-11-01"): string {
-  return renderToStaticMarkup(createElement(TurnoverReport, {
-    dateRange: { from, to }, onDateRangeChange: () => {}
+
+function productRow(dialog: Locator, index: number) {
+  return products(dialog).nth(index).locator("..");
+}
+
+function cells(row: Locator): Promise<string[]> {
+  return row.locator("td").evaluateAll(cells => cells.map(cell => {
+    const copy = cell.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll(".turnover-visually-hidden").forEach(label => label.remove());
+    return (copy.textContent ?? "").trim().replace(/\s+/g, " ");
   }));
 }
 
-test("confirmed idle stock is visible by default and is not presented as zero turnover days", () => {
-  const data = report();
-  const product = data.rows[0]!;
-  Object.assign(product, { idleStock: true, turnoverQty: 0, turnoverQtyDays: null,
-    periodSales: { quantity: 0, cost: 0, revenue: 0, averageDailyQty: 0, averageDailyCost: 0 } });
-  const cells = productCells(render(data));
-  assert.deepEqual(cells.slice(-5), ["10", "0", "3", "0", "Без движения"]);
-});
+function names(dialog: Locator): Promise<string[]> {
+  return products(dialog).evaluateAll(headers => headers.map(header => {
+    const name = header.cloneNode(true) as HTMLElement;
+    name.querySelector(".turnover-preview-unit")?.remove();
+    return (name.textContent ?? "").trim();
+  }));
+}
 
-test("a network SKU with active sales and unvalued idle stock keeps its quantity and does not claim network inactivity", () => {
-  const data = report();
-  const product = data.rows[0]!;
-  product.averageCost = product.turnoverCost = product.turnoverCostDays = null;
-  for (const day of product.daily) day.stockCost = null;
-  const html = render(data);
-  assert.deepEqual(productCells(html), ["20", "10", "2,5", "3", "25", "1,2"]);
-  assert.doesNotMatch(html, /Без движения/);
-});
+function setRows(data: TurnoverPreview, rows: TurnoverPreviewRow[]) {
+  data.rows = rows;
+  data.summary.rowCount = data.summary.totalRowCount = rows.length;
+  data.summary.skuCount = new Set(rows.map(item => item.sku).filter(Boolean)).size;
+}
 
-test("the preview initially mounts no daily cells and shows the product's real base unit", () => {
-  const data = report();
-  data.rows[0].unit = "кг [fd33bbe6-8cd3-11e8-840d-3085a9455e10]";
-  const html = render(data);
-  const headers = section(html, "thead");
-  for (const label of ["Номенклатура", "Сумма остатков за период", "Средний товарный запас",
-    "Коэффициент оборачиваемости", "Дней в периоде", "Продажи за период", "Дни оборота"]) {
-    assert.ok(headers.includes(`>${label}</th>`), `missing standard column ${label}`);
+test("builder keeps advanced filters closed, applies inclusive dates and does not calculate on input", async t => {
+  const app = await session(t);
+  const { page } = app;
+  const form = page.locator("form.turnover-form");
+  const advanced = form.locator("details.turnover-advanced");
+  assert.equal(await form.locator('button[type="submit"]').count(), 1);
+  assert.equal(await form.locator('input[type="hidden"], input[type="radio"]').count(), 0);
+  assert.equal(await form.locator("input[type=date]").count(), 2);
+  assert.match(await form.textContent() ?? "", /Период.*Магазины.*Товар.*Разбить по магазинам/s);
+  assert.equal(await advanced.evaluate(el => (el as HTMLDetailsElement).open), false);
+  for (const label of ["Категории / группы товаров", "Склад", "Бренд", "Включать офисы и отделы",
+    "Исключить нулевые товары", "Включить строки без полного расчёта"]) {
+    assert.equal(await advanced.getByText(label, { exact: true }).first().isVisible(), false, label);
   }
-  assert.equal((headers.match(/<tr>/g) ?? []).length, 1);
-  assert.doesNotMatch(headers, /01\.11\.|02\.11\.|03\.11\.|Магазин|Деньги/);
-  assert.match(html, /<button[^>]*aria-expanded="false"[^>]*aria-controls="([^"]+)"[^>]*>Показать дни \(3\)<\/button>/);
-  const controlledId = html.match(/aria-controls="([^"]+)"/)?.[1];
-  assert.ok(controlledId && html.includes(`id="${controlledId}"`));
-  assert.match(section(html, "tbody"), /Товар 0[\s\S]*>кг<\/span>/);
-  assert.doesNotMatch(html, /fd33bbe6-8cd3-11e8-840d-3085a9455e10/);
-  assert.deepEqual(productCells(html), ["20", "10", "2,5", "3", "25", "1,2"]);
-  assert.doesNotMatch(html, /turnover-result-summary|turnover-preview-identifiers|Подробные столбцы|Розничная выручка|SKU|Артикул|article-0|sku-0|Остаток на начало|Остаток на конец|Оборотов за период:|<dl|n\/a|Шкала коэффициента|показатель не рассчитан\./);
+  assert.equal(await advanced.locator("input:checked").count(), 0);
+  assert.equal(await form.getByLabel("Разбить по магазинам").isChecked(), false);
+  await form.locator("summary").filter({ hasText: /^Магазины/ }).click();
+  await form.getByLabel("Магазин А", { exact: true }).check();
+  assert.equal(await form.getByLabel("Разбить по магазинам").isChecked(), false);
+  await form.locator("summary").filter({ hasText: /^Магазины/ }).click();
+  await form.getByRole("searchbox", { name: "Товар", exact: true }).fill("  Coca  ");
+  assert.equal(await openButton(page).count(), 0);
+  assert.equal(await excelButton(page).count(), 0);
+  assert.equal(await page.locator("dialog, .turnover-preview-table").count(), 0);
+  assert.doesNotMatch(await form.textContent() ?? "", /Ваш Excel|Ответ из кэша|n\/a|Подробные столбцы|Как считается/);
+  assert.equal(app.previews.count, 0);
+  const request = await ready(app, report());
+  assert.deepEqual(Object.fromEntries(query(request)), {
+    from: "2026-11-01", to: "2026-11-04", storeScope: "retail", includeIncomplete: "false", search: "Coca",
+    mode: "quantity", groupBy: "sku", sort: "name", profile: "sample", store: "store-a"
+  });
+  assert.equal(app.workbooks.count, 0);
+  assert.equal(await page.locator("dialog[open], .turnover-preview-table").count(), 0);
+  assert.equal(await excelButton(page).isEnabled(), true);
+  await form.getByRole("searchbox", { name: "Товар", exact: true }).fill("Coca");
+  assert.equal(await openButton(page).isEnabled(), true, "equivalent trimmed filters keep the ready report");
+  await form.getByRole("searchbox", { name: "Товар", exact: true }).fill("other");
+  assert.equal(await loadButton(page).isEnabled(), true);
+  assert.equal(await openButton(page).count(), 0);
+  assert.equal(await excelButton(page).count(), 0);
+  assert.equal(app.previews.count, 1);
 });
 
-test("a two-day period uses both endpoint halves even while the daily columns are hidden", () => {
+test("builder accepts 366 inclusive days but rejects one day and 367 days", async t => {
+  const { page, previews } = await session(t);
+  for (const [from, to, valid] of [
+    ["2026-11-01", "2026-11-01", false],
+    ["2025-11-01", "2026-11-01", true],
+    ["2025-11-01", "2026-11-02", false]
+  ] as const) {
+    await setDates(page, from, to);
+    assert.equal(await loadButton(page).isEnabled(), valid);
+    await page.getByText(valid ? /обе даты включены.*366 дн\./i : "Выберите от 2 до 366 календарных дней.").waitFor();
+  }
+  assert.equal(previews.count, 0);
+});
+
+test("one category starts closed; quantity headers, units and values remain without a monetary duplicate", async t => {
+  const data = report();
+  const item = data.rows[0];
+  item.unit = "кг [fd33bbe6-8cd3-11e8-840d-3085a9455e10]";
+  item.periodSales = { ...item.periodSales, cost: 150 };
+  item.turnoverCost = 1.5;
+  item.turnoverCostDays = 2;
+  const { dialog } = await view(t, data);
+  const table = dialog.getByRole("table", { name: /количество в единицах товара/ });
+  assert.equal(await dialog.locator("table").count(), 1);
+  assert.equal(await table.locator('tr[data-turnover-boundary="store"]').count(), 0);
+  assert.equal(await viewport(dialog).getAttribute("tabindex"), "0");
+  assert.deepEqual(await table.getByRole("columnheader").allTextContents(), [
+    "Номенклатура", "Сумма остатков за период", "Средний товарный запас", "Коэффициент оборачиваемости",
+    "Дней в периоде", "Продажи за период", "Дни оборота"
+  ]);
+  assert.equal(await products(dialog).count(), 0);
+  assert.equal(await groups(dialog).count(), 1);
+  assert.match(await groups(dialog).textContent() ?? "", /Верхняя группа.*1/s);
+  assert.equal(await groups(dialog).getAttribute("aria-expanded"), "false");
+  const days = dialog.getByRole("button", { name: "Показать дни (3)", exact: true });
+  assert.equal(await days.getAttribute("aria-expanded"), "false");
+  assert.equal(await days.getAttribute("aria-controls"), await table.getAttribute("id"));
+  assert.equal(await dialog.locator(".turnover-preview-day").count(), 0);
+  await groups(dialog).press("Enter");
+  assert.equal(await groups(dialog).getAttribute("aria-expanded"), "true");
+  assert.equal(await products(dialog).locator(".turnover-preview-unit").textContent(), "кг");
+  assert.deepEqual(await cells(productRow(dialog, 0)), ["20", "10", "2,5", "3", "25", "1,2"]);
+  assert.equal((await cells(table.locator("tfoot"))).at(-2), "25");
+  assert.doesNotMatch(await dialog.textContent() ?? "", /fd33bbe6|₸|По стоимости|Розничная выручка|SKU|Артикул|sku-0|article-0|Подробные столбцы|Остаток на начало|Остаток на конец|Оборотов за период:|n\/a|Шкала коэффициента|\b100\b|\b150\b|\b400\b/);
+  await days.click();
+  assert.equal(await dialog.getByRole("button", { name: "Скрыть дни" }).getAttribute("aria-expanded"), "true");
+  assert.deepEqual(await table.locator("thead .turnover-preview-date").allTextContents(), ["01.11.", "01.11. ½", "02.11.", "03.11. ½", "03.11."]);
+  assert.deepEqual(await productRow(dialog, 0).locator(".turnover-preview-day").allTextContents(), ["8", "4", "10", "6", "12"]);
+  await groups(dialog).press("Space");
+  assert.equal(await products(dialog).count(), 0);
+  assert.equal(await table.locator("thead .turnover-preview-date").count(), 5);
+});
+
+test("default quantity selection keeps confirmed idle stock and active rows with unvalued stock", async t => {
+  const data = report();
+  const idle = row(0);
+  Object.assign(idle, { idleStock: true, turnoverQty: 0, turnoverQtyDays: null,
+    periodSales: { quantity: 0, cost: 0, revenue: 0, averageDailyQty: 0, averageDailyCost: 0 } });
+  const active = row(1);
+  active.averageCost = active.turnoverCost = active.turnoverCostDays = null;
+  for (const day of active.daily) day.stockCost = null;
+  setRows(data, [idle, active]);
+  const { dialog } = await view(t, data);
+  await expandAll(dialog).click();
+  assert.deepEqual((await cells(productRow(dialog, 0))).slice(-5), ["10", "0", "3", "0", "Без движения"]);
+  assert.deepEqual(await cells(productRow(dialog, 1)), ["20", "10", "2,5", "3", "25", "1,2"]);
+  assert.doesNotMatch(await productRow(dialog, 1).textContent() ?? "", /Без движения/);
+});
+
+test("known zero and signed returns remain numeric while uncalculated quantities have accessible dashes", async t => {
+  const data = report();
+  data.params.includeIncomplete = true;
+  const missing = row(2);
+  missing.daily[0].quantity = null;
+  Object.assign(missing, {
+    averageQty: null, turnoverQty: null, turnoverQtyDays: null,
+    periodSales: { ...missing.periodSales, quantity: 0 }
+  });
+  const returned = { ...row(3), noSalesHistory: true, periodSales: { ...row().periodSales, quantity: -3 } };
+  setRows(data, [missing, returned]);
+  const { dialog } = await view(t, data);
+  await expandAll(dialog).click();
+  assert.equal(await productRow(dialog, 0).locator('[aria-label="Показатель не рассчитан"]').count(), 4);
+  assert.equal((await cells(productRow(dialog, 0))).at(-2), "0");
+  assert.equal((await cells(productRow(dialog, 1))).at(-2), "-3");
+  assert.match(await dialog.textContent() ?? "", /Включены строки без полного расчёта/);
+  assert.doesNotMatch(await productRow(dialog, 1).textContent() ?? "", /нет продаж|продаж не было|истори|n\/a/);
+  await dialog.getByRole("button", { name: "Показать дни (3)" }).click();
+  assert.equal(await productRow(dialog, 0).locator('.turnover-preview-day [aria-label="Показатель не рассчитан"]').count(), 2);
+});
+
+test("coefficient bands depend on raw thresholds, never the rounded display", async t => {
+  assert.equal(turnoverCoefficientBand(NaN), null);
+  assert.equal(turnoverCoefficientBand(Infinity), null);
+  const data = report();
+  data.params.includeIncomplete = true;
+  setRows(data, [-1, 0, 1, 1.999, 2, 2.999, 3, 3.01, null, NaN, Infinity]
+    .map((value, index) => ({ ...row(index), turnoverQty: value })));
+  const { dialog } = await view(t, data);
+  await expandAll(dialog).click();
+  const body = dialog.locator("tbody");
+  for (const [band, label, count] of [["red", "Плохо", 3], ["orange", "Средне", 2], ["green", "Хорошо", 2]] as const) {
+    const selected = body.locator(`.turnover-coefficient-${band}`);
+    assert.equal(await selected.count(), count);
+    assert.match(await selected.locator(".turnover-visually-hidden").first().textContent() ?? "", new RegExp(label));
+  }
+  assert.equal(await productRow(dialog, 3).locator(".turnover-coefficient-red").count(), 1);
+  assert.equal((await cells(productRow(dialog, 3)))[2], "2");
+  assert.equal((await cells(productRow(dialog, 0)))[2], "-1");
+  assert.equal(await body.locator('[aria-label="Показатель не рассчитан"]').count(), 3);
+  for (const index of [8, 9, 10]) assert.equal((await cells(productRow(dialog, index)))[2], "—");
+  assert.equal((await cells(body)).filter(value => value === "1,2").length, data.rows.length);
+  assert.doesNotMatch((await body.allTextContents()).join(" "), /n\/a/);
+});
+
+test("two-day selection keeps both half-endpoints and uses authoritative overall totals", async t => {
   const data = report();
   data.params.from = "2026-10-31";
   data.params.to = "2026-11-02";
-  const product = data.rows[0]!;
-  product.daily = [100, 200].map((quantity, index) => ({
-    ...product.daily[index], date: index ? "2026-11-01" : "2026-10-31", quantity, weight: 0.5
+  const item = data.rows[0];
+  item.daily = [100, 200].map((quantity, index) => ({
+    ...item.daily[index], date: index ? "2026-11-01" : "2026-10-31", quantity, weight: 0.5
   }));
-  Object.assign(product, { averageQty: 777, turnoverQty: 4, turnoverQtyDays: 0.5 });
-  data.totals.overall.daily = product.daily.map((day) => ({ ...day }));
-  const html = render(data);
-  assert.match(html, /Показать дни \(2\)/);
-  assert.deepEqual(productCells(html), ["150", "777", "4", "2", "25", "0,5"]);
+  Object.assign(item, { averageQty: 777, turnoverQty: 4, turnoverQtyDays: 0.5 });
+  Object.assign(data.totals.overall, {
+    daily: item.daily.map((day, index) => ({ ...day, quantity: index * 200 })),
+    averageQty: 50, turnoverQty: 7, turnoverQtyDays: 0.43,
+    periodSales: { ...data.totals.overall.periodSales, quantity: 350 }
+  });
+  const { dialog } = await view(t, data);
+  await dialog.getByRole("button", { name: "Показать дни (2)" }).waitFor();
+  await expandAll(dialog).click();
+  assert.deepEqual(await cells(productRow(dialog, 0)), ["150", "777", "4", "2", "25", "0,5"]);
+  assert.deepEqual(await cells(dialog.locator("tfoot")), ["100", "50", "7", "2", "350", "0,43"]);
+  assert.doesNotMatch(await dialog.locator("header").allTextContents().then(value => value.join(" ")) ?? "", /350/);
 });
 
-test("standard preview pages 100 products and repeats sections with unchanged authoritative totals", () => {
-  const data = report();
-  data.params.profile = "summary";
-  data.rows = Array.from({ length: 101 }, (_, index) => row(index));
-  data.totals.overall.periodSales = { ...data.totals.overall.periodSales, quantity: 2525 };
-  data.totals.overall.averageQty = 900;
-  data.totals.byStore = [{ storeKey: "store-a", total: data.totals.overall, byUnit: [] }];
-  const first = render(data);
-  const second = render(data, 1);
-  assert.equal((section(first, "tbody").match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 100);
-  assert.equal((section(second, "tbody").match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 1);
-  for (const html of [first, second]) {
-    const body = section(html, "tbody");
-    assert.match(body, /scope="rowgroup"[^>]*>[\s\S]*?>Магазин А</);
-    assert.match(body, /scope="rowgroup"[^>]*>[\s\S]*?>Верхняя группа</);
-    assert.ok(body.indexOf("Магазин А") < body.indexOf("Верхняя группа"));
-    assert.match(section(html, "tfoot"), />900<\/td>/);
-    assert.match(section(html, "tfoot"), /2[\u00a0\u202f ]525/);
-  }
-  assert.doesNotMatch(section(first, "tbody"), /Товар 100</);
-  assert.match(section(second, "tbody"), /Товар 100</);
-  assert.doesNotMatch(section(first, "tbody"), /ИТОГО по магазину/);
-  assert.match(section(second, "tbody"), /Товар 100<[\s\S]*ИТОГО по магазину[\s\S]*2[\u00a0\u202f ]525/);
-  assert.equal(section(first, "tfoot"), section(second, "tfoot"));
-  assert.match(second, /Страница 2 из 2/);
-  assert.match(second, /role="region"[^>]*aria-label="Таблица оборачиваемости[^"]*"[^>]*tabindex="0"/);
-  assert.match(second, /<caption[^>]*>/);
-});
-
-test("preview combines shortening and exclusions in one short notice and keeps full warnings closed", () => {
+test("shortened coverage and exclusions have one short notice; detailed warnings stay closed", async t => {
   const data = report();
   data.coverage.requestedTo = "2026-11-06";
   data.excludedIncompleteRows = 7;
@@ -166,83 +330,71 @@ test("preview combines shortening and exclusions in one short notice and keeps f
     "Часть денежных показателей недоступна из-за пропусков снимков или учётных цен.",
     "Не во все дни выбранного периода есть проведённый розничный отчёт магазина."
   ];
-  const html = render(data);
-  assert.match(html, /01\.11\.2026 — 03\.11\.2026/);
-  assert.match(html, /Период сокращён[^<]*05\.11\.2026/);
-  assert.match(html, /Исключено строк без полного расчёта: 7/);
-  assert.match(html, /Нет дневных снимков остатков: 1 из 3/);
-  const details = section(html, "details");
-  assert.match(details, /Предупреждения \(1\)/);
-  assert.ok(details.includes(data.warnings[1]));
-  assert.doesNotMatch(html, /Часть денежных показателей|<details[^>]*\bopen/);
-  const visible = html.replace(/<details[^>]*>[\s\S]*?<\/details>/g, "");
-  assert.doesNotMatch(visible, /Не во все дни/);
+  const app = await session(t, ["2026-11-01", "2026-11-05"]);
+  await ready(app, data);
+  const dialog = await open(app.page);
+  assert.match(await dialog.textContent() ?? "", /01\.11\.2026 — 03\.11\.2026/);
+  const notice = dialog.getByRole("status");
+  assert.equal(await notice.count(), 1);
+  assert.match(await notice.textContent() ?? "", /Период сокращён.*05\.11\.2026.*Исключено строк без полного расчёта: 7.*Нет дневных снимков остатков: 1 из 3/s);
+  const summary = dialog.getByText("Предупреждения (1)", { exact: true });
+  const detail = dialog.getByText(data.warnings[1], { exact: true });
+  assert.equal(await detail.isVisible(), false);
+  await summary.click();
+  assert.equal(await detail.isVisible(), true);
+  assert.equal(await dialog.getByText(data.warnings[0], { exact: true }).count(), 0);
 });
 
-test("the standard preview does not expose cost amounts or a second basis", () => {
+test("incomplete selection hides ineligible quantity rows and withholds totals for a different population", async t => {
   const data = report();
-  const product = data.rows[0]!;
-  product.periodSales = { ...product.periodSales, cost: 150 };
-  product.turnoverCost = 1.5;
-  product.turnoverCostDays = 2;
-  const html = render(data);
-  assert.match(section(html, "caption"), /количество в единицах товара/);
-  assert.deepEqual(productCells(html), ["20", "10", "2,5", "3", "25", "1,2"]);
-  assert.doesNotMatch(html, /₸|По стоимости|Розничная выручка|SKU|Артикул/);
-  assert.doesNotMatch(section(html, "tbody"), />(?:100|150|400)<\/td>/);
-  assert.equal(tables(html).length, 1);
-  assert.match(section(html, "tfoot"), />25<\/td>/);
-});
-
-test("coefficient color uses raw thresholds and unknown numbers have a neutral accessible dash", () => {
-  const data = report();
+  data.excludedIncompleteRows = 2;
+  setRows(data, [
+    { ...row(0), name: "Complete missing identity", sku: null, article: null },
+    { ...row(1), name: "Unknown opening", openingQty: null },
+    { ...row(2), name: "Unknown ratios", turnoverQtyDays: null },
+    { ...row(3), name: "Nonfinite cost ignored in quantity", averageCost: Infinity }
+  ]);
+  const { page, dialog, ...app } = await view(t, data);
+  await expandAll(dialog).click();
+  assert.deepEqual(await names(dialog), ["Complete missing identity", "Nonfinite cost ignored in quantity"]);
+  assert.equal(await dialog.locator('tbody [aria-label="Показатель не рассчитан"]').count(), 0);
+  assert.match(await dialog.textContent() ?? "", /Исключено строк без полного расчёта: 4/);
+  assert.notEqual((await cells(dialog.locator("tfoot")))[2], "2,5");
+  assert.ok(await dialog.locator('tfoot [aria-label="Показатель не рассчитан"]').count() > 0);
+  await closeButton(dialog).click();
+  await page.getByText("Дополнительные настройки", { exact: true }).click();
+  await page.getByLabel("Включить строки без полного расчёта").check();
   data.params.includeIncomplete = true;
-  data.rows = [-1, 0, 1, 1.999, 2, 2.999, 3, 3.01, null, NaN, Infinity].map((value, index) => ({ ...row(index), turnoverQty: value }));
-  const html = render(data);
-  const body = section(html, "tbody");
-  assert.equal((body.match(/turnover-coefficient-red/g) ?? []).length, 3);
-  assert.equal((body.match(/turnover-coefficient-orange/g) ?? []).length, 2);
-  assert.equal((body.match(/turnover-coefficient-green/g) ?? []).length, 2);
-  assert.match(body, /turnover-coefficient-red[^>]*>2</, "display rounding does not set the status");
-  assert.match(body, /<td class="turnover-numeric">-1<\/td>/);
-  for (const label of ["Плохо", "Средне", "Хорошо"]) assert.match(body, new RegExp(`turnover-visually-hidden">[^<]*${label}`));
-  assert.equal((body.match(/aria-label="Показатель не рассчитан"/g) ?? []).length, 3);
-  assert.equal((body.match(/>1,2<\/td>/g) ?? []).length, data.rows.length);
-  assert.doesNotMatch(body, /n\/a/);
+  await ready({ page, ...app }, data);
+  const optedIn = await open(page);
+  assert.equal(await products(optedIn).count(), 0);
+  assert.equal(await optedIn.getByRole("button", { name: "Показать дни (3)" }).getAttribute("aria-expanded"), "false");
+  await expandAll(optedIn).click();
+  assert.deepEqual(await names(optedIn), data.rows.map(item => item.name));
+  assert.ok(await optedIn.locator('tbody [aria-label="Показатель не рассчитан"]').count() > 0);
 });
 
-test("standard daily and calculated nulls stay accessible while known zero and signed returns stay numeric", () => {
-  const data = report();
-  data.params.includeIncomplete = true;
-  data.rows[0].daily[0].quantity = null;
-  Object.assign(data.rows[0], {
-    averageQty: null, turnoverQty: null, turnoverQtyDays: null,
-    periodSales: { ...data.rows[0].periodSales, quantity: 0 }
-  });
-  let html = render(data);
-  assert.equal((section(html, "tbody").match(/aria-label="Показатель не рассчитан"/g) ?? []).length, 4);
-  assert.match(section(html, "tbody"), />0<\/td>/);
-  assert.match(html, /Включены строки без полного расчёта/);
-  data.rows[0].periodSales.quantity = -3;
-  data.rows[0].noSalesHistory = true;
-  html = render(data);
-  assert.match(section(html, "tbody"), />-3<\/td>/);
-  assert.doesNotMatch(html, /нет продаж|продаж не было|истори|n\/a/);
-});
-
-test("missing identifiers and unknown stores do not add columns or identifier noise", () => {
+test("missing identifiers and units stay neutral and do not add quantitative columns", async t => {
   const data = report();
   data.params.includeIncomplete = true;
   data.params.profile = "summary";
-  Object.assign(data.rows[0], { sku: "", article: null, storeKey: null, storeName: "Stale store name", unit: null });
-  const html = render(data);
-  assert.match(section(html, "tbody"), /Магазин не определён/);
-  assert.doesNotMatch(section(html, "tbody"), /SKU:|Артикул:|n\/a|Stale store name/);
-  assert.doesNotMatch(section(html, "thead"), />Магазин<\/th>|>Единица<\/th>/);
-  assert.equal(productCells(html).length, 6);
+  Object.assign(data.rows[0], { sku: "", article: null, storeKey: null, storeName: "Stale store name", unit: null,
+    rootGroupKey: "unnamed", rootGroupName: "" });
+  data.totals.overall.unit = null;
+  const { dialog } = await view(t, data);
+  await expandAll(dialog).click();
+  assert.match(await dialog.textContent() ?? "", /Магазин не определён.*Группа без названия/s);
+  assert.doesNotMatch(await dialog.textContent() ?? "", /SKU:|Артикул:|n\/a|Stale store name/);
+  assert.equal(await dialog.getByRole("columnheader", { name: /^(Магазин|Единица)$/ }).count(), 0);
+  assert.equal((await cells(productRow(dialog, 0))).length, 6);
+  assert.equal(await dialog.locator("tfoot th").textContent(), "ИТОГО");
+  assert.match(await dialog.textContent() ?? "", /разные или неизвестные единицы/);
+  for (const span of await dialog.locator('th[scope="rowgroup"]').evaluateAll(headers => headers.map(header => (header as HTMLTableCellElement).colSpan))) {
+    assert.equal(span, 7);
+  }
 });
 
-test("mixed totals keep quantities in their own unit rows without a money total", () => {
+test("mixed totals remain separate by unit and use server totals even with the category collapsed", async t => {
   const data = report();
   data.totals.byUnit = [
     { ...data.totals.overall, unitKey: "unit:pieces", unit: "шт",
@@ -257,181 +409,573 @@ test("mixed totals keep quantities in their own unit rows without a money total"
   });
   data.params.profile = "summary";
   data.totals.byStore = [{ storeKey: "store-a", total: data.totals.overall, byUnit: data.totals.byUnit }];
-  const html = render(data);
-  const footer = section(html, "tfoot");
-  assert.deepEqual([...footer.matchAll(/<th scope="row">(.*?)<\/th>/g)].map(match => match[1]),
-    ["ИТОГО · шт", "ИТОГО · кг"]);
-  assert.deepEqual([...footer.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map(match => values(match[1]).slice(-3)), [
-    ["3", "109", "1,2"],
-    ["3", "15", "1,2"]
-  ]);
-  assert.doesNotMatch(html, /unit:pieces|unit-kilograms/);
-  const body = section(html, "tbody");
+  const { dialog } = await view(t, data);
+  const overall = dialog.locator("tfoot tr");
+  const subtotals = dialog.locator("tbody tr").filter({ hasText: /ИТОГО по магазину/ });
+  assert.equal(await products(dialog).count(), 0);
+  assert.deepEqual(await overall.locator("th").allTextContents(), ["ИТОГО · шт", "ИТОГО · кг"]);
+  assert.deepEqual(await subtotals.locator("th").allTextContents(), ["ИТОГО по магазину · шт", "ИТОГО по магазину · кг"]);
+  for (const totals of [overall, subtotals]) {
+    assert.deepEqual((await cells(totals.nth(0))).slice(-3), ["3", "109", "1,2"]);
+    assert.deepEqual((await cells(totals.nth(1))).slice(-3), ["3", "15", "1,2"]);
+  }
+  await expandAll(dialog).click();
+  const body = (await dialog.locator("tbody").allTextContents()).join(" ");
   assert.ok(body.indexOf("ИТОГО по магазину · шт") > body.indexOf("Товар 0"));
-  assert.match(body, /ИТОГО по магазину · кг/);
-  assert.doesNotMatch(html.split("<table")[0], /turnover-total|<dl/);
+  assert.doesNotMatch(await dialog.textContent() ?? "", /unit:pieces|unit-kilograms|₸/);
 });
 
-test("unknown units are labelled neutrally rather than declared incompatible", () => {
-  const data = report();
-  data.params.includeIncomplete = true;
-  data.rows[0].unit = null;
-  data.totals.overall.unit = null;
-  const html = render(data);
-  assert.match(section(html, "tfoot"), />ИТОГО</);
-  assert.match(html, /разные или неизвестные единицы/);
-});
-
-test("standard footer uses daily totals and ratios rather than rows or summary", () => {
-  const data = report();
-  data.totals.overall.daily = [0, 50, 100].map((quantity, index) => ({ ...data.totals.overall.daily[index], quantity }));
-  data.totals.overall.averageQty = 50;
-  data.totals.overall.turnoverQty = 7;
-  data.totals.overall.turnoverQtyDays = 0.43;
-  data.totals.overall.periodSales = { ...data.totals.overall.periodSales, quantity: 350 };
-  const html = render(data);
-  const footer = section(html, "tfoot");
-  assert.deepEqual(values(footer), ["100", "50", "7", "3", "350", "0,43"]);
-  assert.doesNotMatch(html.split("<table")[0], /350|turnover-result-summary|<dl/);
-});
-
-test("empty selection displays recovery guidance without sections or unavailable footer", () => {
-  const data = report();
-  data.rows = [];
-  data.warnings = ["Фильтрам не соответствуют наблюдаемые остатки."];
-  const html = render(data);
-  assert.match(section(html, "tbody"), /По выбранным условиям товаров нет/);
-  assert.match(html, /Измените отбор/);
-  assert.match(section(html, "details"), /Фильтрам не соответствуют наблюдаемые остатки/);
-  assert.doesNotMatch(html, /<tfoot|ИТОГО|scope="rowgroup"|aria-label="Показатель не рассчитан"/);
-});
-
-test("builder exposes essential controls with one primary submit and all secondary filters initially closed", () => {
-  const html = builder();
-  const formTag = html.match(/<form\b[^>]*>/)?.[0] ?? "";
-  for (const attribute of ['action="/reports/turnover"', 'target="_blank"', 'rel="noopener"']) {
-    assert.ok(formTag.includes(attribute), `missing ${attribute}`);
+async function pairedReport(): Promise<TurnoverPreview> {
+  try {
+    return JSON.parse(await readFile(new URL("../../verify-out-paired/turnover-preview.json", import.meta.url), "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  assert.match(html, /<button[^>]*type="submit"[^>]*turnover-primary[^>]*>Открыть отчёт в новой вкладке<\/button>/);
-  assert.match(html, /<input type="hidden" name="mode" value="quantity"/);
-  assert.match(html, /<input type="hidden" name="to" value="2026-11-03"/);
-  assert.doesNotMatch(html, /<table/);
-  assert.equal((html.match(/class="[^"]*turnover-primary/g) ?? []).length, 1);
-  assert.match(html, /<button[^>]*type="button"[^>]*>[\s\S]*?Скачать Excel<\/button>/);
-  assert.doesNotMatch(html, /<aside|Ваш Excel|Ответ из кэша|n\/a|Подробные столбцы|Как считается/);
-  const advancedStart = html.indexOf('<details class="turnover-advanced">');
-  assert.ok(advancedStart >= 0);
-  const essential = html.slice(0, advancedStart);
-  for (const label of ["Период", "Магазины", "Товар", "Разбить по магазинам"]) {
-    assert.ok(essential.includes(label), `missing essential control ${label}`);
-  }
-  assert.doesNotMatch(essential, /type="radio"|<legend>Показатели<\/legend>/);
-  assert.equal((essential.match(/type="date"/g) ?? []).length, 2);
-  const advanced = html.slice(advancedStart, html.indexOf('<div class="turnover-download-actions"'));
-  assert.doesNotMatch(advanced, /<details[^>]*\bopen/);
-  for (const label of ["Категории / группы товаров", "Склад", "Бренд", "Включать офисы и отделы", "Исключить нулевые товары", "Включить строки без полного расчёта"]) {
-    assert.ok(advanced.includes(label), `missing advanced setting ${label}`);
-    assert.ok(!essential.includes(label), `secondary setting outside advanced: ${label}`);
-  }
-  assert.doesNotMatch(advanced, /type="checkbox"[^>]*checked/);
-});
-
-test("standalone viewer shows a loading state without dashboard navigation or builder form", () => {
-  const html = renderToStaticMarkup(createElement(TurnoverReportViewer, { search: "?from=2026-11-01&to=2026-11-03" }));
-  assert.match(html, /<main[^>]*turnover-viewer/);
-  assert.match(html, /<h1>Оборачиваемость<\/h1>/);
-  assert.match(html, /role="status"[^>]*>Загружаем отчёт/);
-  assert.doesNotMatch(html, /<nav|<form|<table/);
-});
-
-test("standalone viewer explains an invalid period without pretending to load a report", () => {
-  const html = renderToStaticMarkup(createElement(TurnoverReportViewer, { search: "?from=2026-11-01&to=2026-11-01" }));
-  assert.match(html, /role="alert"[^>]*>Выберите от 2 до 366 календарных дней/);
-  assert.doesNotMatch(html, /Загружаем отчёт/);
-});
-
-test("builder requires at least two dates for the standard half-endpoint layout", () => {
-  const html = builder("2026-11-01");
-  assert.match(html, /Выберите от 2 до 366 календарных дней/);
-  assert.match(html, /type="submit"[^>]*disabled/);
-});
-
-test("builder accepts a 366-day period across calendar years but rejects 367 days", () => {
-  const largest = builder("2026-11-01", "2025-11-01");
-  assert.match(largest, /366 дн\./);
-  assert.doesNotMatch(largest, /type="submit"[^>]*disabled/);
-  const tooLong = builder("2026-11-02", "2025-11-01");
-  assert.match(tooLong, /Выберите от 2 до 366 календарных дней/);
-  assert.match(tooLong, /type="submit"[^>]*disabled/);
-});
-
-test("default preview keeps calculation exclusions and optional identities independent of presentation", () => {
   const data = report();
-  data.excludedIncompleteRows = 2;
-  data.rows = [
-    { ...row(0), name: "Complete missing identity", sku: null, article: null },
-    { ...row(1), name: "Unknown opening", openingQty: null },
-    { ...row(2), name: "Unknown ratios", turnoverQtyDays: null },
-    { ...row(3), name: "Nonfinite cost ignored in quantity", averageCost: Infinity }
+  Object.assign(data.params, { profile: "summary", sort: "name" });
+  setRows(data, Array.from({ length: 148 }, (_, index) => {
+    const inStore = index % 74;
+    const group = inStore < 30 ? "g1" : inStore < 60 ? "g2" : inStore < 73 ? "g3" : null;
+    return { ...row(index), name: `Товар ${String(index).padStart(3, "0")}`, unit: inStore % 4 ? "шт" : "кг",
+      storeKey: index < 74 ? "store-a" : "store-b", storeName: index < 74 ? "Магазин А" : "Магазин Б",
+      rootGroupKey: group, rootGroupName: group === "g3" ? "Другая категория" : group === null ? "" : "Категория-тёзка" };
+  }));
+  data.totals.byUnit = [
+    { ...data.totals.overall, unitKey: "unit:kg", unit: "кг" },
+    { ...data.totals.overall, unitKey: "unit:pieces", unit: "шт" }
   ];
-  const html = render(data);
-  const body = section(html, "tbody");
-  assert.match(body, /Complete missing identity/);
-  assert.match(body, /Nonfinite cost ignored in quantity/);
-  assert.doesNotMatch(body, /Unknown opening|Unknown ratios|Показатель не рассчитан/);
-  assert.match(html, /Исключено строк без полного расчёта: 4/);
-  assert.doesNotMatch(section(html, "tfoot"), />2,5</, "filtered DTO cannot keep totals for another population");
-  assert.match(section(html, "tfoot"), /aria-label="Показатель не рассчитан"/);
-  data.params.includeIncomplete = true;
-  const optedIn = render(data);
-  assert.match(section(optedIn, "tbody"), /Unknown opening/);
-  assert.match(section(optedIn, "tbody"), /Unknown ratios/);
-  assert.match(section(optedIn, "tbody"), /Показатель не рассчитан/);
+  data.totals.byStore = ["store-a", "store-b"].map(storeKey => ({
+    storeKey, total: data.totals.overall, byUnit: data.totals.byUnit
+  }));
+  return data;
+}
+
+async function scrollToRow(dialog: Locator, row: Locator, fraction: number) {
+  const scroll = await viewport(dialog).boundingBox();
+  const target = await row.boundingBox();
+  assert.ok(scroll && target);
+  await viewport(dialog).evaluate((element, dy) => { element.scrollTop += dy; },
+    target.y - scroll.y - scroll.height * fraction);
+}
+
+function scrollPosition(dialog: Locator) {
+  return viewport(dialog).evaluate(element => [element.scrollTop, element.scrollLeft]);
+}
+
+function backgroundPosition(page: Page) {
+  return page.evaluate(() => [window.scrollX, window.scrollY, document.body.getAttribute("style"),
+    document.documentElement.getAttribute("style")]);
+}
+
+test("148 paired rows stay in server order, independently disclose keyed groups, and keep both axes on reopen", async t => {
+  const data = await pairedReport();
+  const app = await session(t);
+  const { page, context } = app;
+  await page.getByLabel("Разбить по магазинам").check();
+  await page.getByText("Дополнительные настройки", { exact: true }).click();
+  const initialUrl = page.url();
+  const initialHistory = await page.evaluate(() => history.length);
+  await ready(app, data);
+  await openButton(page).scrollIntoViewIfNeeded();
+  const background = await backgroundPosition(page);
+  const dialog = await open(page);
+  assert.equal(await dialog.evaluate(element => element.matches(":modal") && !element.closest("form")), true);
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).overflowY), "hidden");
+  assert.equal(await closeButton(dialog).evaluate(el => el === document.activeElement), true);
+  assert.equal(await dialog.getByRole("heading", { name: "Оборачиваемость" }).count(), 1);
+  for (let i = 0; i < 5; i++) {
+    await page.keyboard.press("Tab");
+    assert.equal(await dialog.evaluate(el => el.contains(document.activeElement)), true);
+  }
+  assert.equal(await context.pages().length, 1);
+  assert.equal(page.url(), initialUrl);
+  assert.equal(await page.evaluate(() => history.length), initialHistory);
+  assert.match(await dialog.textContent() ?? "", /строк: 148/);
+  assert.equal(await products(dialog).count(), 0);
+  assert.equal(await expandAll(dialog).isEnabled(), true);
+  assert.equal(await collapseAll(dialog).isEnabled(), false);
+  assert.equal(await dialog.locator('tr[data-turnover-boundary="store"]').count(), 2);
+  assert.equal(await groups(dialog).count(), 8);
+  assert.equal(await dialog.getByRole("button", { name: /Без группы/ }).count(), 2);
+  assert.equal(data.rows[0].rootGroupName, data.rows[30].rootGroupName);
+  assert.notEqual(data.rows[0].rootGroupKey, data.rows[30].rootGroupKey);
+  assert.equal(data.rows[0].rootGroupKey, data.rows[74].rootGroupKey);
+  const collapsedTotals = await cells(dialog.locator("tbody tr.turnover-overall-total, tfoot"));
+  assert.ok(collapsedTotals.length > 0);
+  await groups(dialog).nth(0).click();
+  assert.deepEqual(await names(dialog), data.rows.slice(0, 30).map(item => item.name));
+  assert.equal(await groups(dialog).nth(1).getAttribute("aria-expanded"), "false");
+  assert.equal(await groups(dialog).nth(4).getAttribute("aria-expanded"), "false");
+  await groups(dialog).nth(4).click();
+  assert.deepEqual(await names(dialog), [...data.rows.slice(0, 30), ...data.rows.slice(74, 104)].map(item => item.name));
+  await groups(dialog).nth(3).click();
+  assert.deepEqual(await names(dialog), [...data.rows.slice(0, 30), ...data.rows.slice(73, 104)].map(item => item.name));
+  await expandAll(dialog).click();
+  assert.equal(await expandAll(dialog).isEnabled(), false);
+  assert.equal(await collapseAll(dialog).isEnabled(), true);
+  assert.deepEqual(await names(dialog), data.rows.map(item => item.name));
+  assert.equal(await dialog.getByRole("navigation", { name: /Страницы отчёта/ }).count(), 0);
+  assert.deepEqual(await cells(dialog.locator("tbody tr.turnover-overall-total, tfoot")), collapsedTotals);
+  const scroll = await viewport(dialog).boundingBox();
+  assert.ok(scroll);
+  for (const index of [0, 147, 100]) {
+    const target = productRow(dialog, index);
+    await scrollToRow(dialog, target, 0.55);
+    const box = await target.boundingBox();
+    assert.ok(box && box.y >= scroll.y && box.y + box.height <= scroll.y + scroll.height, `row ${index + 1} is reachable`);
+  }
+  await productRow(dialog, 100).locator("th").click();
+  assert.equal(await dialog.isVisible(), true, "clicking inside does not dismiss the report");
+  await dialog.getByRole("button", { name: "Показать дни (3)" }).click();
+  await scrollToRow(dialog, productRow(dialog, 100), 0.55);
+  await viewport(dialog).evaluate(element => { element.scrollLeft = 85; });
+  const offsets = await scrollPosition(dialog);
+  assert.ok(offsets[0] > 0 && offsets[1] > 0);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal(await openButton(page).evaluate(el => el === document.activeElement), true);
+  assert.deepEqual(await backgroundPosition(page), background);
+  const reopened = await open(page);
+  assert.equal(await groups(reopened).nth(4).getAttribute("aria-expanded"), "true");
+  assert.equal(await reopened.getByRole("button", { name: "Скрыть дни" }).isEnabled(), true);
+  await frame(page);
+  assert.deepEqual(await scrollPosition(reopened), offsets);
+  assert.equal(app.previews.count, 1);
+  await collapseAll(reopened).click();
+  assert.equal(await products(reopened).count(), 0);
+  assert.equal((await scrollPosition(reopened))[0], 0);
+  await closeButton(reopened).click();
+  await reopened.waitFor({ state: "hidden" });
+  assert.deepEqual(await backgroundPosition(page), background);
 });
 
-test("all-filtered results explain exclusions without unavailable financial cells", () => {
+test("same-named stores retain independent subtotals and accessible cell headers", async t => {
+  const data = report();
+  data.params.profile = "summary";
+  const keys = ["store-a", "store-b"];
+  setRows(data, keys.map((storeKey, i) => ({ ...row(i), storeKey, storeName: "Магазин" })));
+  data.totals.byStore = keys.map((storeKey, i) => ({
+    storeKey, byUnit: [], total: { ...data.totals.overall, periodSales: { ...data.totals.overall.periodSales, quantity: 12 + i } }
+  }));
+  const { dialog } = await view(t, data);
+  const sectionSequence = () => dialog.locator("tbody tr").evaluateAll(rows => rows.map(row =>
+    row.getAttribute("data-turnover-boundary") === "subtotal" ? row.querySelectorAll("td")[4].textContent
+      : row.getAttribute("data-turnover-boundary") ?? row.querySelector("th")?.firstChild?.textContent));
+  assert.deepEqual(await sectionSequence(), ["store", "group", "12", "store", "group", "13"]);
+  await groups(dialog).nth(1).click();
+  assert.deepEqual(await names(dialog), ["Товар 1"]);
+  assert.deepEqual(await sectionSequence(), ["store", "group", "12", "store", "group", "Товар 1", "13"]);
+  const sales = productRow(dialog, 0).locator("td").nth(4);
+  const headerText = await sales.evaluate(cell => (cell.getAttribute("headers") ?? "").split(/\s+/).map(id => {
+    const header = document.getElementById(id);
+    return header?.getAttribute("abbr") || header?.textContent?.trim();
+  }));
+  const item = data.rows[1];
+  assert.deepEqual(headerText, [item.storeName, item.rootGroupName, `${item.name}${item.unit}`, "Продажи за период"]);
+});
+
+test("sticky headers track the visible hierarchy and clear it at real total boundaries", async t => {
+  const data = report();
+  Object.assign(data.params, { profile: "summary", sort: "name" });
+  setRows(data, Array.from({ length: 150 }, (_, index) => ({
+    ...row(index), storeKey: index < 75 ? "store-a" : "store-b",
+    storeName: index < 75 ? "Магазин А" : "Магазин Б",
+    rootGroupKey: index < 75 ? "root-a" : "root-b", rootGroupName: index < 75 ? "Первая группа" : "Вторая группа"
+  })));
+  data.totals.byStore = ["store-a", "store-b"].map(storeKey => ({ storeKey, total: data.totals.overall, byUnit: [] }));
+  // A tall authoritative footer lets its boundary actually pass the sticky header without artificial DOM styles.
+  data.totals.overall = { ...data.totals.overall, unit: null };
+  data.totals.byUnit = Array.from({ length: 30 }, (_, index) => ({
+    ...data.totals.overall, unitKey: `unit-${index}`, unit: `Единица ${index}`
+  }));
+  const { page, dialog } = await view(t, data);
+  assert.equal(await dialog.locator(".turnover-preview-sticky button").count(), 0);
+  const sticky = dialog.locator(".turnover-preview-sticky");
+  const head = dialog.locator("thead");
+  const scroll = viewport(dialog);
+  await expandAll(dialog).click();
+  await scrollToRow(dialog, productRow(dialog, 35), 0.3);
+  await sticky.getByText("Магазин А", { exact: true }).waitFor();
+  await sticky.getByText("Первая группа", { exact: true }).waitFor();
+  const [headBox, scrollBox] = await Promise.all([head.boundingBox(), scroll.boundingBox()]);
+  assert.ok(headBox && scrollBox && Math.abs(headBox.y - scrollBox.y) < 3, "column headers stay at the top of the scroller");
+  const firstSubtotal = dialog.locator('tr[data-turnover-boundary="subtotal"]').first();
+  await scrollToRow(dialog, firstSubtotal, 0);
+  await sticky.getByText("Первая группа", { exact: true }).waitFor({ state: "hidden" });
+  await groups(dialog).nth(1).focus();
+  await scrollToRow(dialog, productRow(dialog, 110), 0.3);
+  await sticky.getByText("Магазин Б", { exact: true }).waitFor();
+  await sticky.getByText("Вторая группа", { exact: true }).waitFor();
+  await page.keyboard.press("Enter");
+  await frame(page);
+  const [groupBox, collapseBox] = await Promise.all([groups(dialog).nth(1).boundingBox(), scroll.boundingBox()]);
+  assert.ok(groupBox && collapseBox && groupBox.y >= collapseBox.y && groupBox.y + groupBox.height <= collapseBox.y + collapseBox.height);
+  await expandAll(dialog).click();
+  await scrollToRow(dialog, dialog.locator("tfoot"), 0);
+  await sticky.getByText("Магазин Б", { exact: true }).waitFor({ state: "hidden" });
+  await sticky.getByText("Вторая группа", { exact: true }).waitFor({ state: "hidden" });
+  assert.match(await dialog.locator("tfoot th").last().textContent() ?? "", /ИТОГО · Единица 29/);
+});
+
+test("375 px mobile dialog scrolls both axes independently from the dashboard and wraps category names", async t => {
+  const app = await browser.session(t, { width: 375 });
+  const { page } = app;
+  await app.goto();
+  await loadButton(page).waitFor();
+  await setDates(page);
+  const data = report();
+  const longName = "Длинное название категории для проверки переносов и доступности на небольшом экране ".repeat(4);
+  setRows(data, Array.from({ length: 120 }, (_, index) => ({ ...row(index), rootGroupName: longName })));
+  await ready(app, data);
+  const dialog = await open(page);
+  const viewportSize = page.viewportSize()!;
+  const box = await dialog.boundingBox();
+  assert.ok(box && box.x === 0 && box.width === viewportSize.width && Math.abs(box.height - viewportSize.height) <= 2);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 375);
+  const heading = groups(dialog).locator(".turnover-section-label");
+  const wrapped = await heading.evaluate(element => ({
+    height: element.getBoundingClientRect().height, line: Number.parseFloat(getComputedStyle(element).lineHeight),
+    overflow: element.scrollWidth > element.clientWidth + 1
+  }));
+  assert.ok(wrapped.height > wrapped.line * 2 && !wrapped.overflow);
+  await expandAll(dialog).click();
+  await dialog.getByRole("button", { name: "Показать дни (3)" }).click();
+  await viewport(dialog).hover();
+  await page.mouse.wheel(320, 440);
+  await page.waitForFunction(() => {
+    const scroll = document.querySelector(".turnover-preview-scroll");
+    return scroll && scroll.scrollTop > 0 && scroll.scrollLeft > 0;
+  });
+  const offsets = await scrollPosition(dialog);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 375);
+  await closeButton(dialog).click();
+  await dialog.waitFor({ state: "hidden" });
+  await open(page);
+  await frame(page);
+  assert.deepEqual(await scrollPosition(dialog), offsets);
+});
+
+test("5,000 unique SKUs × 31 days have contiguous data in a bounded DOM from start to end and back", async t => {
+  const data = report();
+  data.params.from = "2026-01-01";
+  data.params.to = "2026-02-01";
+  const salesAt = (index: number) => 25 + index % 17;
+  const expected = Array.from({ length: 5_000 }, (_, index) => {
+    const item = row(index);
+    const group = Math.floor(index / 1_000);
+    const quantity = 10 + index % 7;
+    item.name = `Массовый SKU ${String(index).padStart(4, "0")}`;
+    item.rootGroupKey = `group-${group}`;
+    item.rootGroupName = `Категория ${group}`;
+    item.averageQty = 20 + index % 5;
+    item.periodSales.quantity = salesAt(index);
+    item.daily = Array.from({ length: 31 }, (_, day) => ({
+      date: `2026-01-${String(day + 1).padStart(2, "0")}`,
+      unit: "шт.", quantity: quantity + day, stockCost: 10 * (quantity + day),
+      salesQty: 0, salesCost: 0, revenue: 0, weight: day === 0 || day === 30 ? 0.5 : 1
+    }));
+    return item;
+  });
+  setRows(data, expected);
+  data.coverage.expectedDays = data.coverage.observedDays = 31;
+  data.totals.overall.daily = expected[0].daily;
+  data.totals.overall.periodSales.quantity = 125_030;
+  const { dialog, page, previews } = await view(t, data);
+  assert.match(await dialog.textContent() ?? "", /строк: 5[\s\u00a0\u202f]000/);
+  assert.equal(await products(dialog).count(), 0);
+  await expandAll(dialog).click();
+  await dialog.getByRole("button", { name: "Показать дни (31)" }).click();
+  assert.equal(await dialog.locator("thead .turnover-preview-date").count(), 33);
+  const blocks = dialog.locator("tbody[data-turnover-block]");
+  const footer = dialog.locator("tfoot");
+  const total = await cells(footer);
+  assert.equal(total.at(-2), "125 030");
+  assert.equal(total.at(-3), "31");
+  const counted = new Set<string>();
+  for (const block of await blocks.all()) {
+    const blockStart = Number(await block.getAttribute("data-turnover-block"));
+    const blockEnd = Math.min(blockStart + 32, (Math.floor(blockStart / 1_000) + 1) * 1_000);
+    await scrollToRow(dialog, block, 0.35);
+    const heads = block.locator(".turnover-preview-product");
+    await heads.last().waitFor({ state: "attached" });
+    const visibleNames = await heads.evaluateAll(headers => headers.map(header => header.firstChild?.textContent));
+    assert.deepEqual(visibleNames, expected.slice(blockStart, blockEnd).map(item => item.name));
+    for (const name of visibleNames) {
+      assert.ok(name && !counted.has(name), `duplicate SKU: ${name}`);
+      counted.add(name);
+    }
+    assert.ok(await products(dialog).count() < 512, "only blocks near the viewport may mount product rows");
+  }
+  assert.equal(counted.size, 5_000);
+  const distant = dialog.locator('tbody[data-turnover-block][aria-hidden="true"]');
+  assert.ok(await distant.count() > 0);
+  assert.ok(await distant.evaluateAll(blocks => blocks.every(block => block.children.length === 1)));
+  assert.ok(await dialog.locator("tr").count() < 750, "spacers cannot mount a row per distant SKU");
+  assert.equal(await groups(dialog).count(), 5);
+  for (const index of [4_999, 2_501, 0]) {
+    const groupStart = Math.floor(index / 1_000) * 1_000;
+    const start = groupStart + Math.floor((index - groupStart) / 32) * 32;
+    const block = blocks.and(dialog.locator(`[data-turnover-block="${start}"]`));
+    await scrollToRow(dialog, block, 0.35);
+    const item = block.locator(".turnover-preview-product").nth(index - start).locator("..");
+    await item.waitFor({ state: "attached" });
+    await scrollToRow(dialog, item, 0.6);
+    const observed = await cells(item);
+    assert.equal(observed[0], String(10 + index % 7));
+    assert.equal(observed[32], String(40 + index % 7));
+    assert.deepEqual(observed.slice(-6), [String(30 * (25 + index % 7)), String(20 + index % 5), "2,5", "31", String(salesAt(index)), "1,2"]);
+    assert.equal(await dialog.locator(".turnover-preview-product").filter({ hasText: expected[index].name }).count(), 1);
+  }
+  await page.setViewportSize({ width: 1_050, height: 700 });
+  await dialog.getByRole("button", { name: "Скрыть дни" }).click();
+  assert.equal(await dialog.locator("thead .turnover-preview-date").count(), 0);
+  const firstProduct = blocks.first().locator(".turnover-preview-product").first();
+  await firstProduct.waitFor({ state: "attached" });
+  assert.deepEqual(await cells(firstProduct.locator("..")), ["750", "20", "2,5", "31", "25", "1,2"]);
+  assert.deepEqual(await cells(footer), total.slice(-6));
+  assert.equal(previews.count, 1);
+});
+
+interface TransportTrace {
+  aborted: string[];
+  consumed: string[];
+}
+
+type TracedWindow = Window & { turnoverTransport: TransportTrace };
+
+async function traceTransport(page: Page, surviveAbort = false) {
+  await page.addInitScript(({ previewPath, workbookPath, surviveAbort }) => {
+    const trace = (window as TracedWindow).turnoverTransport = { aborted: [], consumed: [] };
+    const fetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const isPreview = url.pathname === previewPath;
+      if (!isPreview && url.pathname !== workbookPath) return fetch(input, init);
+      init?.signal?.addEventListener("abort", () => trace.aborted.push(url.href), { once: true });
+      // Model a response whose transport already crossed the abort boundary.
+      const response = await fetch(input, isPreview && surviveAbort ? { ...init, signal: undefined } : init);
+      if (isPreview && surviveAbort) {
+        const json = response.json.bind(response);
+        response.json = async () => {
+          const body = await json();
+          trace.consumed.push(body.generatedAt);
+          return body;
+        };
+      }
+      return response;
+    };
+  }, { previewPath, workbookPath, surviveAbort });
+}
+
+async function assertAborted(page: Page, route: Route) {
+  await page.waitForFunction(url => (window as TracedWindow).turnoverTransport.aborted.includes(url), route.request().url());
+}
+
+test("A → B → A ignores late results even when older transports still deliver their bodies", async t => {
+  const app = await browser.session(t);
+  const { page, previews, workbooks } = app;
+  await traceTransport(page, true);
+  await app.goto();
+  await loadButton(page).waitFor();
+  await setDates(page);
+  const search = page.getByRole("searchbox", { name: "Товар", exact: true });
+  const loading = page.getByText("Загружаем отчёт…", { exact: true });
+  const captured: Route[] = [];
+  for (const [index, value] of ["A", "B", "A"].entries()) {
+    await search.fill(value);
+    await loadButton(page).click();
+    const request = await previews.at(index);
+    assert.equal(query(request).get("search"), value);
+    await loading.waitFor();
+    captured.push(request);
+  }
+  await search.press("Enter");
+  await search.press("Enter");
+  assert.equal(previews.count, 3);
+  assert.equal(await openButton(page).count(), 0);
+  assert.equal(await excelButton(page).count(), 0);
+  await assertAborted(page, captured[0]);
+  await assertAborted(page, captured[1]);
+  for (const index of [1, 0, 2]) {
+    const data = report();
+    data.generatedAt = `2026-11-04T0${index}:00:00.000Z`;
+    data.rows[0].name = index === 2 ? "Current A" : `Stale ${index}`;
+    await captured[index].fulfill({ json: data });
+    await page.waitForFunction(tag => (window as TracedWindow).turnoverTransport.consumed.includes(tag), data.generatedAt);
+    if (index !== 2) {
+      await frame(page);
+      assert.equal(await loading.isVisible(), true);
+      assert.equal(await openButton(page).count(), 0);
+    }
+  }
+  const dialog = await open(page);
+  await expandAll(dialog).click();
+  assert.deepEqual(await names(dialog), ["Current A"]);
+  assert.equal(workbooks.count, 0);
+});
+
+test("JSON cancellation and failure never enable Excel; retry can load an empty selection", async t => {
+  const app = await browser.session(t);
+  const { page, previews } = app;
+  await traceTransport(page);
+  await app.goto();
+  await loadButton(page).waitFor();
+  await setDates(page);
+  await loadButton(page).click();
+  const cancelled = await previews.at(0);
+  await page.getByRole("button", { name: "Отменить", exact: true }).click();
+  await assertAborted(page, cancelled);
+  assert.equal(await loadButton(page).isEnabled(), true);
+  assert.equal(await excelButton(page).count(), 0);
+  assert.equal(await page.getByRole("alert").count(), 0);
+  await loadButton(page).click();
+  await (await previews.at(1)).fulfill({ status: 422, json: { error: "Тестовая ошибка JSON" } });
+  await page.getByRole("alert").filter({ hasText: "Тестовая ошибка JSON" }).waitFor();
+  assert.equal(await openButton(page).count(), 0);
+  assert.equal(await excelButton(page).count(), 0);
+  const empty = report();
+  setRows(empty, []);
+  empty.warnings = ["Фильтрам не соответствуют наблюдаемые остатки."];
+  await ready(app, empty);
+  assert.equal(await excelButton(page).isEnabled(), true);
+  const dialog = await open(page);
+  await dialog.getByText(/По выбранным условиям товаров нет\. Закройте отчёт и измените параметры\./).waitFor();
+  assert.equal(await dialog.locator('tfoot, th[scope="rowgroup"], [aria-label="Показатель не рассчитан"]').count(), 0);
+  await dialog.getByText(/Предупреждения/).click();
+  assert.equal(await dialog.getByText(empty.warnings[0]).isVisible(), true);
+  await closeButton(dialog).click();
+  const download = page.waitForEvent("download");
+  await excelButton(page).click();
+  const emptyBook = new ExcelJS.Workbook();
+  emptyBook.addWorksheet("Кратко");
+  await (await app.workbooks.at(0)).fulfill({
+    contentType: workbookMime, headers: { "content-disposition": 'attachment; filename="empty.xlsx"' },
+    body: Buffer.from(await emptyBook.xlsx.writeBuffer())
+  });
+  assert.equal((await download).suggestedFilename(), "empty.xlsx");
+});
+
+test("all-filtered results explain the calculation filter without an unavailable footer", async t => {
   const data = report();
   data.rows[0].turnoverQtyDays = null;
-  const html = render(data);
-  assert.match(html, /Все строки.*исключены/);
-  assert.match(html, /включите строки без полного расчёта/i);
-  assert.doesNotMatch(html, /<tfoot|aria-label="Показатель не рассчитан"/);
+  const { dialog } = await view(t, data);
+  assert.match(await dialog.textContent() ?? "", /Все строки.*исключены.*Закройте отчёт и измените параметры.*включить/s);
+  assert.equal(await dialog.locator('tfoot, [aria-label="Показатель не рассчитан"]').count(), 0);
 });
 
-test("store splitting stays visibly unchecked and independent of selected stores", () => {
-  const html = builder();
-  const index = html.indexOf("Разбить по магазинам");
-  assert.ok(index >= 0 && index < html.indexOf('<details class="turnover-advanced">'));
-  const control = html.slice(html.lastIndexOf("<input", index), index);
-  assert.match(control, /type="checkbox"/);
-  assert.doesNotMatch(control, /checked/);
-  assert.doesNotMatch(html, /type="radio"[^>]*value="(?:sample|stores)"/);
-});
-
-test("section boundaries use identities rather than labels and span every quantitative column", () => {
+test("Excel cancel and error preserve the JSON; a collapsed report still downloads the full book once", async t => {
+  const app = await browser.session(t);
+  const { page, workbooks, previews } = app;
+  await traceTransport(page);
+  await app.goto();
+  await loadButton(page).waitFor();
+  await setDates(page);
+  await page.getByRole("searchbox", { name: "Товар", exact: true }).fill("  Товар 0  ");
+  await page.getByLabel("Разбить по магазинам").check();
   const data = report();
-  data.params.sort = "name";
-  data.rows = [
-    { ...row(0), storeKey: "s1", storeName: "Одинаковый", rootGroupKey: "g1", rootGroupName: "Без группы" },
-    { ...row(1), storeKey: "s1", storeName: "Одинаковый", rootGroupKey: null, rootGroupName: "Без группы" },
-    { ...row(2), storeKey: "s2", storeName: "Одинаковый", rootGroupKey: "g1", rootGroupName: "Без группы" },
-    { ...row(3), storeKey: null, storeName: "", rootGroupKey: "g2", rootGroupName: "" }
-  ];
   data.params.profile = "summary";
-  const [block] = tables(render(data));
-  const body = section(block, "tbody");
-  assert.equal((body.match(/class="turnover-preview-store"/g) ?? []).length, 3);
-  assert.equal((body.match(/class="turnover-preview-group"/g) ?? []).length, 4);
-  assert.equal((body.match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 4);
-  assert.match(body, /Магазин не определён/);
-  assert.match(body, /Группа без названия/);
-  const headers = [...body.matchAll(/scope="rowgroup" colSpan="(\d+)"/gi)];
-  assert.equal(headers.length, 7);
-  for (const header of headers) assert.equal(Number(header[1]), 7);
-  data.params.profile = "sample";
-  const network = section(render(data), "tbody");
-  assert.doesNotMatch(network, /class="turnover-preview-store"/);
-  assert.equal((network.match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 4);
-  data.rows = [];
-  assert.doesNotMatch(section(render(data), "tbody"), /scope="rowgroup"/);
+  const preview = await ready(app, data);
+  const dialog = await open(page);
+  await expandAll(dialog).click();
+  await collapseAll(dialog).click();
+  assert.equal(await products(dialog).count(), 0);
+  await closeButton(dialog).click();
+  const downloads: string[] = [];
+  page.on("download", event => downloads.push(event.suggestedFilename()));
+  await excelButton(page).dblclick();
+  const cancelled = await workbooks.at(0);
+  assert.equal(await page.getByRole("button", { name: "Формируем Excel…" }).isEnabled(), false);
+  assert.equal(workbooks.count, 1);
+  await page.getByRole("button", { name: "Отменить", exact: true }).click();
+  await assertAborted(page, cancelled);
+  assert.equal(await openButton(page).isEnabled(), true);
+  await excelButton(page).click();
+  const failed = await workbooks.at(1);
+  await failed.fulfill({ status: 422, json: { error: "Тестовая ошибка Excel" } });
+  await page.getByRole("alert").filter({ hasText: "Тестовая ошибка Excel" }).waitFor();
+  await open(page);
+  assert.equal(await products(dialog).count(), 0);
+  await closeButton(dialog).click();
+  const downloadEvent = page.waitForEvent("download");
+  await excelButton(page).click();
+  const request = await workbooks.at(2);
+  for (const workbook of [cancelled, failed, request]) {
+    assert.equal(query(workbook).toString(), query(preview).toString());
+    assert.equal(workbook.request().headers().accept, workbookMime);
+  }
+  const workbook = new ExcelJS.Workbook();
+  workbook.addWorksheet("Кратко");
+  workbook.addWorksheet("Товары").addRow([data.rows[0].name, 25]);
+  const filename = "Оборачиваемость.xlsx";
+  await request.fulfill({
+    contentType: workbookMime,
+    headers: { "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(filename)}` },
+    body: Buffer.from(await workbook.xlsx.writeBuffer())
+  });
+  const downloaded = await downloadEvent;
+  assert.equal(downloaded.suggestedFilename(), filename);
+  const result = new ExcelJS.Workbook();
+  await result.xlsx.readFile(await downloaded.path());
+  assert.deepEqual(result.getWorksheet("Товары")?.getRow(1).values, [, "Товар 0", 25]);
+  assert.deepEqual(downloads, [filename]);
+  assert.equal(previews.count, 1);
+  assert.equal(workbooks.count, 3);
+});
+
+test("a legacy bookmark replaces the old query and cannot open a report without a signed-in session", async t => {
+  const app = await browser.session(t, { signedIn: false, path: "/reports/turnover?from=2026-11-01&to=2026-11-03&search=Legacy" });
+  const { page } = app;
+  await page.addInitScript(() => {
+    if (location.pathname === "/reports/turnover") sessionStorage.setItem("bookmarkHistory", String(history.length));
+  });
+  await app.goto();
+  await page.getByRole("region", { name: "Авторизация" }).waitFor();
+  assert.equal(new URL(page.url()).pathname + new URL(page.url()).search + new URL(page.url()).hash, "/#stock/turnover");
+  assert.equal(await page.evaluate(() => String(history.length) === sessionStorage.getItem("bookmarkHistory")), true);
+  assert.equal(await loadButton(page).count(), 0);
+  assert.equal(app.previews.count, 0);
+  await page.getByLabel("Электронная почта").fill("turnover@example.test");
+  await page.getByLabel("Пароль").fill("fixture-password");
+  await page.getByRole("button", { name: "Войти", exact: true }).click();
+  await loadButton(page).waitFor();
+  assert.equal(await page.getByRole("searchbox", { name: "Товар", exact: true }).inputValue(), "");
+  assert.equal(await page.locator("dialog").count(), 0);
+  assert.equal(app.previews.count, 0);
+});
+
+test("logout in another tab destroys an open dialog, aborts its Excel and resets the next session", async t => {
+  const app = await browser.session(t);
+  const { page, context, workbooks } = app;
+  await traceTransport(page);
+  await app.goto();
+  await loadButton(page).waitFor();
+  await setDates(page);
+  await ready(app, report());
+  await excelButton(page).click();
+  const pending = await workbooks.at(0);
+  const background = await backgroundPosition(page);
+  const dialog = await open(page);
+  await expandAll(dialog).click();
+  const secondTab = await context.newPage();
+  await traceTransport(secondTab);
+  await secondTab.goto("/#stock/turnover");
+  await loadButton(secondTab).waitFor();
+  await setDates(secondTab);
+  await loadButton(secondTab).click();
+  const pendingPreview = await app.previews.at(1);
+  await secondTab.locator(".account-menu summary").click();
+  await secondTab.getByRole("button", { name: "Выйти", exact: true }).click();
+  await page.getByRole("region", { name: "Авторизация" }).waitFor();
+  await assertAborted(page, pending);
+  await assertAborted(secondTab, pendingPreview);
+  assert.equal(app.logoutCount, 1);
+  assert.equal(await page.locator("dialog, .turnover-preview-table").count(), 0);
+  assert.deepEqual((await backgroundPosition(page)).slice(2), background.slice(2));
+  await page.getByLabel("Электронная почта").fill("turnover@example.test");
+  await page.getByLabel("Пароль").fill("fixture-password");
+  await page.getByRole("button", { name: "Войти", exact: true }).click();
+  await loadButton(page).waitFor();
+  assert.equal(await openButton(page).count(), 0);
+  assert.equal(await excelButton(page).count(), 0);
+  assert.equal(app.previews.count, 2);
 });

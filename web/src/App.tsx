@@ -5,7 +5,6 @@ import { api } from "./api";
 import type { User } from "./api";
 
 const Dashboard = lazy(() => import("./Dashboard"));
-const TurnoverViewer = lazy(() => import("./TurnoverReport").then(({ TurnoverReportViewer }) => ({ default: TurnoverReportViewer })));
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -13,6 +12,9 @@ export function App() {
   const sessionChannel = useRef<BroadcastChannel | null>(null);
 
   useEffect(() => {
+    if (window.location.pathname === "/reports/turnover") {
+      window.history.replaceState(null, "", "/#stock/turnover");
+    }
     const controller = new AbortController();
     const channel = new BroadcastChannel("naliv-session");
     sessionChannel.current = channel;
@@ -52,20 +54,6 @@ export function App() {
 
   if (!user) {
     return <LoginScreen onLogin={setUser} />;
-  }
-
-  if (window.location.pathname === "/reports/turnover") {
-    if (user.role !== "admin") {
-      return <main className="turnover-workspace turnover-viewer">
-        <div className="turnover-viewer-state">
-          <h1>Оборачиваемость</h1>
-          <p className="turnover-message turnover-error" role="alert">Отчёт доступен только администраторам.</p>
-        </div>
-      </main>;
-    }
-    return <Suspense fallback={<FullScreenState title="Загружаем отчёт" />}>
-      <TurnoverViewer search={window.location.search} />
-    </Suspense>;
   }
 
   return (

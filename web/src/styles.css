@@ -2979,16 +2979,61 @@ select:focus {
   border: 0;
 }
 
-.turnover-viewer {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  height: 100dvh;
-  padding: 8px clamp(8px, 1vw, 16px);
+.turnover-dialog {
+  width: calc(100% - 24px);
+  max-width: none;
+  height: calc(100dvh - 24px);
+  max-height: none;
+  margin: auto;
+  padding: 12px;
+  border: 1px solid #dce4ef;
+  border-radius: 8px;
+  background: var(--turnover-paper);
+  color: var(--turnover-ink);
+  overflow: hidden;
 }
 
-.turnover-preview-results,
-.turnover-viewer-state {
+:root:has(.turnover-dialog:modal) {
+  overflow: hidden;
+}
+
+.turnover-dialog::backdrop {
+  background: rgb(23 32 51 / 42%);
+}
+
+.turnover-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.turnover-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.turnover-dialog-header > .turnover-button {
+  flex: none;
+}
+
+@media (max-width: 640px) {
+  .turnover-dialog {
+    width: 100%;
+    height: 100dvh;
+    padding: 8px;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .turnover-preview-controls > .turnover-button {
+    padding-inline: 10px;
+  }
+}
+
+.turnover-preview-results {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -3005,15 +3050,21 @@ select:focus {
   gap: 4px 12px;
 }
 
-.turnover-preview-heading h1,
-.turnover-viewer-state h1 {
+.turnover-preview-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.turnover-dialog-header h2 {
   margin: 0;
   font-size: 20px;
   font-weight: 650;
   line-height: 1.25;
 }
 
-.turnover-preview-heading p {
+.turnover-dialog-header p {
   margin: 2px 0 0;
   color: var(--turnover-muted);
   font-size: 13px;
@@ -3035,14 +3086,14 @@ select:focus {
 }
 
 .turnover-preview-scroll {
+  --turnover-group-height: 34px;
   position: relative;
   min-width: 0;
   width: 100%;
   max-width: 100%;
   min-height: 0;
   overflow: auto;
-  overflow-anchor: none;
-  overscroll-behavior-x: contain;
+  overscroll-behavior: contain;
   container-type: inline-size;
   scrollbar-color: #94a3b8 var(--turnover-background);
   border: 1px solid #dce4ef;
@@ -3056,11 +3107,29 @@ select:focus {
 }
 
 .turnover-preview-table {
+  --turnover-product-width: clamp(144px, 23vw, 240px);
+  --turnover-metric-width: 116px;
+  --turnover-day-width: 80px;
+  --turnover-row-height: calc(1.35em + 11px);
   width: 100%;
+  min-width: calc(var(--turnover-product-width) + 6 * var(--turnover-metric-width) + var(--turnover-day-column-count) * var(--turnover-day-width));
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 13px;
   line-height: 1.35;
+}
+
+.turnover-preview-product-column {
+  width: var(--turnover-product-width);
+}
+
+.turnover-preview-metric-column {
+  width: var(--turnover-metric-width);
+}
+
+.turnover-preview-day-column {
+  width: var(--turnover-day-width);
 }
 
 
@@ -3091,12 +3160,10 @@ select:focus {
 }
 
 .turnover-preview-table thead th:first-child {
-  min-width: clamp(144px, 23vw, 240px);
   text-align: left;
 }
 
 .turnover-preview-table thead .turnover-preview-date {
-  min-width: 64px;
   white-space: nowrap;
 }
 
@@ -3107,6 +3174,7 @@ select:focus {
   z-index: 2;
   height: 0;
   width: 100%;
+  overflow-anchor: none;
   pointer-events: none;
   font-size: 13px;
   line-height: 1.35;
@@ -3131,6 +3199,60 @@ select:focus {
   border-top: 1px solid #e4e9f0;
 }
 
+.turnover-group-toggle {
+  position: sticky;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100cqi;
+  min-height: var(--turnover-group-height);
+  padding: 4px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.turnover-group-toggle:hover {
+  background: #e8eef7;
+}
+
+.turnover-group-toggle:focus-visible {
+  outline: 2px solid var(--turnover-action);
+  outline-offset: -2px;
+}
+
+.turnover-group-toggle > svg,
+.turnover-group-count {
+  flex: none;
+}
+
+.turnover-group-toggle[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+
+.turnover-group-toggle .turnover-section-label {
+  position: static;
+  width: auto;
+  min-width: 0;
+  padding: 0;
+}
+
+.turnover-group-count {
+  color: var(--turnover-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.turnover-preview-sticky .turnover-preview-group .turnover-section-label {
+  min-height: var(--turnover-group-height);
+  padding-inline-start: 32px;
+  align-content: center;
+}
+
 .turnover-preview-unit {
   display: inline-block;
   margin-inline-start: 0.4em;
@@ -3143,7 +3265,6 @@ select:focus {
 }
 
 .turnover-preview-product {
-  max-width: 32ch;
   font-weight: 500;
   overflow-wrap: anywhere;
 }
@@ -3151,12 +3272,18 @@ select:focus {
 
 .turnover-preview-table .turnover-numeric {
   text-align: right;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
 }
 
-.turnover-preview-table tbody tr:hover {
+.turnover-preview-table tbody tr:not(.turnover-preview-placeholder):hover {
   background: #f8fafc;
+}
+
+.turnover-preview-table .turnover-preview-placeholder td {
+  padding: 0;
+  border: 0;
+  overflow-anchor: none;
 }
 
 .turnover-preview-table tfoot {
@@ -3178,6 +3305,14 @@ select:focus {
   line-height: 1.6;
 }
 
+.turnover-preview-empty > span {
+  position: sticky;
+  left: 8px;
+  display: block;
+  max-width: calc(100cqi - 16px);
+  overflow-wrap: anywhere;
+}
+
 .turnover-coefficient-red {
   color: #7f1d1d;
   background: #fee2e2;
@@ -3191,22 +3326,6 @@ select:focus {
 .turnover-coefficient-green {
   color: #14532d;
   background: #dcfce7;
-}
-
-
-.turnover-preview-pagination {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.turnover-preview-pagination > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 
