@@ -373,16 +373,19 @@ export function compareReadinessFields(path: string, workbook: Json, input: Json
     for (const activity of array(report.activities).map(object)) for (const branch of array(activity.branches).map(object)) {
       const rows = groups.get(key(branch.key)) ?? [];
       for (const row of array(branch.rows).map(object)) rows.push([
-        row.barcode ?? "n/a", row.name, row.price ?? "n/a",
-        typeof row.discountPct === "number" ? row.discountPct / 100 : "n/a",
-        row.unitCompensation ?? "n/a", row.quantity ?? "n/a", row.compensation ?? "n/a"
+        row.barcode ?? null, row.name === row.itemKey ? "Товар не определён" : row.name, row.price ?? null,
+        typeof row.discountPct === "number" ? row.discountPct / 100 : null,
+        row.unitCompensation ?? null, row.quantity ?? null, row.compensation ?? null
       ]);
       groups.set(key(branch.key), rows);
     }
-    const actual = sheets.filter((sheet) => sheet.name !== "Сводка" && sheet.name !== "Диагностика")
+    const actual = sheets.filter((sheet) => sheet.name === "Детализация" || sheet.name === "Корректировки")
       .flatMap((sheet) => array(sheet.rows).map(object))
-      .filter((row) => [3, 4, 6].every((column) => typeof cell(row, column) === "number" || cell(row, column) === "n/a"))
-      .map((row) => [1, 2, 3, 4, 5, 6, 7].map((column) => cell(row, column)));
+      .filter((row) => [3, 4, 6].every((column) => typeof cell(row, column) === "number" || cell(row, column) === "Нет данных"))
+      .map((row) => [1, 2, 3, 4, 5, 6, 7].map((column) => {
+        const value = cell(row, column);
+        return column >= 3 && value === "Нет данных" ? null : value;
+      }));
     return compareSemanticValues([...groups.values()].flat(), actual, "$.compensation.items");
   }
   if (path.startsWith("/api/reports/turnover.xlsx")) {

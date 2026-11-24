@@ -21,7 +21,7 @@ function item(overrides: Partial<CompensationRow> = {}): CompensationRow {
 }
 function fixture(): MarketingCompensationReport {
   return {
-    from: "2026-09-01", to: "2026-10-01", activityKey: null, issues: [], totals: complete(366.2),
+    from: "2026-09-01", to: "2026-10-01", activityKey: null, calculationMode: "retail-rule", issues: [], totals: complete(366.2),
     activities: [
       {
         key: "activity-a", name: "Маркетинг А", number: "001", startsOn: "2026-08-25", endsOn: "2026-09-15",
@@ -104,6 +104,50 @@ test("compensation XLSX starts with a compact store-first summary and preserves 
   assert.ok(headings.indexOf("Маркетинг А") < headings.indexOf("Маркетинг Б"));
   assert.ok(!headings.includes("Филиал Б"));
   assert.equal(rows(summary).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!.getCell(5).value, 366.2);
+});
+
+test("detail and correction sheets label both sources from the returned mode, without changing totals", async () => {
+  const report = fixture();
+  report.activities = [report.activities[0]];
+  const [sale, returned] = report.activities[0].branches;
+  sale.rows = [item({ price: 600, discountPct: 25, unitCompensation: 150, compensation: 300 })];
+  returned.rows = [item({ price: 500, discountPct: 25, unitCompensation: 125, quantity: -1, compensation: -125 })];
+  sale.totals = complete(300);
+  returned.totals = complete(-125);
+  report.activities[0].totals = report.totals = complete(175);
+  report.calculationMode = "purchase-title";
+  const purchased = await load(report);
+  for (const sheet of purchased.worksheets) {
+    assert.match(sheet.getCell("A2").text, /Закупочная цена и процент из названия акции/);
+    assert.doesNotMatch(sheet.getCell("A2").text, /розничная цена|процент из правила/i);
+  }
+  for (const [name, expected] of [
+    ["Детализация", [600, 0.25, 150, 2, 300]],
+    ["Корректировки", [500, 0.25, 125, -1, -125]]
+  ] as const) {
+    const sheet = purchased.getWorksheet(name)!;
+    assert.deepEqual(values(sheet.getRow(3)).slice(2, 4), ["Закупочная цена, ₸", "Процент из названия акции, %"]);
+    const line = rows(sheet).find(row => row.getCell(2).text === "=1+1")!;
+    assert.deepEqual(values(line).slice(2), expected);
+    assert.match(noteText(line.getCell(3)), /Маркетинг → Виды цен/);
+    assert.match(noteText(line.getCell(4)), /из названия акции/);
+  }
+  const purchasedDiagnostics = purchased.getWorksheet("Диагностика")!;
+  const rowContexts = rows(purchasedDiagnostics).filter(row => row.getCell(6).text === "row_context");
+  assert.equal(rowContexts.length, 2);
+  for (const row of rowContexts) {
+    assert.match(row.getCell(7).text, /закупочн.*названия акции/i);
+    assert.doesNotMatch(row.getCell(7).text, /цена до скидки/i);
+  }
+  assert.equal(rows(purchased.getWorksheet("Компенсации")!).find(row => row.getCell(1).text === "ОБЩИЙ ИТОГ")!.getCell(5).value, 175);
+
+  const legacy = await load(fixture());
+  assert.match(legacy.getWorksheet("Компенсации")!.getCell("A2").text, /Прежний расчёт: розничная цена и процент из правила/);
+  const legacyDetail = legacy.getWorksheet("Детализация")!;
+  assert.deepEqual(values(legacyDetail.getRow(3)).slice(2, 4), ["Розничная цена до скидки, ₸", "Процент из правила скидки, %"]);
+  const line = rows(legacyDetail).find(row => row.getCell(2).text === "=1+1")!;
+  assert.match(noteText(line.getCell(3)), /из строки продажи\/возврата/);
+  assert.match(noteText(line.getCell(4)), /префикс названия правила/i);
 });
 
 test("compensation XLSX counts sales 200 and return-only -80 once and uses report totals verbatim", async () => {

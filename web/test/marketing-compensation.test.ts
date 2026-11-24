@@ -3,6 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { CompensationResults, MarketingCompensation } from "../src/MarketingCompensation";
+import { api } from "../src/api";
 import type {
   CompensationActivity, CompensationBranch, CompensationRow, CompensationTotals, MarketingCompensationReport
 } from "../src/api";
@@ -44,7 +45,7 @@ function inactiveActivity(): CompensationActivity {
 
 function report(activities: CompensationActivity[] = [activity("sales", "Акция с продажами"), inactiveActivity()]): MarketingCompensationReport {
   return {
-    from: "2026-11-01", to: "2026-11-04", activityKey: null, activities,
+    from: "2026-11-01", to: "2026-11-04", activityKey: null, calculationMode: "purchase-title", activities,
     // Server totals deliberately differ from fixture rows: presentation must not aggregate money.
     totals: totals(987.65), issues: []
   };
@@ -252,6 +253,90 @@ test("include-incomplete control is visible and unchecked before loading any res
   const html = renderToStaticMarkup(createElement(MarketingCompensation, { dateRange: { from: "2026-11-01", to: "2026-11-03" } }));
   assert.match(html, /<input type="checkbox"\/><span>Включить строки без полного расчёта/);
   assert.ok(html.indexOf("Включить строки без полного расчёта") < html.indexOf("compensation-results"));
+});
+
+test("calculation starts in purchase-title mode with a named, unchecked legacy switch", () => {
+  const html = renderToStaticMarkup(createElement(MarketingCompensation, { dateRange: { from: "2026-11-01", to: "2026-11-03" } }));
+  assert.match(html, /<input[^>]*type="checkbox"[^>]*role="switch"[^>]*\/><span[^>]*>Прежний расчёт: розничная цена и процент из правила<\/span>/);
+  assert.doesNotMatch(html, /<input[^>]*role="switch"[^>]*checked/);
+  assert.match(html, /Закупочная цена · Процент из названия акции/);
+  assert.match(html, /<button[^>]*disabled[^>]*>.*Скачать Excel<\/button>/);
+});
+
+test("the result identifies precisely the financial basis the service actually returned", () => {
+  const data = report();
+  assert.match(overall(render(data)), /Закупочная цена и процент из названия акции/);
+  data.calculationMode = "retail-rule";
+  const legacy = overall(render(data));
+  assert.match(legacy, /Прежний расчёт: розничная цена и процент из правила/);
+  assert.doesNotMatch(legacy, /Закупочная цена|названия акции/);
+  assert.match(legacy, /987,65\s*₸/);
+});
+
+test("preview and workbook receive the same calculation mode and preserved filters; activity options only receive dates", async (t) => {
+  const urls: URL[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string) => {
+    const url = new URL(input, "https://fixture.invalid");
+    urls.push(url);
+    if (url.pathname.endsWith(".xlsx")) {
+      return new Response("workbook", { headers: { "Content-Disposition": 'attachment; filename="compensation.xlsx"' } });
+    }
+    if (url.pathname.endsWith("/activities")) return Response.json({ activities: [] });
+    return Response.json({ ...report(), calculationMode: url.searchParams.get("calculationMode") });
+  });
+  const filters = { from: "2026-11-01", to: "2026-11-03", activityKey: "activity-a", includeIncomplete: true };
+  for (const calculationMode of ["purchase-title", "retail-rule"] as const) {
+    const selected = { ...filters, calculationMode };
+    await api.marketingCompensationActivities(selected);
+    assert.equal((await api.marketingCompensationReport(selected)).calculationMode, calculationMode);
+    await api.marketingCompensationWorkbook(selected);
+
+    const [activities, preview, workbook] = urls.splice(0);
+    assert.deepEqual(Object.fromEntries(activities.searchParams), { from: "2026-11-01", to: "2026-11-04" });
+    for (const url of [preview, workbook]) {
+      assert.deepEqual(Object.fromEntries(url.searchParams), {
+        from: "2026-11-01", to: "2026-11-04", activityKey: "activity-a", includeIncomplete: "true", calculationMode
+      });
+    }
+  }
+});
+
+test("a preview returned with the other calculation basis is rejected", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({ ...report(), calculationMode: "retail-rule" }));
+  await assert.rejects(api.marketingCompensationReport({
+    from: "2026-11-01", to: "2026-11-03", calculationMode: "purchase-title"
+  }), /не совпадает/);
+});
+
+test("canceled compensation responses and workbook bodies cannot deliver stale results", async (t) => {
+  for (const kind of ["report", "workbook"] as const) {
+    const waiting = Promise.withResolvers<void>();
+    const response = kind === "report" ? Response.json(report()) : new Response("workbook", {
+      headers: { "Content-Disposition": 'attachment; filename="compensation.xlsx"' }
+    });
+    const readingBody = Promise.withResolvers<void>();
+    const method = kind === "report" ? "json" : "blob";
+    const read = response[method].bind(response);
+    const body = t.mock.method(response, method, async () => {
+      readingBody.resolve();
+      await waiting.promise;
+      return read();
+    });
+    const controller = new AbortController();
+    const fetch = t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+      assert.equal(init.signal, controller.signal);
+      return response;
+    });
+    const filters = { from: "2026-11-01", to: "2026-11-03", calculationMode: "purchase-title" } as const;
+    const result = kind === "report" ? api.marketingCompensationReport(filters, controller.signal)
+      : api.marketingCompensationWorkbook(filters, controller.signal);
+    await readingBody.promise;
+    controller.abort();
+    waiting.resolve();
+    await assert.rejects(result, { name: "AbortError" });
+    fetch.mock.restore();
+    body.mock.restore();
+  }
 });
 
 test("activity-only blockers remain diagnosable without default financial scope rows", () => {

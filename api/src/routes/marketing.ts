@@ -5,7 +5,8 @@ import { asyncHandler } from "../lib/http.js";
 import { reportRangeFields, resolveReportRange } from "../lib/report-range.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { getMarketingReport } from "../services/marketing.js";
-import { compensationQuerySchema, getMarketingCompensationActivities, getMarketingCompensationReport } from "../services/marketing-compensation.js";
+import { compensationPeriodSchema, compensationQuerySchema, getMarketingCompensationActivities, getMarketingCompensationReport } from "../services/marketing-compensation.js";
+import { loadPurchasePriceEvidence } from "../services/marketing-compensation-purchase-price.js";
 import { writeMarketingCompensationWorkbook } from "../services/marketing-compensation-workbook.js";
 import { assertReloadReady } from "../services/reload-readiness.js";
 
@@ -27,13 +28,15 @@ marketingRouter.get(
 );
 
 marketingRouter.get("/compensations/activities", asyncHandler(async (req, res) => {
-  const query = compensationQuerySchema.parse(req.query);
+  const query = compensationPeriodSchema.parse(req.query);
   await sendCachedJson(req, res, ["getMarketingCompensationActivities", query], () => getMarketingCompensationActivities(query), { kind: "all" });
 }));
 
 marketingRouter.get("/compensations", asyncHandler(async (req, res) => {
   const query = compensationQuerySchema.parse(req.query);
-  await sendCachedJson(req, res, ["getMarketingCompensationReport", query], () => getMarketingCompensationReport(query), { kind: "all" });
+  const evidence = query.calculationMode === "purchase-title" ? await loadPurchasePriceEvidence() : undefined;
+  await sendCachedJson(req, res, ["getMarketingCompensationReport", query, evidence?.binding],
+    () => getMarketingCompensationReport(query, undefined, evidence), { kind: "all" });
 }));
 
 marketingRouter.get("/compensations.xlsx", asyncHandler(async (req, res) => {
@@ -42,7 +45,7 @@ marketingRouter.get("/compensations.xlsx", asyncHandler(async (req, res) => {
   const report = await getMarketingCompensationReport(query);
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="marketing-compensations_${report.from}_${report.to}.xlsx"`);
+  res.setHeader("Content-Disposition", `attachment; filename="marketing-compensations_${report.from}_${report.to}_${report.calculationMode}.xlsx"`);
   await writeMarketingCompensationWorkbook(report, res);
   if (!res.writableEnded) res.end();
 }));

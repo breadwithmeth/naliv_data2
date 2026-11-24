@@ -3,7 +3,7 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { prisma } from "../prisma.js";
 import {
-  chronologicalStock, evaluateTurnoverRisks, includeTurnoverRow, planTurnoverTransfers, salesChange,
+  chronologicalStock, evaluateTurnoverRisks, includeTurnoverRow, isStandardTurnoverLayout, planTurnoverTransfers, salesChange,
   sumNullable, turnoverRatios, turnoverSales
 } from "./turnover-domain.js";
 import {
@@ -108,6 +108,7 @@ export const turnoverQuerySchema = z.object({
   }
 }).transform((value) => ({
   ...value,
+  sort: value.profile === "sample" ? "name" as const : value.sort,
   norms: value.norms ? {
     defaults: value.norms.defaults,
     categories: Object.fromEntries(Object.entries(value.norms.categories).sort(([a], [b]) => a.localeCompare(b)))
@@ -787,8 +788,7 @@ function resolveTurnoverPeriod(
 ): { params: NormalizedTurnoverRequest; requestedTo: string | null } {
   // Only an automatically derived comparison can follow a shortened period.
   const certifiedEnd = certifiedTurnoverEnd(readiness);
-  const standardLayout = query.profile === "sample"
-    || (query.profile === "summary" && query.groupBy === "sku" && query.sort === "name");
+  const standardLayout = isStandardTurnoverLayout(query);
   const to = certifiedEnd && query.to > certifiedEnd && !query.comparisonTo
     && dayCount(query.from, certifiedEnd) >= (standardLayout ? 2 : 1) ? certifiedEnd : query.to;
   return {
@@ -1214,7 +1214,7 @@ async function buildTurnoverReport(
   if (!consolidateStores) {
     for (const pair of selectedPairs) {
       const row = makeRow(pair, params.from, params.to, params.comparisonFrom, params.comparisonTo);
-      collect(pair, row, includeTurnoverRow(row, params.mode), false);
+      collect(pair, row, includeTurnoverRow(row, params), false);
     }
   } else {
     // Certify and admit a network SKU before committing any of its stores to totals.
@@ -1229,10 +1229,10 @@ async function buildTurnoverReport(
       const idle = certifyIdleStock && !uncertifiedIdleSkus.has(sku) && !activityInNetwork.has(null)
         && !activityInNetwork.has(sku) && rows.reduce((n, row) => n + (row.closingQty ?? 0), 0) > 0;
       if (idle) idleNetworkSkus.add(sku);
-      const active = rows.some(row => !row.idleStock && includeTurnoverRow(row, params.mode)
+      const eligible = rows.map(row => includeTurnoverRow(row, params));
+      const active = rows.some((row, i) => !row.idleStock && eligible[i]
         && (params.risk === "all" || row.risks.includes(params.risk)));
-      rows.forEach((row, i) => collect(pairs[i]!, row,
-        idle || (active && includeTurnoverRow(row, params.mode)), idle));
+      rows.forEach((row, i) => collect(pairs[i]!, row, idle || (active && eligible[i]!), idle));
     }
   }
   const visibleAtomic = params.risk === "all" ? atomicRows : atomicRows.filter((row) => row.risks.includes(params.risk as Exclude<typeof params.risk, "all">));

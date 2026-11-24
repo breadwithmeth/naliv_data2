@@ -242,13 +242,13 @@ totals; the recalculated package passed Open XML validation without errors.
 
 Раздел **Товары → Оборачиваемость** (`#stock/turnover`) сначала показывает отчёт,
 а затем позволяет скачать Excel по всему отбору, независимо от текущей страницы.
-В короткой форме — период, пресеты, режим **Количество / Деньги**, магазины, поиск
-товара и флажок **«Разбить по магазинам»** (по умолчанию выключен).
+В короткой форме — период, пресеты, магазины, поиск товара и флажок **«Разбить по магазинам»**
+(по умолчанию выключен). Количество и стоимость показаны рядом, в одном отчёте.
 Категории, склад, бренд, офисы и исключение нулевых товаров доступны в закрытых
 **«Дополнительных настройках»** со счётчиком активных условий.
 Enter и **«Показать отчёт»** открывают результат; скачивание — отдельное действие.
 Изменение отбора отменяет запрос и убирает старый результат.
-По умолчанию показываются товары с полным расчётом и товары **«Без движения»**:
+По умолчанию достаточно полного расчёта по количеству **или** по стоимости. Также включаются товары **«Без движения»**:
 на конец периода есть положительный остаток, за выбранный период не зарегистрированы продажи,
 возвраты покупателей и проведённые поступления от поставщиков. Открытый заказ без поступления —
 не закупка. Статус требует подтверждённой загрузки источников за весь фактически показанный период.
@@ -256,7 +256,7 @@ Enter и **«Показать отчёт»** открывают результа
 остатки входят в итоги, неизвестная себестоимость не считается нулевой.
 Отдельно из всех вариантов отчёта (включая итоги) исключены пластиковые бутылки как тара,
 фирменные стаканы и фирменные майки. Напитки в бутылках, подарочные наборы со стаканами и
-обычные нефирменные стаканы и майки остаются. Прочие строки с неполным расчётом скрыты.
+обычные нефирменные стаканы и майки остаются. Прочие строки без полного расчёта ни по одному основанию скрыты.
 Флажок **«Включить строки без полного расчёта»** (`includeIncomplete=true`) в закрытых
 дополнительных настройках возвращает их в обе формы отчёта; по умолчанию он выключен.
 Проверяются расчётные поля выбранного режима, а не наличие штрихкода или артикула.
@@ -300,44 +300,29 @@ Enter и **«Показать отчёт»** открывают результа
 - При смене магазинов склад сбрасывается, чтобы не сохранять несовместимый отбор.
   Пустой справочник брендов явно обозначен; выбор бренда в этом случае недоступен.
 
-Стандартная форма сайта и Excel соответствует исходным файлам «Товараоборот в шт.xlsx»
-и «Товараоборот в деньгах.xlsx»: номенклатура, дневные остатки с половинами крайних
-дней, сумма взвешенных остатков, средний запас, коэффициент, дни периода, продажи
-и дни оборота. Денежный режим использует себестоимость.
+Обе формы запрашивают `mode=both&groupBy=sku&sort=name`. Дневные остатки в предпросмотре
+изначально скрыты; кнопка **«Показать дни»** раскрывает их без нового запроса или смены
+страницы. Две строки шапки и текущий контекст магазина/группы остаются видны при прокрутке.
 
-- В Excel только исходные расчётный лист и лист продаж; `mode=both` содержит две такие
-  пары. Дополнительных листов «Кратко», «Товары» и аналитических сводок в выгрузке сайта нет.
-- Крупные группы и магазины — простые заголовки внутри стандартных таблиц, без
-  дополнительных колонок или выдуманных подытогов разделов. Названия и финансовые
-  формулы товаров сохраняются. Одинаковые названия разных SKU/магазинов не объединяются.
-- Итоги по всему отбору находятся внизу таблицы. Сокращение периода и исключение
-  неполных строк показаны кратко; подробные ограничения на сайте закрыты по умолчанию.
-
-
-- Лист **«рассчет оборачиваемости»** (в денежном варианте — с завершающим пробелом):
-  `Номенклатура`, дневные остатки, колонки `01.09.` и `01.09. / 2`,
-  последняя дата с половинной колонкой, `сумма остатков за период`,
-  `средний товарный запас в шт`, `Коэффицент оборачиваемости`,
-  `количество дней в периоде`, `продажи в шт за период`, `количество дней оборота`.
-  В денежном режиме сумма и средний запас подписаны в тенге, продажи — как
-  себестоимость продаж в тенге. Количество дней оборота измеряется в днях в обоих режимах.
-- Лист **«Продажи за период »**: номенклатура и продажи; в денежном варианте добавляется
-  себестоимость. В обоих вариантах последняя строка — **«ИТОГО»**.
-- Совпадают ширины колонок (A = 65.5703125; даты = 9.140625; последние шесть колонок —
-  26.7109375 / 29.28515625 / 29.28515625 / 27.28515625 / 24.5703125 / 29.28515625),
-  шрифт и числовой формат `0.00` у среднего, коэффициента, дней и оборота, границы и
-  заливка по умолчанию, альбомная ориентация A4, поля и автофильтр денежного листа
-  `A1:AM1` для 30-дневного периода. Закреплённых строк, объединённых ячеек и цветных
-  заголовков нет.
+- Стандартный Excel содержит одну пару листов: **«Оборачиваемость»** и **«Продажи за период»**.
+  Имена товаров, корневых групп и, при разбивке, магазинов повторены слева; колонки
+  контекста и две верхние строки закреплены. Дневной блок свёрнут штатной группировкой
+  Excel и раскрывается знаком `+`. Аналитический `full` сохраняет собственную компоновку.
+- В паре дневных колонок — остаток в базовой единице товара и по себестоимости в ₸.
+  На крайних датах рядом с полной парой показана половинная; её не складывают с полной.
+  За днями идут сумма взвешенных остатков, средний запас, коэффициенты, дни периода,
+  продажи и дни оборота. Коэффициенты и дни не выражены в деньгах.
+- На листе продаж у каждой товарной строки две меры; формулы основного листа ссылаются
+  на номер строки, а не ищут по названию. Явные запросы `quantity` и `money` по API
+  остаются одноосновными.
 - Крайние дневные остатки по-прежнему делятся пополам. Средний запас учитывает только
   положительные остатки: сумма положительных взвешенных значений делится на сумму
   их весов (½ для крайних дат, 1 для остальных). Без положительного остатка среднее
   равно нулю, если известны все снимки; пропуск делает среднее недоступным.
-  Дни периода и формулы коэффициента, дней оборота и поиска продаж сохраняются.
-- Стандартная форма требует не менее двух календарных дней. Без разбивки — одна
-  строка на SKU; с разбивкой — магазин × SKU. Строки с пропусками расчёта исключены по умолчанию; при явном включении
-  пропущенные остатки и цены выводятся как `n/a`, а не нули. В денежном отчёте используется
-  учётная себестоимость; розничная выручка не подменяет её.
+  Одна неизвестная стоимость не скрывает известное физическое количество.
+- Стандартная форма требует 2–366 календарных дней. Без разбивки — одна строка на SKU;
+  с разбивкой — магазин × SKU. Расчёт по стоимости использует учётную себестоимость;
+  розничная выручка не подменяет её.
 - В сводном формате количество и денежные значения каждого товара суммируются по
   всем выбранным физическим магазинам и складам. Выбор магазинов или конкретного
   склада ограничивает эту же сводную строку, а не создаёт отдельные строки.
@@ -348,11 +333,9 @@ Enter и **«Показать отчёт»** открывают результа
   соответствующий итог неизвестным.
 - Точный SKU и текстовый поиск используют одну и ту же совокупность фактических
   магазинов; отсутствующая строка не создаётся для офиса или магазина без данных.
-- Разные SKU и учётные единицы не смешиваются. В денежном листе продаж общий
-  количественный `Итого` доступен только при единой учётной единице; иначе он не
-  выдаётся за число. Технический `n/a` доступен при включении неполных расчётов.
-- К названиям не добавляются магазины, SKU или GUID. Формула поиска продаж ссылается
-  на точную исходную строку, поэтому одинаковые названия не смешивают разные товары.
+- В совместимых единицах обе меры стоят в одной строке итогов. При смешанных единицах
+  денежная мера показана один раз на строке области, а физические количества — отдельно
+  по единицам. Это относится и к дневным колонкам, и к листу продаж.
 - **«ИТОГО»** учитывает весь отбор после фильтров. При разбивке **«ИТОГО по магазину»**
   стоит после последней строки магазина и относится ко всем его товарам, не только к
   странице. Средний итоговый запас рассчитывается по суммарным дневным остаткам
@@ -366,13 +349,11 @@ Enter и **«Показать отчёт»** открывают результа
 - В аналитическом Excel ИТОГО находится вне AutoFilter и только на последней части
   основной таблицы. В дневной детализации начальный/средний запас периода находятся
   в отдельных итоговых колонках; дневные остатки не складываются как запас периода.
-- Окрашивается только коэффициент: `<1` — красный, `1…<2` — нейтральный, `2…<3` —
-  оранжевый, `>=3` — зелёный. Порог берётся по исходному числу до округления.
-  `n/a` и дни оборота не окрашиваются. В Excel цвет обновляется после пересчёта.
-- Предпросмотр использует ту же стандартную таблицу с дневными остатками и шестью
-  расчётными колонками, без отдельного компактного/подробного формата, KPI-карточек,
-  SKU-колонок и дублирующей сводки. 100 товаров на страницу; разделы повторяются при
-  переходе страницы и не входят в этот лимит. Серверный итог относится ко всему отбору.
+- Окрашиваются только коэффициенты, включая итоги: `[0, 2)` — красный («Плохо»),
+  `[2, 3)` — оранжевый («Средне»), от 3 — зелёный («Хорошо»). Порог берётся до
+  округления; отрицательные и недоступные значения нейтральны. Дни оборота не окрашиваются.
+- Предпросмотр показывает 100 товаров на страницу; заголовки разделов повторяются
+  на новой странице и не входят в этот лимит. Итог относится ко всему серверному отбору.
   Числовой пропуск — **«—»**, не ноль; причины доступны в закрытых подробностях.
   Сводный запрос использует `profile=sample`; разбивка магазинов — `profile=summary`
   вместе с `groupBy=sku&sort=name` для сайта и Excel. `excludeZero` по умолчанию выключен;
@@ -682,26 +663,60 @@ API periods are half-open, midnight calendar dates, at most 366 days; omit
 included. Quantities are posted, non-deleted retail-report sales minus return
 lines within the intersection of the requested, activity and rule periods.
 Identical membership/rules do not duplicate quantity within an activity;
-separate activities remain independent, and conflicting overlapping percentages
-produce an unresolved row rather than an arbitrary rate.
+separate activities remain independent. Items and characteristics come from the
+current `information_register_nomenklatura_segmenta` snapshot. Returns use
+`-abs(quantity)`; negative sale-table movements keep their original sign.
 
-Items/characteristics come directly from the current
-`information_register_nomenklatura_segmenta` snapshot. Price is the pre-discount
-`Цена` of the same retail sale/return movement. Each distinct numeric price gets
-its own row; returns use `-abs(quantity)`, and negative sale-table movements keep
-their original sign. No purchase-price type, price installation, paid revenue,
-other sale, VAT or extra discount adjustment substitutes for this price.
-The percentage comes only from the beginning of the linked discount rule's
-`description` (`18,57% …` means 18.57), not its numeric field or the activity name.
-Missing/invalid prefixes remain unknown even when another field has a percentage.
-Unit compensation is rounded HALF_UP to two decimals, then multiplied by signed
-quantity and rounded again; totals sum rounded price-group lines. Two units at
-1000 and one return at 800 with 10% produce +200 and −80, total 120.
-Return prices are trusted only on dates with verified retail evidence explicitly
-containing `nullCounts.tsena`. Old certificates do not certify this new field.
-Before the additive DDL, the API safely reads absent return prices as unknown;
-partially backfilled but uncertified numbers remain unknown. Genuine source NULL
-is never filled with zero. Normal nightly retail jobs extend field certification.
+The `calculationMode` parameter switches **both** the price and the percentage:
+
+- `purchase-title` (default): use the source store's current `vid_tsen_zakupa_key`
+  and the latest posted, non-deleted base-package price installation at or before
+  the movement, for this exact SKU and characteristic. Returns use their own
+  branch and timestamp, not the original sale. The rate is a single unambiguous
+  0–100% value in the raw activity title. Rules still determine assortment,
+  period and stores. Current store cards do not version historical price-type links.
+  Sales and returns require ordinary verified retail movement coverage, separately
+  from the price evidence. An uncovered day prevents certifying the full payout
+  or the absence of movements, even if another day has a posted report.
+- `retail-rule`: use the retail line's pre-discount `Цена` and the prefix of the
+  linked rule's `description` (`18,57% …` means 18.57). Return prices require
+  verified retail evidence containing `nullCounts.tsena`; an absent or uncertified
+  retail price never becomes zero. This mode does not require purchase-price data.
+
+Neither mode substitutes receipts, cost of goods, retail revenue or an inferred VAT
+adjustment. A missing, conflicting, non-positive or unverified purchase price does
+not authorize a payout. A known rate of 0% is valid. Prices group movements only
+after the applicable price has been selected. Round HALF_UP to two places per
+unit, multiply by signed quantity, round again, then total the price groups.
+For +2 sales and −1 return, retail 1000/800 at 10% gives **120**; verified
+purchase 600/500 at 25% gives **175**.
+
+The activity selector is period-only. The JSON report and XLSX identify the
+calculation mode; switching the UI invalidates the old result and download.
+Each workbook is a snapshot, not a switchable Excel calculation.
+
+**Purchase-price verification.** The compact replica does not retain a currency
+or an authoritative register snapshot. Outside the request path, use the
+collector's Python environment (`psycopg`, `python-dotenv`) to reconcile a
+selected activity. For example, from `naliv_data2`, using a verified June–November
+coverage interval (not an assumption that every SKU has a price):
+
+```bash
+python api/src/scripts/reconcile_compensation_purchase_prices.py \
+  --activity 3b89847a-d56d-11f1-9644-10ffe0910b88 --from 2026-11-01 --to 2026-11-20 \
+  --coverage-floor 2026-06-01 --coverage-to 2026-11-20 \
+  --out verify-out-compensation-price-audit/evidence.json
+```
+
+The command uses read-only SQL and serial filtered 1C GETs, and writes the
+candidate-level audit next to the snapshot. Keep both outside version control.
+For an intentional installation, point `COMPENSATION_PURCHASE_PRICE_EVIDENCE_PATH`
+at the trusted, access-controlled evidence file, **not** its `.audit.json`.
+The command replaces its output; it does not append other activities. The API
+also checks the verified `prices` intervals and the local installation at the
+movement timestamp. A blank source currency is not evidence of KZT. Reconcile
+again after source corrections; remove superseded evidence until replaced.
+Without applicable evidence the full payout is unknown, not zero.
 
 Only compensation amounts are totaled across products. Net quantities remain
 on item rows; kilograms, litres and pieces are not combined into a branch,

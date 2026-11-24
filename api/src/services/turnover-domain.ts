@@ -1,15 +1,14 @@
 import type {
   TurnoverChange, TurnoverDailyRow, TurnoverMode, TurnoverNorms, TurnoverPreview, TurnoverRecommendation,
-  TurnoverReport, TurnoverRisk, TurnoverRow, TurnoverSales, TurnoverTotal, TurnoverTransfer
+  TurnoverReport, TurnoverRequest, TurnoverRisk, TurnoverRow, TurnoverSales, TurnoverTotal, TurnoverTransfer
 } from "./turnover-types.js";
 
-export const TURNOVER_COEFFICIENT_THRESHOLDS = { lowEnd: 1, mediumStart: 2, goodStart: 3 } as const;
+export const TURNOVER_COEFFICIENT_THRESHOLDS = { poorStart: 0, mediumStart: 2, goodStart: 3 } as const;
 
 export function turnoverCoefficientBand(value: number | null): "red" | "orange" | "green" | null {
-  if (value === null || !Number.isFinite(value)) return null;
-  const { lowEnd, mediumStart, goodStart } = TURNOVER_COEFFICIENT_THRESHOLDS;
-  if (value < lowEnd) return "red";
-  if (value < mediumStart) return null;
+  const { poorStart, mediumStart, goodStart } = TURNOVER_COEFFICIENT_THRESHOLDS;
+  if (value === null || !Number.isFinite(value) || value < poorStart) return null;
+  if (value < mediumStart) return "red";
   return value < goodStart ? "orange" : "green";
 }
 
@@ -38,8 +37,18 @@ export function isCompleteTurnoverRow(row: CalculationRow, mode: TurnoverMode = 
     && (!row.daily || row.daily.every(day => isCompleteTurnoverDailyRow(day, mode)));
 }
 
-export function includeTurnoverRow(row: CalculationRow & Pick<TurnoverRow, "idleStock">, mode: TurnoverMode): boolean {
-  return row.idleStock === true || isCompleteTurnoverRow(row, mode);
+type Layout = Pick<TurnoverRequest, "profile" | "groupBy" | "sort" | "mode">;
+
+export function isStandardTurnoverLayout(params: Layout): boolean {
+  return params.profile === "sample" || (params.profile === "summary" && (params.groupBy ?? "sku") === "sku" && params.sort === "name");
+}
+
+export function includeTurnoverRow(row: CalculationRow & Pick<TurnoverRow, "idleStock">, params: Layout): boolean {
+  if (row.idleStock === true) return true;
+  const mode = params.mode ?? "both";
+  return mode === "both" && isStandardTurnoverLayout(params)
+    ? isCompleteTurnoverRow(row, "quantity") || isCompleteTurnoverRow(row, "money")
+    : isCompleteTurnoverRow(row, mode);
 }
 
 export function isCompleteTurnoverDailyRow(day: TurnoverDailyRow, mode: TurnoverMode = "both"): boolean {
@@ -67,9 +76,10 @@ function unavailableTurnoverTotal(): TurnoverTotal {
 export function completeTurnoverReport<T extends TurnoverReport | TurnoverPreview>(report: T): T {
   if (report.params.includeIncomplete || report.populationFiltered) return report;
   const mode = report.params.mode ?? "both";
-  const rows = report.rows.every(row => includeTurnoverRow(row, mode))
-    ? report.rows : report.rows.filter(row => includeTurnoverRow(row, mode));
-  const daily = report.daily.every(day => isCompleteTurnoverDailyRow(day, mode))
+  const included = (row: CalculationRow & Pick<TurnoverRow, "idleStock">) => includeTurnoverRow(row, report.params);
+  const rows = report.rows.every(included) ? report.rows : report.rows.filter(included);
+  // A paired daily total may have a known quantity but unknown cost, or vice versa.
+  const daily = (mode === "both" && isStandardTurnoverLayout(report.params)) || report.daily.every(day => isCompleteTurnoverDailyRow(day, mode))
     ? report.daily : report.daily.filter(day => isCompleteTurnoverDailyRow(day, mode));
   const excluded = report.rows.length - rows.length;
   if (!excluded && daily.length === report.daily.length) return report;

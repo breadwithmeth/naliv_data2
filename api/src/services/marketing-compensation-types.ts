@@ -1,4 +1,5 @@
 export type CompensationIssue = { code: string; message: string };
+export type CompensationCalculationMode = "purchase-title" | "retail-rule";
 export type CompensationTotals = {
   compensation: number | null;
   knownCompensation: number;
@@ -37,6 +38,7 @@ export type CompensationExcludedDiagnostic = {
 };
 export type MarketingCompensationReport = {
   from: string; to: string; activityKey: string | null;
+  calculationMode: CompensationCalculationMode;
   activities: CompensationActivity[]; totals: CompensationTotals;
   issues: CompensationIssue[];
   includeIncomplete?: boolean;
@@ -44,4 +46,6 @@ export type MarketingCompensationReport = {
   excludedIncompleteBlocks?: number;
   excludedIncompleteDiagnostics?: CompensationExcludedDiagnostic[];
 };
-export type MarketingCompensationRequest = { from: string; to: string; activityKey?: string; includeIncomplete?: boolean };
+export type MarketingCompensationRequest = {
+  from: string; to: string; activityKey?: string; includeIncomplete?: boolean; calculationMode?: CompensationCalculationMode;
+};

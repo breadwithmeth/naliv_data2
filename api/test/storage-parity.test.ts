@@ -200,7 +200,7 @@ test("readiness discovers populated one-day HTTP fixtures within the immutable h
 test("compensation workbook oracle comes from same-parameter JSON including barcodes, returns and unknown prices", async () => {
   const totals = { compensation: null, knownCompensation: -3, incompleteRows: 1 };
   const report = {
-    from: "2026-06-01", to: "2026-06-02", activityKey: "activity", totals, issues: [],
+    from: "2026-06-01", to: "2026-06-02", activityKey: "activity", calculationMode: "retail-rule", includeIncomplete: true, totals, issues: [],
     activities: [{
       key: "activity", name: "Реальная акция", number: "001", startsOn: "2026-06-01", endsOn: "2026-06-02",
       from: "2026-06-01", to: "2026-06-02", totals, issues: [],
@@ -212,13 +212,15 @@ test("compensation workbook oracle comes from same-parameter JSON including barc
     }]
   };
   const paths: string[] = [];
-  const oracle = await readinessWorkbookOracle({ path: "/api/marketing/compensations.xlsx?from=2026-06-01&to=2026-06-02&activityKey=activity", kind: "xlsx" }, async (path) => { paths.push(path); return report; });
-  assert.deepEqual(paths, ["/api/marketing/compensations?from=2026-06-01&to=2026-06-02&activityKey=activity"]);
+  const filters = "from=2026-06-01&to=2026-06-02&activityKey=activity&calculationMode=retail-rule&includeIncomplete=true";
+  const oracle = await readinessWorkbookOracle({ path: `/api/marketing/compensations.xlsx?${filters}`, kind: "xlsx" }, async (path) => { paths.push(path); return report; });
+  assert.deepEqual(paths, [`/api/marketing/compensations?${filters}`]);
   assert.ok(oracle);
   const sheets = oracle.value as Array<{ name: string; rows: Array<{ cells: Array<{ column: number; value: unknown }> }> }>;
   const item = sheets.flatMap((sheet) => sheet.rows).find((row) => row.cells.some((cell) => cell.column === 1 && cell.value === "00123"));
   assert.ok(item);
-  assert.deepEqual(item.cells.map((cell) => cell.value), ["00123", "Возврат", "n/a", 0.1, "n/a", -2, "n/a"]);
+  assert.deepEqual(compareReadinessFields("/api/marketing/compensations.xlsx", oracle.value, report), []);
+  assert.deepEqual(item.cells.filter(cell => typeof cell.value === "number").map(cell => cell.value), [0.1, -2]);
   const absent = await readinessWorkbookOracle({ path: "/api/marketing/compensations.xlsx?from=2026-06-01&to=2026-06-02", kind: "xlsx" }, async () => null);
   assert.equal(absent, null);
 });
@@ -293,9 +295,9 @@ test("canary probes use an actual uncertified source boundary, never an out-of-h
 
 test("independent compensation fields catch a writer changing null prices, return signs or barcode strings", () => {
   const input = { activities: [{ branches: [{ key: "shop", rows: [{ barcode: "00123", name: "Возврат", price: null, discountPct: 10, unitCompensation: null, quantity: -2, compensation: null }] }] }] };
-  const workbook = [{ name: "Филиал", rows: [{ number: 6, cells: [
-    { column: 1, value: "00123" }, { column: 2, value: "Возврат" }, { column: 3, value: "n/a" },
-    { column: 4, value: 0.1 }, { column: 5, value: "n/a" }, { column: 6, value: -2 }, { column: 7, value: "n/a" }
+  const workbook = [{ name: "Корректировки", rows: [{ number: 6, cells: [
+    { column: 1, value: "00123" }, { column: 2, value: "Возврат" }, { column: 3, value: "Нет данных" },
+    { column: 4, value: 0.1 }, { column: 5, value: "Нет данных" }, { column: 6, value: -2 }, { column: 7, value: "Нет данных" }
   ] }] }];
   assert.deepEqual(compareReadinessFields("/api/marketing/compensations.xlsx", workbook, input), []);
   workbook[0].rows[0].cells[0].value = "123";

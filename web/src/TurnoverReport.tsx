@@ -1,23 +1,20 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { Download } from "lucide-react";
 import { api } from "./api";
 import type {
   ReportDateRange, TurnoverOption, TurnoverOptions, TurnoverPreview, TurnoverPreviewRow, TurnoverRequest
 } from "./api";
 import { formatDecimal, formatNumber } from "./format";
-import { completeTurnoverReport, includeTurnoverRow, turnoverCoefficientBand } from "../../api/src/services/turnover-domain";
 import {
-  TURNOVER_IDLE_LABEL, turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows, turnoverStandardValue, turnoverUnitLabels
+  completeTurnoverReport, hasKnownTurnoverUnit, includeTurnoverRow, TURNOVER_COEFFICIENT_THRESHOLDS, turnoverCoefficientBand
+} from "../../api/src/services/turnover-domain";
+import {
+  TURNOVER_IDLE_LABEL, turnoverStandardDates, turnoverStandardGrid, turnoverStandardTotalRows, turnoverStandardValue, turnoverUnitLabels
 } from "../../api/src/services/turnover-presentation";
-import type { TurnoverStandardColumn } from "../../api/src/services/turnover-presentation";
+import type { TurnoverStandardGroup } from "../../api/src/services/turnover-presentation";
 
 const DAY_MS = 86_400_000;
-const MODE_LABELS: Record<"quantity" | "money", string> = {
-  quantity: "Количество",
-  money: "Деньги"
-};
-type SampleMode = keyof typeof MODE_LABELS;
 type ReportFormat = "sample" | "stores";
 type InclusiveDateRange = Required<Pick<ReportDateRange, "from" | "to">>;
 const PERIOD_PRESETS = [
@@ -30,7 +27,7 @@ type PeriodPreset = typeof PERIOD_PRESETS[number]["key"];
 const EMPTY_OPTIONS: TurnoverOption[] = [];
 type Filters = {
   store: string[]; warehouse: string; category: string[]; brand: string; search: string;
-  mode: SampleMode; format: ReportFormat; includeNonRetail: boolean; excludeZero: boolean; includeIncomplete: boolean;
+  format: ReportFormat; includeNonRetail: boolean; excludeZero: boolean; includeIncomplete: boolean;
 };
 type PreparedRequest = { valid: true; request: TurnoverRequest } | { valid: false; error: string };
 type DownloadState = {
@@ -47,6 +44,7 @@ type StandardMetrics = Pick<TurnoverPreviewRow,
   "daily" | "averageQty" | "averageCost" | "periodSales" | "idleStock" |
   "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays"
 >;
+type GridLeaf = TurnoverStandardGroup["leaves"][number] & { key: string };
 
 function dateNumber(value: string | undefined): number | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -107,7 +105,7 @@ function prepareRequest(range: InclusiveDateRange, filters: Filters): PreparedRe
       from: range.from,
       // Dashboard and all builder controls own inclusive dates. Only the API end is exclusive.
       to: new Date(to + DAY_MS).toISOString().slice(0, 10),
-      mode: filters.mode, profile: detail ? "summary" : "sample", groupBy: "sku", sort: "name",
+      mode: "both", profile: detail ? "summary" : "sample", groupBy: "sku", sort: "name",
       storeScope: filters.includeNonRetail ? "all" : "retail",
       ...(filters.excludeZero ? { excludeZero: true } : {}),
       includeIncomplete: filters.includeIncomplete,
@@ -188,33 +186,133 @@ function CoefficientCell({ value }: { value: number | null }) {
   </td>;
 }
 
-function StandardMetricCells({ metrics, columns, mode, periodDays, quantityUnavailable = false }: {
-  metrics: StandardMetrics; columns: readonly TurnoverStandardColumn[]; mode: SampleMode;
-  periodDays: number; quantityUnavailable?: boolean;
+function StandardMetricCells({ metrics, leaves, periodDays, quantity = true, money = true }: {
+  metrics: StandardMetrics; leaves: readonly GridLeaf[]; periodDays: number; quantity?: boolean; money?: boolean;
 }) {
-  return <>{columns.map((column, index) => {
-    if (column.kind === "turnoverDays" && metrics.idleStock) {
-      return <td key={index} title="Есть остаток на конец периода, продаж и закупок не было">{TURNOVER_IDLE_LABEL}</td>;
+  return <>{leaves.map(({ column, basis, key }) => {
+    if ((basis === "quantity" && !quantity) || (basis === "money" && !money)) return <td key={key} />;
+    const value = basis === "shared" ? periodDays : turnoverStandardValue(metrics, column, basis, periodDays);
+    if (column.kind === "turnoverDays" && value === null && metrics.idleStock) {
+      return <td key={key} className="turnover-idle-label" title="Есть остаток на конец периода, продаж и закупок не было">{TURNOVER_IDLE_LABEL}</td>;
     }
-    const value = quantityUnavailable && column.kind !== "periodDays"
-      ? null : turnoverStandardValue(metrics, column, mode, periodDays);
     return column.kind === "coefficient"
-      ? <CoefficientCell key={index} value={value} />
-      : <td key={index} className="turnover-numeric"><PreviewNumber value={value} /></td>;
+      ? <CoefficientCell key={key} value={value} />
+      : <td key={key} className={`turnover-numeric${column.kind === "day" ? " turnover-preview-day" : ""}`}><PreviewNumber value={value} /></td>;
   })}</>;
 }
 
-export function TurnoverPreviewTable({ report, page, onPageChange }: {
+type ContextBoundary = { kind: string; top: number; height: number; label: string };
+
+function contextAt(boundaries: readonly ContextBoundary[], edge: number, kind: "store" | "group") {
+  // The original is still the label until it starts passing below the pinned stack.
+  let start = 0;
+  let end = boundaries.length;
+  while (start < end) {
+    const middle = (start + end) >>> 1;
+    if (boundaries[middle].top < edge) start = middle + 1;
+    else end = middle;
+  }
+  const current = boundaries[start - 1];
+  // Leave room for the next original boundary instead of covering it with a stale label.
+  return current?.kind === kind && (boundaries[start]?.top ?? Infinity) >= edge + current.height ? current : undefined;
+}
+
+function PreviewScroll({ noteId, showDays, report, children }: {
+  noteId: string; showDays: boolean; report: TurnoverPreview; children: ReactNode;
+}) {
+  const viewport = useRef<HTMLDivElement>(null);
+  const [context, setContext] = useState<{ store?: string; group?: string }>({});
+  const lastContext = useRef(context);
+  useLayoutEffect(() => {
+    const scroll = viewport.current;
+    const grid = scroll?.querySelector("table");
+    const head = grid?.tHead;
+    if (!scroll || !grid || !head) return;
+
+    const markers = grid.querySelectorAll<HTMLElement>("[data-turnover-boundary]");
+    let all: ContextBoundary[] = [];
+    let stores: ContextBoundary[] = [];
+    let headHeight = 0;
+    let frame: number | null = null;
+    let needsMeasure = true;
+
+    const update = () => {
+      frame = null;
+      if (needsMeasure) {
+        needsMeasure = false;
+        const origin = scroll.getBoundingClientRect().top + scroll.clientTop - scroll.scrollTop;
+        const height = head.getBoundingClientRect().height;
+        if (height !== headHeight) {
+          headHeight = height;
+          scroll.style.setProperty("--turnover-head-height", `${height}px`);
+        }
+        all = Array.from(markers, (marker) => {
+          const rect = marker.getBoundingClientRect();
+          const kind = marker.dataset.turnoverBoundary!;
+          return { kind, top: rect.top - origin, height: rect.height,
+            label: marker.querySelector(".turnover-section-label")?.textContent ?? "" };
+        });
+        stores = all.filter(({ kind }) => kind === "store" || kind === "overall");
+      }
+      const edge = scroll.scrollTop + headHeight;
+      const store = contextAt(stores, edge, "store");
+      const group = contextAt(all, edge + (store?.height ?? 0), "group");
+      if (store?.label !== lastContext.current.store || group?.label !== lastContext.current.group) {
+        lastContext.current = { store: store?.label, group: group?.label };
+        setContext(lastContext.current);
+      }
+    };
+
+    function schedule() {
+      frame ??= requestAnimationFrame(update);
+    }
+    const observer = new ResizeObserver(() => { needsMeasure = true; schedule(); });
+    observer.observe(scroll);
+    observer.observe(grid);
+    observer.observe(head);
+    for (const marker of markers) observer.observe(marker);
+    scroll.addEventListener("scroll", schedule, { passive: true });
+    update();
+    return () => {
+      observer.disconnect();
+      scroll.removeEventListener("scroll", schedule);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [showDays, report]);
+
+  return <div ref={viewport} className="turnover-preview-scroll" role="region"
+    aria-label="Таблица оборачиваемости" tabIndex={0} aria-describedby={noteId}>
+    <div className="turnover-preview-sticky" aria-hidden="true">
+      {context.store ? <div className="turnover-preview-store"><span className="turnover-section-label">{context.store}</span></div> : null}
+      {context.group ? <div className="turnover-preview-group"><span className="turnover-section-label">{context.group}</span></div> : null}
+    </div>
+    {children}
+  </div>;
+}
+
+export function TurnoverPreviewTable({ report: source, page, onPageChange }: {
   report: TurnoverPreview; page: number; onPageChange: (page: number) => void;
 }) {
-  report = completeTurnoverReport(report);
+  const report = useMemo(() => completeTurnoverReport(source), [source]);
+  const [disclosure, setDisclosure] = useState({ source, showDays: false });
+  if (disclosure.source !== source) setDisclosure({ source, showDays: false });
+  const showDays = disclosure.source === source && disclosure.showDays;
+  const tableId = useId();
   const includeIncomplete = Boolean(report.params.includeIncomplete);
   const excludedIncompleteRows = report.excludedIncompleteRows ?? 0;
   const headingId = useId();
   const noteId = useId();
-  const days = turnoverStandardDates(report.params.from, report.params.to);
-  const modes: SampleMode[] = report.params.mode === "both" ? ["quantity", "money"]
-    : [report.params.mode === "money" ? "money" : "quantity"];
+  const mode = report.params.mode ?? "both";
+  const days = useMemo(() => turnoverStandardDates(report.params.from, report.params.to), [report.params.from, report.params.to]);
+  const groups = useMemo(() => turnoverStandardGrid(showDays ? days : [], mode).map(({ label, leaves }) => {
+    const column = leaves[0]!.column;
+    const key = column.kind === "day" ? column.date : column.kind;
+    return { label, key, leaves: leaves.map((leaf, index) => ({ ...leaf, key: `${key}:${index}` })) };
+  }), [showDays, days, mode]);
+  const leaves = useMemo(() => groups.flatMap((group) => group.leaves), [groups]);
+  const columnCount = leaves.length + 1;
+  const caption = mode === "both" ? "количество в единицах товара и стоимость по себестоимости, ₸"
+    : mode === "money" ? "стоимость по себестоимости, ₸" : "количество в единицах товара";
   const stores = report.params.profile !== "sample";
   const pageCount = Math.max(1, Math.ceil(report.rows.length / PREVIEW_PAGE_SIZE));
   const currentPage = Math.min(Math.max(0, page), pageCount - 1);
@@ -230,9 +328,16 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
       ? [`Период сокращён: по ${previewDate(report.params.to, true)} вместо ${previewDate(report.coverage.requestedTo, true)}.`] : []),
     ...(!includeIncomplete && excludedIncompleteRows > 0
       ? [`Исключено строк без полного расчёта: ${formatNumber(excludedIncompleteRows)}.`] : []),
-    ...(includeIncomplete && report.rows.some((row) => !includeTurnoverRow(row, report.params.mode ?? "both"))
+    ...(includeIncomplete && report.rows.some((row) => !includeTurnoverRow(row, report.params))
       ? ["Включены строки без полного расчёта."] : [])
   ];
+  const footer = (label: string, total: TurnoverPreview["totals"]["overall"], byUnit: TurnoverPreview["totals"]["byUnit"], subtotal = false) =>
+    turnoverStandardTotalRows(label, total, byUnit, mode, unitLabels).map(({ key, label, row, quantity, money }, index) =>
+      <tr key={key ?? label} className="turnover-overall-total" data-turnover-boundary={subtotal && index === 0 ? "subtotal" : undefined}>
+        <th scope="row">{label}</th>
+        <StandardMetricCells metrics={row} leaves={leaves} periodDays={days.length} quantity={quantity} money={money} />
+      </tr>);
+  const { poorStart, mediumStart, goodStart } = TURNOVER_COEFFICIENT_THRESHOLDS;
   return <section className="turnover-preview-results" aria-labelledby={headingId}>
     <div className="turnover-preview-heading">
       <h3 id={headingId}>Результат</h3>
@@ -245,55 +350,69 @@ export function TurnoverPreviewTable({ report, page, onPageChange }: {
     </details> : null}
     <p className="turnover-note" id={noteId}>—: показатель не рассчитан.
       {hasNonAdditiveQuantityTotals ? " Количество нельзя сложить: разные или неизвестные единицы." : null}</p>
-    {modes.map((mode) => {
-      const columns = turnoverStandardColumns(days, mode);
-      const columnCount = columns.length + 1;
-      const quantity = mode === "quantity";
-      const caption = quantity ? "Количество, в единицах товара" : "Деньги по себестоимости, ₸";
-      const footer = (label: string, total: TurnoverPreview["totals"]["overall"], byUnit: TurnoverPreview["totals"]["byUnit"]) =>
-        turnoverStandardTotalRows(label, total, byUnit, mode, unitLabels).map(({ key, label, row }) =>
-          <tr key={key ?? label} className="turnover-overall-total">
-            <th scope="row">{label}</th>
-            <StandardMetricCells metrics={row} columns={columns} mode={mode} periodDays={days.length}
-              quantityUnavailable={quantity && row.unit === null} />
-          </tr>);
-      const overall = report.totals.overall;
-      return <div key={mode} className="turnover-preview-scroll" role="region"
-        aria-label={`Таблица оборачиваемости · ${caption}`} tabIndex={0} aria-describedby={noteId}>
-        <table className="turnover-preview-table">
-          <caption>{caption}</caption>
-          <thead><tr>
-            <th scope="col">Номенклатура</th>
-            {columns.map((column, index) => <th scope="col" key={index}>{column.label}</th>)}
-          </tr></thead>
-          <tbody>
-            {rows.length ? rows.map((row, index) => {
-              const previous = rows[index - 1];
-              const newStore = stores && (!previous || previous.storeKey !== row.storeKey);
-              const newGroup = !previous || newStore || previous.rootGroupKey !== row.rootGroupKey;
-              const next = report.rows[start + index + 1];
-              const subtotal = stores && row.storeKey !== next?.storeKey ? storeTotals.get(row.storeKey) : undefined;
-              return <Fragment key={row.key}>
-                {newStore ? <tr className="turnover-preview-store"><th scope="rowgroup" colSpan={columnCount}>{row.storeKey === null ? "Магазин не определён" : row.storeName || "Магазин не определён"}</th></tr> : null}
-                {newGroup ? <tr className="turnover-preview-group"><th scope="rowgroup" colSpan={columnCount}>{row.rootGroupKey === null ? "Без группы" : row.rootGroupName || "Группа без названия"}</th></tr> : null}
-                <tr>
-                  <th scope="row" className="turnover-preview-product">{row.name}</th>
-                  <StandardMetricCells metrics={row} columns={columns} mode={mode} periodDays={days.length} />
-                </tr>
-                {subtotal ? footer("ИТОГО по магазину", subtotal.total, subtotal.byUnit) : null}
-              </Fragment>;
-            }) : <tr><td colSpan={columnCount} className="turnover-preview-empty">
-              {excludedIncompleteRows > 0 && !includeIncomplete
-                ? "Все строки по выбранным условиям исключены: нет полного расчёта. В дополнительных настройках отметьте «Включить строки без полного расчёта» и нажмите «Показать отчёт»."
-                : "По выбранным условиям товаров нет. Измените отбор и нажмите «Показать отчёт»."}
-            </td></tr>}
-          </tbody>
-          {report.rows.length ? <tfoot aria-label="Итог по всему отбору">
-            {footer("ИТОГО", overall, report.totals.byUnit)}
-          </tfoot> : null}
-        </table>
-      </div>;
-    })}
+    <div className="turnover-preview-tools">
+      <button type="button" className="turnover-button" aria-expanded={showDays} aria-controls={tableId}
+        onClick={() => setDisclosure({ source, showDays: !showDays })}>
+        {showDays ? "Скрыть дни" : `Показать дни (${formatNumber(days.length)})`}
+      </button>
+      <div className="turnover-preview-legend">
+        <span>Коэффициент:</span>
+        <ul aria-label="Шкала коэффициента оборачиваемости">
+          <li className="turnover-coefficient-red">{COEFFICIENT_LABELS.red}: {poorStart} ≤ x &lt; {mediumStart}</li>
+          <li className="turnover-coefficient-orange">{COEFFICIENT_LABELS.orange}: {mediumStart} ≤ x &lt; {goodStart}</li>
+          <li className="turnover-coefficient-green">{COEFFICIENT_LABELS.green}: x ≥ {goodStart}</li>
+        </ul>
+        <span>Отрицательные и нерассчитанные — без оценки.</span>
+      </div>
+    </div>
+    <PreviewScroll key={currentPage} noteId={noteId} showDays={showDays} report={report}>
+      <table id={tableId} className="turnover-preview-table">
+        <caption className="turnover-visually-hidden">Оборачиваемость: {caption}</caption>
+        <colgroup span={1} />
+        {groups.map(({ key, leaves }) => <colgroup key={key} span={leaves.length} />)}
+        <thead>
+          <tr>
+            <th scope="col" rowSpan={2}>Номенклатура</th>
+            {groups.map(({ key, label, leaves }) => leaves.length === 1
+              ? <th key={key} scope="col" rowSpan={2}>{label}</th>
+              : <th key={key} scope="colgroup" colSpan={leaves.length}>{label}</th>)}
+          </tr>
+          <tr>{groups.flatMap(({ leaves }) => leaves.length > 1
+            ? leaves.map((leaf) => <th key={leaf.key} scope="col">{leaf.label}</th>) : [])}</tr>
+        </thead>
+        <tbody>
+          {rows.length ? rows.map((row, index) => {
+            const previous = rows[index - 1];
+            const newStore = stores && (!previous || previous.storeKey !== row.storeKey);
+            const newGroup = !previous || newStore || previous.rootGroupKey !== row.rootGroupKey;
+            const next = report.rows[start + index + 1];
+            const subtotal = stores && row.storeKey !== next?.storeKey ? storeTotals.get(row.storeKey) : undefined;
+            return <Fragment key={row.key}>
+              {newStore ? <tr className="turnover-preview-store" data-turnover-boundary="store"><th scope="rowgroup" colSpan={columnCount}>
+                <span className="turnover-section-label">{row.storeKey === null ? "Магазин не определён" : row.storeName || "Магазин не определён"}</span>
+              </th></tr> : null}
+              {newGroup ? <tr className="turnover-preview-group" data-turnover-boundary="group"><th scope="rowgroup" colSpan={columnCount}>
+                <span className="turnover-section-label">{row.rootGroupKey === null ? "Без группы" : row.rootGroupName || "Группа без названия"}</span>
+              </th></tr> : null}
+              <tr>
+                <th scope="row" className="turnover-preview-product">{row.name}
+                  {mode !== "money" && hasKnownTurnoverUnit(row.unit) ? <span className="turnover-preview-unit">{row.unit}</span> : null}
+                </th>
+                <StandardMetricCells metrics={row} leaves={leaves} periodDays={days.length} />
+              </tr>
+              {subtotal ? footer("ИТОГО по магазину", subtotal.total, subtotal.byUnit, true) : null}
+            </Fragment>;
+          }) : <tr><td colSpan={columnCount} className="turnover-preview-empty">
+            {excludedIncompleteRows > 0 && !includeIncomplete
+              ? "Все строки по выбранным условиям исключены: нет полного расчёта. В дополнительных настройках отметьте «Включить строки без полного расчёта» и нажмите «Показать отчёт»."
+              : "По выбранным условиям товаров нет. Измените отбор и нажмите «Показать отчёт»."}
+          </td></tr>}
+        </tbody>
+        {report.rows.length ? <tfoot aria-label="Итог по всему отбору" data-turnover-boundary="overall">
+          {footer("ИТОГО", report.totals.overall, report.totals.byUnit)}
+        </tfoot> : null}
+      </table>
+    </PreviewScroll>
     {report.rows.length ? <nav className="turnover-preview-pagination" aria-label="Страницы отчёта">
       <p className="turnover-note" role="status">Страница {currentPage + 1} из {pageCount} · Всего строк: {formatNumber(report.rows.length)}
         {` · ${formatNumber(start + 1)}–${formatNumber(Math.min(start + PREVIEW_PAGE_SIZE, report.rows.length))}`}
@@ -310,14 +429,13 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   dateRange: InclusiveDateRange; onDateRangeChange: (range: InclusiveDateRange) => void;
 }) {
   const headingId = useId();
-  const reportName = useId();
   const periodHintId = useId();
   const periodErrorId = useId();
   const categoryHintId = useId();
   const previewId = useId();
   const [filters, setFilters] = useState<Filters>({
     store: [], warehouse: "", category: [], brand: "", search: "",
-    mode: "quantity", format: "sample", includeNonRetail: false, excludeZero: false, includeIncomplete: false
+    format: "sample", includeNonRetail: false, excludeZero: false, includeIncomplete: false
   });
   const [options, setOptions] = useState<TurnoverOptions | null>(null);
   const [optionsError, setOptionsError] = useState<string | null>(null);
@@ -490,16 +608,6 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
             Обе даты включены · {days !== null ? `${formatNumber(days)} дн. · ` : ""}от 2 до 366 дней.
           </p>
           {!prepared.valid ? <p className="turnover-validation" id={periodErrorId} role="status">{prepared.error}</p> : null}
-        </fieldset>
-
-        <fieldset className="turnover-fieldset">
-          <legend>Показатели</legend>
-          <div className="turnover-report-options">
-            {(Object.entries(MODE_LABELS) as [SampleMode, string][]).map(([mode, label]) => <label className="turnover-report-choice" key={mode}>
-              <input type="radio" name={reportName} value={mode} checked={filters.mode === mode} aria-labelledby={`${reportName}-${mode}`} onChange={() => update("mode", mode)} />
-              <span><strong id={`${reportName}-${mode}`}>{label}</strong></span>
-            </label>)}
-          </div>
         </fieldset>
 
         <div className="turnover-filter-grid">

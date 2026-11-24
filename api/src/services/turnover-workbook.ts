@@ -406,11 +406,10 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
 }
 
 export async function writeTurnoverWorkbook(report: TurnoverReport, output: Writable): Promise<void> {
-  report = completeTurnoverReport(report);
   if (report.params.profile === "sample"
     || (report.params.profile === "summary" && report.params.groupBy === "sku" && report.params.sort === "name")) {
     await writeTurnoverSampleWorkbook(report, output);
     return;
   }
-  await writeAnalyticalTurnoverWorkbook(report, output);
+  await writeAnalyticalTurnoverWorkbook(completeTurnoverReport(report), output);
 }

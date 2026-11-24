@@ -73,26 +73,45 @@ export function turnoverStandardDates(from: string, to: string): string[] {
   return days;
 }
 
-/** Standard workbook column order, with labels matching the calculation basis. */
-export function turnoverStandardColumns(days: readonly string[], mode: Exclude<TurnoverMode, "both">): TurnoverStandardColumn[] {
-  const money = mode === "money";
-  const columns: TurnoverStandardColumn[] = [];
-  for (let index = 0; index < days.length; index++) {
-    const date = days[index]!;
+export type TurnoverStandardBasis = "quantity" | "money" | "shared";
+export type TurnoverStandardGroup = {
+  label: string;
+  leaves: { column: TurnoverStandardColumn; basis: TurnoverStandardBasis; label: string }[];
+};
+
+/** One date spans both measures, including its endpoint half-observations. */
+export function turnoverStandardGrid(days: readonly string[], mode: TurnoverMode): TurnoverStandardGroup[] {
+  const bases: readonly ("quantity" | "money")[] = mode === "both" ? ["quantity", "money"] : [mode];
+  const groups: TurnoverStandardGroup[] = [];
+  const addMeasures = (group: TurnoverStandardGroup, column: TurnoverStandardColumn) => {
+    const ratio = column.kind === "coefficient" || column.kind === "turnoverDays";
+    for (const basis of bases) {
+      const measure = ratio ? (basis === "quantity" ? "По количеству" : "По стоимости")
+        : (basis === "quantity" ? "Кол-во" : "₸ по себестоимости");
+      group.leaves.push({ column, basis, label: column.kind === "day" && column.half ? `½ ${measure}` : measure });
+    }
+  };
+  days.forEach((date, index) => {
     const label = `${date.slice(8, 10)}.${date.slice(5, 7)}.`;
-    if (index === days.length - 1) columns.push({ kind: "day", date, index, half: true, label: `${label} / 2` });
-    columns.push({ kind: "day", date, index, half: false, label });
-    if (index === 0) columns.push({ kind: "day", date, index, half: true, label: `${label} / 2` });
+    const group: TurnoverStandardGroup = { label, leaves: [] };
+    const day = { kind: "day", date, index, label } as const;
+    if (index === days.length - 1) addMeasures(group, { ...day, half: true });
+    addMeasures(group, { ...day, half: false });
+    if (index === 0) addMeasures(group, { ...day, half: true });
+    groups.push(group);
+  });
+  for (const [kind, label] of [
+    ["weighted", "Сумма остатков за период"], ["average", "Средний товарный запас"],
+    ["coefficient", "Коэффициент оборачиваемости"], ["periodDays", "Дней в периоде"],
+    ["sales", "Продажи за период"], ["turnoverDays", "Дни оборота"]
+  ] as const) {
+    const group: TurnoverStandardGroup = { label, leaves: [] };
+    const column = { kind, label };
+    if (kind === "periodDays") group.leaves.push({ column, basis: "shared", label: "Дни" });
+    else addMeasures(group, column);
+    groups.push(group);
   }
-  columns.push(
-    { kind: "weighted", label: money ? "сумма остатков за период, ₸" : "сумма остатков за период " },
-    { kind: "average", label: money ? "средний товарный запас, ₸" : "средний товарный запас в шт " },
-    { kind: "coefficient", label: "Коэффицент оборачиваемости" },
-    { kind: "periodDays", label: "количество дней в периоде " },
-    { kind: "sales", label: money ? "себестоимость продаж, ₸" : "продажи в шт за период " },
-    { kind: "turnoverDays", label: "количество дней оборота" }
-  );
-  return columns;
+  return groups;
 }
 
 type StandardMetrics = Pick<TurnoverRow, "daily" | "averageQty" | "averageCost" | "periodSales" |
@@ -100,7 +119,7 @@ type StandardMetrics = Pick<TurnoverRow, "daily" | "averageQty" | "averageCost" 
 
 /** Display the existing sample calculation, never aggregate displayed products. */
 export function turnoverStandardValue(
-  row: StandardMetrics, column: TurnoverStandardColumn, mode: "quantity" | "money", periodDays: number
+  row: StandardMetrics, column: TurnoverStandardColumn, mode: TurnoverStandardBasis, periodDays: number
 ): number | null {
   let value: number | null;
   if (column.kind === "day") {
@@ -147,10 +166,12 @@ export function turnoverUnitLabels(totals: readonly TurnoverUnitTotal[]): Readon
 
 export function turnoverStandardTotalRows(
   label: string, total: TurnoverTotal, byUnit: readonly TurnoverUnitTotal[],
-  mode: "quantity" | "money", unitLabels: ReadonlyMap<string, string>
-): Array<{ key: string | null; label: string; row: TurnoverTotal }> {
-  if (mode === "quantity" && total.unit === null && byUnit.length) {
-    return byUnit.map(row => ({ key: row.unitKey, label: `${label} · ${unitLabels.get(row.unitKey) ?? "Единица без названия"}`, row }));
-  }
-  return [{ key: null, label, row: total }];
+  mode: TurnoverMode, unitLabels: ReadonlyMap<string, string>
+): Array<{ key: string | null; label: string; row: TurnoverTotal; quantity: boolean; money: boolean }> {
+  const mixed = total.unit === null && byUnit.length > 0;
+  const scope = { key: null, label, row: total, quantity: mode !== "money" && !mixed, money: mode !== "quantity" };
+  if (!mixed || mode === "money") return [scope];
+  const units = byUnit.map(row => ({ key: row.unitKey, row, quantity: true, money: false,
+    label: `${label} · ${unitLabels.get(row.unitKey) ?? "Единица без названия"}` }));
+  return mode === "both" ? [scope, ...units] : units;
 }

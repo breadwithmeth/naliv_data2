@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  chronologicalAverage, isCompleteTurnoverDailyRow, isCompleteTurnoverRow,
+  chronologicalAverage, completeTurnoverReport, isCompleteTurnoverDailyRow, isCompleteTurnoverRow,
   salesChange, sumNullable, turnoverRatios, turnoverSales
 } from "../src/services/turnover-domain.js";
 import type { TurnoverPreviewRow } from "../src/services/turnover-types.js";
@@ -136,6 +136,7 @@ test("default turnover population is filtered before daily, grouping and totals,
   const request = { from: "2026-11-01", to: "2026-11-04", mode: "both" as const };
   assert.equal(turnoverQuerySchema.parse(request).sort, "turnover");
   assert.equal(turnoverQuerySchema.parse({ ...request, sort: "name" }).sort, "name");
+  assert.equal(turnoverQuerySchema.parse({ ...request, profile: "sample", sort: "stock-cost" }).sort, "name");
   assert.equal(turnoverQuerySchema.parse(request).includeIncomplete, false);
   assert.equal(turnoverQuerySchema.parse({ ...request, includeIncomplete: "false" }).includeIncomplete, false);
   assert.equal(turnoverQuerySchema.parse({ ...request, includeIncomplete: "true" }).includeIncomplete, true);
@@ -191,7 +192,7 @@ test("default turnover population is filtered before daily, grouping and totals,
     sources: [], databaseBytes: 0, pauseAtBytes: 9_000_000_000, binding: "test-unverified", returnPriceIntervals: [], coverageSources: []
   });
   try {
-    for (const profile of ["sample", "summary", "full"] as const) for (const groupBy of profile === "sample" ? ["sku"] as const : ["sku", "store", "category", "brand", "day"] as const) {
+    for (const profile of ["summary", "full"] as const) for (const groupBy of ["sku", "store", "category", "brand", "day"] as const) {
       const report = await getTurnoverReport({ ...request, profile, groupBy }, reloadReader);
       assert.equal(report.excludedIncompleteRows, 3);
       assert.equal(report.totals.overall.periodSales.quantity, 6);
@@ -203,18 +204,29 @@ test("default turnover population is filtered before daily, grouping and totals,
       assert.ok(report.warnings.some(warning => /денежных показателей недоступна/.test(warning)),
         "filtering must retain source warnings about excluded rows");
       if (profile === "full" || groupBy === "day") assert.deepEqual(report.daily.map(day => day.salesQty), [2, 2, 2]);
-      if (profile === "sample") assert.deepEqual(report.rows[0].daily.map(day => day.salesQty), [2, 2, 2]);
       assert.equal(report.transfers.length, 0);
     }
     const standard = await getTurnoverReport({ ...request, profile: "summary", sort: "name" }, reloadReader);
+    const network = await getTurnoverReport({ ...request, profile: "sample" }, reloadReader);
     const analytical = await getTurnoverReport({ ...request, profile: "summary" }, reloadReader);
     assert.deepEqual(standard.rows[0]!.daily.map(day => day.salesQty), [2, 2, 2]);
-    assert.deepEqual(standard.totals.overall.daily.map(day => day.quantity), [10, 10, 10]);
-    assert.deepEqual({ ...standard.totals, byStore: [], overall: { ...standard.totals.overall, daily: [] } }, analytical.totals);
-    assert.deepEqual(standard.rows.map(row => row.key).sort(), analytical.rows.map(row => row.key).sort());
+    for (const combined of [standard, network]) {
+      assert.deepEqual(combined.rows.map(row => row.sku), ["complete", "missing-cost"]);
+      assert.deepEqual(combined.totals.overall.daily.map(day => day.quantity), [20, 20, 20]);
+      assert.deepEqual(combined.totals.overall.daily.map(day => day.stockCost), [null, null, null]);
+      assert.equal(combined.totals.overall.periodSales.quantity, 12);
+      assert.equal(combined.totals.overall.periodSales.cost, null);
+      assert.equal(combined.excludedIncompleteRows, 2);
+    }
+    assert.deepEqual(analytical.rows.map(row => row.sku), ["complete"]);
     assert.equal(turnoverQuerySchema.safeParse({ ...request, to: "2026-11-02", profile: "summary", sort: "name" }).success, false);
     const quantity = await getTurnoverReport({ ...request, mode: "quantity" }, reloadReader);
     assert.equal(quantity.rows.length, 2, "quantity mode must not require optional cost data");
+    const rawDayGap = { ...quantity, populationFiltered: undefined, params: { ...quantity.params, profile: "sample" as const },
+      daily: [{ ...standard.rows[0]!.daily[0]!, quantity: null }] };
+    const guarded = completeTurnoverReport(rawDayGap);
+    assert.deepEqual(guarded.daily, []);
+    assert.equal(guarded.totals.overall.periodSales.quantity, null);
     mixedUnits = true;
     const mixed = await getTurnoverReport({ ...request, mode: "quantity", profile: "sample" }, reloadReader);
     assert.equal(mixed.totals.overall.periodSales.quantity, null);

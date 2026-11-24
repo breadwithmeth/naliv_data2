@@ -1,7 +1,32 @@
 import type {
-  CompensationActivity, CompensationBranch, CompensationExcludedDiagnostic, CompensationRow,
+  CompensationActivity, CompensationBranch, CompensationCalculationMode, CompensationExcludedDiagnostic, CompensationRow,
   MarketingCompensationReport
 } from "./marketing-compensation-types.js";
+
+export type CompensationBasis = {
+  title: string;
+  priceLabel: string;
+  percentageLabel: string;
+  priceSource: string;
+  percentageSource: string;
+};
+
+export const compensationBases: Record<CompensationCalculationMode, CompensationBasis> = {
+  "purchase-title": {
+    title: "Закупочная цена и процент из названия акции",
+    priceLabel: "Закупочная цена",
+    percentageLabel: "Процент из названия акции",
+    priceSource: "Закупочная цена на момент движения по виду закупа магазина из установок цен 1С («Маркетинг → Виды цен»).",
+    percentageSource: "Однозначный процент из названия акции."
+  },
+  "retail-rule": {
+    title: "Прежний расчёт: розничная цена и процент из правила",
+    priceLabel: "Розничная цена до скидки",
+    percentageLabel: "Процент из правила скидки",
+    priceSource: "Цена до скидки из строки продажи/возврата 1С.",
+    percentageSource: "Префикс названия правила скидки 1С."
+  }
+};
 
 // Absence of movement flags alone is not proof: unknown quantities can leave rows.
 export function isInactiveCompensationBranch(branch: CompensationBranch): boolean {

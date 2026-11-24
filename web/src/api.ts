@@ -2,7 +2,7 @@ import type {
   CompensationActivityOption, MarketingCompensationReport, MarketingCompensationRequest
 } from "../../api/src/services/marketing-compensation-types";
 export type {
-  CompensationActivity, CompensationActivityOption, CompensationBranch, CompensationIssue,
+  CompensationActivity, CompensationActivityOption, CompensationBranch, CompensationCalculationMode, CompensationIssue,
   CompensationRow, CompensationTotals, MarketingCompensationReport, MarketingCompensationRequest
 } from "../../api/src/services/marketing-compensation-types";
 import type { TurnoverOptions, TurnoverPreview, TurnoverRequest, TurnoverRowDetail } from "../../api/src/services/turnover-types";
@@ -234,7 +234,7 @@ export type ReportDateRange = {
 };
 
 // Dashboard filters use inclusive dates; the wrappers convert the end exactly once.
-export type MarketingCompensationFilters = Required<ReportDateRange> & Pick<MarketingCompensationRequest, "activityKey" | "includeIncomplete">;
+export type MarketingCompensationFilters = Required<ReportDateRange> & Pick<MarketingCompensationRequest, "activityKey" | "includeIncomplete" | "calculationMode">;
 
 export type ReportRequest = ReportDateRange & {
   period: SalesPeriod;
@@ -1011,6 +1011,7 @@ function marketingCompensationParams(filters: MarketingCompensationFilters): URL
   appendReportParams(params, filters);
   if (filters.activityKey) params.set("activityKey", filters.activityKey);
   if (filters.includeIncomplete !== undefined) params.set("includeIncomplete", String(filters.includeIncomplete));
+  if (filters.calculationMode !== undefined) params.set("calculationMode", filters.calculationMode);
   return params;
 }
 
@@ -1381,13 +1382,23 @@ export const api = {
     return request<MarketingReport>(`/api/marketing?${params}`, { signal });
   },
   marketingCompensationActivities(filters: Required<ReportDateRange>, signal?: AbortSignal) {
-    return request<{ activities: CompensationActivityOption[] }>(`/api/marketing/compensations/activities?${marketingCompensationParams(filters)}`, { signal });
+    const params = new URLSearchParams();
+    appendReportParams(params, filters);
+    return request<{ activities: CompensationActivityOption[] }>(`/api/marketing/compensations/activities?${params}`, { signal });
   },
-  marketingCompensationReport(filters: MarketingCompensationFilters, signal?: AbortSignal) {
-    return request<MarketingCompensationReport>(`/api/marketing/compensations?${marketingCompensationParams(filters)}`, { signal });
+  async marketingCompensationReport(filters: MarketingCompensationFilters, signal?: AbortSignal) {
+    const calculationMode = filters.calculationMode;
+    const report = await request<MarketingCompensationReport>(`/api/marketing/compensations?${marketingCompensationParams(filters)}`, { signal });
+    signal?.throwIfAborted();
+    if (calculationMode !== undefined && report.calculationMode !== calculationMode) {
+      throw new Error("Режим полученного отчёта не совпадает с выбранным расчётом.");
+    }
+    return report;
   },
-  marketingCompensationWorkbook(filters: MarketingCompensationFilters, signal?: AbortSignal) {
-    return downloadWorkbook(`/api/marketing/compensations.xlsx?${marketingCompensationParams(filters)}`, signal);
+  async marketingCompensationWorkbook(filters: MarketingCompensationFilters, signal?: AbortSignal) {
+    const result = await downloadWorkbook(`/api/marketing/compensations.xlsx?${marketingCompensationParams(filters)}`, signal);
+    signal?.throwIfAborted();
+    return result;
   },
   inventoryReport(filters: ReportRequest, signal?: AbortSignal) {
     const params = new URLSearchParams({ period: filters.period });

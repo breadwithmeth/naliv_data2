@@ -59,7 +59,8 @@ test("complete calculation requires every finite financial field but not an opti
 test("default projection removes incomplete rows without recalculating authoritative partial totals", () => {
   const known = { ...unknownRow, name: "Расчёт", quantity: -2, compensation: -20 };
   const source: MarketingCompensationReport = {
-    from: "2026-06-01", to: "2026-06-02", activityKey: null, issues: [{ code: "source", message: "Ограничение отчёта" }],
+    from: "2026-06-01", to: "2026-06-02", activityKey: null, calculationMode: "retail-rule",
+    issues: [{ code: "source", message: "Ограничение отчёта" }],
     totals: { compensation: null, knownCompensation: 73.25, incompleteRows: 1 },
     activities: [activity({
       totals: { compensation: null, knownCompensation: 73.25, incompleteRows: 1 },
@@ -68,6 +69,7 @@ test("default projection removes incomplete rows without recalculating authorita
   };
   const projected = projectCompensationReport(source);
   assert.deepEqual(projected.activities[0].branches[0].rows, [known]);
+  assert.equal(projected.calculationMode, "retail-rule");
   assert.equal(projected.totals, source.totals);
   assert.equal(projected.activities[0].totals, source.activities[0].totals);
   assert.equal(projected.excludedIncompleteRows, 1);
@@ -80,10 +82,12 @@ test("default projection removes incomplete rows without recalculating authorita
 
 test("all-unknown rows and activity-only blockers become diagnostic scopes, not financial zero blocks", () => {
   const source: MarketingCompensationReport = {
-    from: "2026-06-01", to: "2026-06-02", activityKey: "activity", issues: [],
+    from: "2026-06-01", to: "2026-06-02", activityKey: "activity", calculationMode: "purchase-title", issues: [],
     totals: { compensation: null, knownCompensation: 0, incompleteRows: 1 },
     activities: [
-      activity({ branches: [branch({ rows: [unknownRow], totals: { compensation: null, knownCompensation: 0, incompleteRows: 1 } })] }),
+      activity({ branches: [branch({ rows: [{
+        ...unknownRow, price: null, issues: [{ code: "ambiguous_purchase_price", message: "Противоречивые закупочные цены" }]
+      }], totals: { compensation: null, knownCompensation: 0, incompleteRows: 1 } })] }),
       activity({ key: "scope-only", branches: [], issues: [{ code: "missing_rule", message: "Нет правила" }] })
     ]
   };
@@ -92,13 +96,15 @@ test("all-unknown rows and activity-only blockers become diagnostic scopes, not 
   assert.equal(projected.excludedIncompleteRows, 1);
   assert.equal(projected.excludedIncompleteBlocks, 2);
   assert.equal(projected.totals.compensation, null);
+  assert.equal(projected.calculationMode, "purchase-title");
+  assert.ok(projected.excludedIncompleteDiagnostics?.some(entry => entry.issues.some(issue => issue.code === "ambiguous_purchase_price")));
   assert.ok(projected.excludedIncompleteDiagnostics?.some(entry => entry.issues.some(issue => issue.code === "missing_rule")));
   assert.equal(projectCompensationReport({ ...source, includeIncomplete: true }).activities.length, 2);
 });
 
 test("exclusions stay explicit even if a direct DTO declares its source total complete", () => {
   const source: MarketingCompensationReport = {
-    from: "2026-06-01", to: "2026-06-02", activityKey: null, issues: [],
+    from: "2026-06-01", to: "2026-06-02", activityKey: null, calculationMode: "purchase-title", issues: [],
     totals: { compensation: 777, knownCompensation: 777, incompleteRows: 0 },
     activities: [activity({ branches: [branch({ hasSales: true, rows: [
       { ...unknownRow, quantity: 1, compensation: 10 },
@@ -112,7 +118,7 @@ test("exclusions stay explicit even if a direct DTO declares its source total co
   assert.equal(projected.excludedIncompleteRows, 1);
 });
 
-test("compensation queries normalize opt-in into cache identity and service JSON filters unresolved scopes by default", async () => {
+test("compensation queries normalize filters into cache identity and early reports retain calculation mode", async () => {
   process.env.DATABASE_URL ??= "postgresql://test:test@127.0.0.1:1/test";
   process.env.APP_ADMIN_EMAIL ??= "admin@test.local";
   process.env.APP_ADMIN_PASSWORD ??= "admin-test-password";
@@ -123,6 +129,12 @@ test("compensation queries normalize opt-in into cache identity and service JSON
   const { prisma } = await import("../src/prisma.js");
   const { compensationQuerySchema, getMarketingCompensationReport } = await import("../src/services/marketing-compensation.js");
   const request = { from: new Date("2026-06-01"), to: new Date("2026-06-02") };
+  assert.equal(compensationQuerySchema.parse(request).calculationMode, "purchase-title");
+  assert.equal(compensationQuerySchema.parse({ ...request, calculationMode: "retail-rule" }).calculationMode, "retail-rule");
+  assert.equal(compensationQuerySchema.safeParse({ ...request, calculationMode: "invalid" }).success, false);
+  assert.deepEqual(compensationQuerySchema.parse(request), compensationQuerySchema.parse({ ...request, calculationMode: "purchase-title" }));
+  assert.notEqual(JSON.stringify(compensationQuerySchema.parse(request)),
+    JSON.stringify(compensationQuerySchema.parse({ ...request, calculationMode: "retail-rule" })));
   assert.equal(compensationQuerySchema.parse(request).includeIncomplete, false);
   assert.equal(compensationQuerySchema.parse({ ...request, includeIncomplete: "false" }).includeIncomplete, false);
   assert.equal(compensationQuerySchema.parse({ ...request, includeIncomplete: "true" }).includeIncomplete, true);
@@ -136,15 +148,17 @@ test("compensation queries normalize opt-in into cache identity and service JSON
     ? [{ name: "document_marketingovaya_aktsiya", present: true }]
     : [{ key: "unresolved", name: "Нет состава", number: null, startsOn: "2026-06-01", endsOn: "2026-06-01" }]) as typeof original;
   try {
-    const readiness = async () => ({ returnPriceIntervals: [] });
+    const readiness = async () => ({ returnPriceIntervals: [], coverageSources: [] });
     const filtered = await getMarketingCompensationReport(request, readiness);
     assert.equal(filtered.includeIncomplete, false);
+    assert.equal(filtered.calculationMode, "purchase-title");
     assert.equal(filtered.activities.length, 0);
     assert.equal(filtered.excludedIncompleteBlocks, 1);
     assert.equal(filtered.totals.compensation, null);
     assert.ok(filtered.excludedIncompleteDiagnostics?.some(entry => entry.issues.some(issue => issue.code === "missing_source")));
-    const restored = await getMarketingCompensationReport({ ...request, includeIncomplete: true }, readiness);
+    const restored = await getMarketingCompensationReport({ ...request, includeIncomplete: true, calculationMode: "retail-rule" }, readiness);
     assert.equal(restored.includeIncomplete, true);
+    assert.equal(restored.calculationMode, "retail-rule");
     assert.equal(restored.activities.length, 1);
     assert.equal(restored.activities[0].totals.compensation, null);
   } finally {

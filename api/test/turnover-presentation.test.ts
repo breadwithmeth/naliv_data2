@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTurnoverRootGroups, compareTurnoverPresentationRows, type TurnoverCatalogNode } from "../src/services/turnover-presentation.js";
+import { buildTurnoverRootGroups, compareTurnoverPresentationRows, turnoverStandardGrid, turnoverStandardValue, type TurnoverCatalogNode } from "../src/services/turnover-presentation.js";
 
 const node = (key: string, name: string, parent: string | null, folder = true): TurnoverCatalogNode => ({ key, name, parent, folder });
 const catalog = (...nodes: TurnoverCatalogNode[]) => new Map(nodes.map(item => [item.key, item]));
@@ -70,4 +70,21 @@ test("store and group identities break equal labels deterministically and null s
   assert.deepEqual(new Set(ordered.map(row => row.key)), new Set(["a", "b", "c", "d", "e", "f"]));
   const ties = [rows[0]!, { ...rows[0]!, key: "B" }];
   assert.deepEqual(ties.sort((a, b) => compareTurnoverPresentationRows(a, b, true)).map(row => row.key), ["B", "b"]);
+});
+
+test("paired grid keeps endpoints, days and turnover calculations on their own bases", () => {
+  const dates = ["2026-11-01", "2026-11-02", "2026-11-03"];
+  const daily = dates.map((date, index) => ({ date, unit: "кг", quantity: [10, 20, 30][index]!,
+    stockCost: [100, 300, 500][index]!, salesQty: 0, salesCost: 0, revenue: 0, weight: index === 1 ? 1 : .5 }));
+  const row = { daily, averageQty: 20, averageCost: 300, turnoverQty: 2, turnoverCost: 3,
+    turnoverQtyDays: 1.5, turnoverCostDays: 1,
+    periodSales: { quantity: 40, cost: 900, revenue: 1800, averageDailyQty: 20, averageDailyCost: 450 } };
+  const groups = turnoverStandardGrid(dates, "both");
+  assert.deepEqual(groups.map(group => group.leaves.length), [4, 2, 4, 2, 2, 2, 1, 2, 2]);
+  assert.deepEqual(groups.map(group => group.leaves.map(({ column, basis }) =>
+    turnoverStandardValue(row, column, basis, dates.length))), [
+    [10, 100, 5, 50], [20, 300], [15, 250, 30, 500], [40, 600], [20, 300], [2, 3], [3], [40, 900], [1.5, 1]
+  ]);
+  const partial = { ...row, daily: daily.map((d, i) => i === 1 ? { ...d, stockCost: null } : d) };
+  assert.deepEqual(groups[3]!.leaves.map(({ column, basis }) => turnoverStandardValue(partial, column, basis, 3)), [40, null]);
 });

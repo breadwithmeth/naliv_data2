@@ -62,12 +62,15 @@ function tables(html: string): string[] {
 function productCells(html: string): string[] {
   const product = section(html, "tbody").match(/<tr><th scope="row" class="turnover-preview-product">[\s\S]*?<\/tr>/);
   assert.ok(product, "missing product row");
-  return [...product[0].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)]
+  return values(product[0]);
+}
+function values(html: string): string[] {
+  return [...html.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)]
     .map((match) => match[1].replace(/<span class="turnover-visually-hidden">[\s\S]*?<\/span>/g, "").replace(/<[^>]*>/g, ""));
 }
-function builder(to = "2026-11-03"): string {
+function builder(to = "2026-11-03", from = "2026-11-01"): string {
   return renderToStaticMarkup(createElement(TurnoverReport, {
-    dateRange: { from: "2026-11-01", to }, onDateRangeChange: () => {}
+    dateRange: { from, to }, onDateRangeChange: () => {}
   }));
 }
 
@@ -83,58 +86,55 @@ test("confirmed idle stock is visible by default and is not presented as zero tu
 test("a network SKU with active sales and unvalued idle stock keeps its quantity and does not claim network inactivity", () => {
   const data = report();
   data.params.mode = "both";
-  data.populationFiltered = true;
   const product = data.rows[0]!;
   product.averageCost = product.turnoverCost = product.turnoverCostDays = null;
-  const [quantity, money] = tables(render(data));
-  assert.deepEqual(productCells(quantity).slice(-3), ["3", "25", "1,2"]);
-  assert.deepEqual(productCells(money).slice(-3), ["3", "250", "—"]);
-  assert.doesNotMatch(money, /Без движения/);
+  for (const day of product.daily) day.stockCost = null;
+  const html = render(data);
+  assert.deepEqual(productCells(html), ["20", "—", "10", "—", "2,5", "—", "3", "25", "250", "1,2", "—"]);
+  assert.doesNotMatch(html, /Без движения/);
 });
 
-test("primary result uses the supplied standard daily table instead of an extra summary format", () => {
-  const html = render(report());
+test("the preview initially mounts no daily cells and shows the product's real base unit", () => {
+  const data = report();
+  data.rows[0].unit = "кг";
+  const html = render(data);
   const headers = section(html, "thead");
-  for (const label of [
-    "Номенклатура", "01.11.", "01.11. / 2", "02.11.", "03.11. / 2", "03.11.",
-    "сумма остатков за период ", "средний товарный запас в шт ", "Коэффицент оборачиваемости",
-    "количество дней в периоде ", "продажи в шт за период ", "количество дней оборота"
-  ]) assert.ok(headers.includes(`>${label}</th>`), `missing standard column ${label}`);
-  assert.equal((headers.match(/scope="col"/g) ?? []).length, 12);
-  assert.deepEqual(productCells(html), ["8", "4", "10", "6", "12", "20", "10", "2,5", "3", "25", "1,2"]);
-  assert.match(section(html, "caption"), /Количество, в единицах товара/);
-  assert.doesNotMatch(html, /turnover-result-summary|turnover-preview-identifiers|Подробные столбцы|Розничная выручка|SKU|Артикул|article-0|sku-0|Остаток на начало|Остаток на конец|Оборотов за период:|<dl/);
-  assert.doesNotMatch(headers, />Единица<\/th>|>Магазин<\/th>/);
-  assert.doesNotMatch(html, /n\/a/);
+  for (const label of ["Номенклатура", "Сумма остатков за период", "Средний товарный запас",
+    "Коэффициент оборачиваемости", "Дней в периоде", "Продажи за период", "Дни оборота"]) {
+    assert.ok(headers.includes(`>${label}</th>`), `missing standard column ${label}`);
+  }
+  assert.equal((headers.match(/<tr>/g) ?? []).length, 2);
+  assert.doesNotMatch(headers, /01\.11\.|02\.11\.|03\.11\.|Магазин|Деньги/);
+  assert.match(html, /<button[^>]*aria-expanded="false"[^>]*aria-controls="([^"]+)"[^>]*>Показать дни \(3\)<\/button>/);
+  const controlledId = html.match(/aria-controls="([^"]+)"/)?.[1];
+  assert.ok(controlledId && html.includes(`id="${controlledId}"`));
+  assert.match(section(html, "tbody"), /Товар 0[\s\S]*>кг<\/span>/);
+  assert.deepEqual(productCells(html), ["20", "10", "2,5", "3", "25", "1,2"]);
+  assert.doesNotMatch(html, /turnover-result-summary|turnover-preview-identifiers|Подробные столбцы|Розничная выручка|SKU|Артикул|article-0|sku-0|Остаток на начало|Остаток на конец|Оборотов за период:|<dl|n\/a/);
 });
 
-test("two-day standard endpoints follow the calendar and retain supplied average and turnover values", () => {
+test("a two-day period uses both endpoint halves even while the daily columns are hidden", () => {
   const data = report();
   data.params.from = "2026-10-31";
   data.params.to = "2026-11-02";
-  data.rows[0].daily = [100, 200].map((quantity, index) => ({
-    ...data.rows[0].daily[index], date: index ? "2026-11-01" : "2026-10-31", quantity
+  const product = data.rows[0]!;
+  product.daily = [100, 200].map((quantity, index) => ({
+    ...product.daily[index], date: index ? "2026-11-01" : "2026-10-31", quantity, weight: 0.5
   }));
-  data.totals.overall.daily = data.rows[0].daily.map((day) => ({ ...day }));
-  data.rows[0].averageQty = 777;
-  data.rows[0].turnoverQty = 4;
-  data.rows[0].turnoverQtyDays = 0.5;
+  Object.assign(product, { averageQty: 777, turnoverQty: 4, turnoverQtyDays: 0.5 });
+  data.totals.overall.daily = product.daily.map((day) => ({ ...day }));
   const html = render(data);
-  const headers = section(html, "thead");
-  assert.equal((headers.match(/scope="col"/g) ?? []).length, 11);
-  for (const label of ["31.10.", "31.10. / 2", "01.11. / 2", "01.11."]) {
-    assert.ok(headers.includes(`>${label}</th>`), `missing standard endpoint ${label}`);
-  }
-  assert.doesNotMatch(headers, /02\.11\./);
-  assert.deepEqual(productCells(html), ["100", "50", "100", "200", "150", "777", "4", "2", "25", "0,5"]);
+  assert.match(html, /Показать дни \(2\)/);
+  assert.deepEqual(productCells(html), ["150", "777", "4", "2", "25", "0,5"]);
 });
 
 test("standard preview pages 100 products and repeats sections with unchanged authoritative totals", () => {
   const data = report();
   data.params.profile = "summary";
+  data.params.mode = "both";
   data.rows = Array.from({ length: 101 }, (_, index) => row(index));
   data.totals.overall.periodSales = { ...data.totals.overall.periodSales, quantity: 2525 };
-  data.totals.overall.daily = data.totals.overall.daily.map((day) => ({ ...day, quantity: 900 }));
+  data.totals.overall.averageQty = 900;
   data.totals.byStore = [{ storeKey: "store-a", total: data.totals.overall, byUnit: [] }];
   const first = render(data);
   const second = render(data, 1);
@@ -142,8 +142,8 @@ test("standard preview pages 100 products and repeats sections with unchanged au
   assert.equal((section(second, "tbody").match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 1);
   for (const html of [first, second]) {
     const body = section(html, "tbody");
-    assert.match(body, /scope="rowgroup"[^>]*>Магазин А</);
-    assert.match(body, /scope="rowgroup"[^>]*>Верхняя группа</);
+    assert.match(body, /scope="rowgroup"[^>]*>[\s\S]*?>Магазин А</);
+    assert.match(body, /scope="rowgroup"[^>]*>[\s\S]*?>Верхняя группа</);
     assert.ok(body.indexOf("Магазин А") < body.indexOf("Верхняя группа"));
     assert.match(section(html, "tfoot"), />900<\/td>/);
     assert.match(section(html, "tfoot"), /2[\u00a0\u202f ]525/);
@@ -184,48 +184,41 @@ test("money standard table uses supplied stock cost and sales cost with an expli
   product.turnoverCost = 1.5;
   product.turnoverCostDays = 2;
   const html = render(data);
-  assert.match(section(html, "caption"), /Деньги по себестоимости, ₸/);
-  assert.deepEqual(productCells(html), ["80", "40", "100", "60", "120", "200", "100", "1,5", "3", "150", "2"]);
+  assert.match(section(html, "caption"), /стоимость по себестоимости, ₸/);
+  assert.deepEqual(productCells(html), ["200", "100", "1,5", "3", "150", "2"]);
   assert.doesNotMatch(section(html, "tbody"), />400<\/td>/);
   assert.doesNotMatch(html, /Розничная выручка|SKU|Артикул|>Единица<\/th>|>Магазин<\/th>/);
-  const headers = section(html, "thead");
-  for (const label of ["сумма остатков за период, ₸", "средний товарный запас, ₸", "себестоимость продаж, ₸", "количество дней оборота"]) {
-    assert.ok(headers.includes(`>${label}</th>`), `missing money column ${label}`);
-  }
-  assert.doesNotMatch(headers, /в шт/);
 });
 
-test("both mode renders two labelled standard tables with separate authoritative footers and one pagination", () => {
+test("both bases share one paired table, one period column and one authoritative footer", () => {
   const data = report();
   data.params.mode = "both";
   data.totals.overall.periodSales = { ...data.totals.overall.periodSales, quantity: 99, cost: 990 };
   const html = render(data);
-  const blocks = tables(html);
-  assert.equal(blocks.length, 2);
-  assert.match(section(blocks[0], "caption"), /Количество, в единицах товара/);
-  assert.match(section(blocks[1], "caption"), /Деньги по себестоимости, ₸/);
-  assert.match(section(blocks[0], "thead"), /продажи в шт за период/);
-  assert.match(section(blocks[1], "thead"), /себестоимость продаж, ₸/);
-  for (const block of blocks) assert.equal((section(block, "thead").match(/scope="col"/g) ?? []).length, 12);
-  assert.deepEqual(productCells(blocks[0]), ["8", "4", "10", "6", "12", "20", "10", "2,5", "3", "25", "1,2"]);
-  assert.deepEqual(productCells(blocks[1]), ["80", "40", "100", "60", "120", "200", "100", "2,5", "3", "250", "1,2"]);
-  assert.match(section(blocks[0], "tfoot"), />99<\/td>/);
-  assert.match(section(blocks[1], "tfoot"), />990<\/td>/);
+  assert.equal(tables(html).length, 1);
+  const headers = section(html, "thead");
+  assert.equal((headers.match(/>Дней в периоде<\/th>/g) ?? []).length, 1);
+  assert.equal((headers.match(/>По количеству<\/th>/g) ?? []).length, 2);
+  assert.equal((headers.match(/>По стоимости<\/th>/g) ?? []).length, 2);
+  assert.equal((headers.match(/>₸ по себестоимости<\/th>/g) ?? []).length, 3);
+  assert.deepEqual(productCells(html), ["20", "200", "10", "100", "2,5", "2,5", "3", "25", "250", "1,2", "1,2"]);
+  assert.match(section(html, "tfoot"), />99<\/td><td[^>]*>990<\/td>/);
   assert.equal((html.match(/aria-label="Страницы отчёта"/g) ?? []).length, 1);
 });
 
 test("coefficient color uses raw thresholds and unknown numbers have a neutral accessible dash", () => {
   const data = report();
   data.params.includeIncomplete = true;
-  data.rows = [0.999, 1, 1.999, 2, 2.999, 3, null, NaN, Infinity].map((value, index) => ({ ...row(index), turnoverQty: value }));
-  const body = section(render(data), "tbody");
-  assert.equal((body.match(/turnover-coefficient-red/g) ?? []).length, 1);
+  data.rows = [-1, 0, 1, 1.999, 2, 2.999, 3, 3.01, null, NaN, Infinity].map((value, index) => ({ ...row(index), turnoverQty: value }));
+  const html = render(data);
+  const body = section(html, "tbody");
+  assert.equal((body.match(/turnover-coefficient-red/g) ?? []).length, 3);
   assert.equal((body.match(/turnover-coefficient-orange/g) ?? []).length, 2);
-  assert.equal((body.match(/turnover-coefficient-green/g) ?? []).length, 1);
-  assert.match(body, /turnover-coefficient-red[^>]*>1</);
-  assert.match(body, /<td class="turnover-numeric">1<\/td>/);
-  assert.match(body, /<td class="turnover-numeric">2<\/td>/);
+  assert.equal((body.match(/turnover-coefficient-green/g) ?? []).length, 2);
+  assert.match(body, /turnover-coefficient-red[^>]*>2</, "display rounding does not set the status");
+  assert.match(body, /<td class="turnover-numeric">-1<\/td>/);
   for (const label of ["Плохо", "Средне", "Хорошо"]) assert.match(body, new RegExp(`turnover-visually-hidden">[^<]*${label}`));
+  for (const range of ["0 ≤ x < 2", "2 ≤ x < 3", "x ≥ 3"]) assert.ok(html.includes(range.replace("<", "&lt;")));
   assert.equal((body.match(/aria-label="Показатель не рассчитан"/g) ?? []).length, 3);
   assert.equal((body.match(/>1,2<\/td>/g) ?? []).length, data.rows.length);
   assert.doesNotMatch(body, /n\/a/);
@@ -240,7 +233,7 @@ test("standard daily and calculated nulls stay accessible while known zero and s
     periodSales: { ...data.rows[0].periodSales, quantity: 0 }
   });
   let html = render(data);
-  assert.equal((section(html, "tbody").match(/aria-label="Показатель не рассчитан"/g) ?? []).length, 6);
+  assert.equal((section(html, "tbody").match(/aria-label="Показатель не рассчитан"/g) ?? []).length, 4);
   assert.match(section(html, "tbody"), />0<\/td>/);
   assert.match(html, /Включены строки без полного расчёта/);
   data.rows[0].periodSales.quantity = -3;
@@ -259,11 +252,12 @@ test("missing identifiers and unknown stores do not add columns or identifier no
   assert.match(section(html, "tbody"), /Магазин не определён/);
   assert.doesNotMatch(section(html, "tbody"), /SKU:|Артикул:|n\/a|Stale store name/);
   assert.doesNotMatch(section(html, "thead"), />Магазин<\/th>|>Единица<\/th>/);
-  assert.equal(productCells(html).length, 11);
+  assert.equal(productCells(html).length, 6);
 });
 
-test("mixed quantities retain numeric unit totals without an empty overall row or technical keys", () => {
+test("mixed totals present money once and keep quantities in their own unit rows", () => {
   const data = report();
+  data.params.mode = "both";
   data.totals.byUnit = [
     { ...data.totals.overall, unitKey: "unit:pieces", unit: "шт",
       periodSales: { ...data.totals.overall.periodSales, quantity: 109 } },
@@ -280,9 +274,12 @@ test("mixed quantities retain numeric unit totals without an empty overall row o
   const html = render(data);
   const footer = section(html, "tfoot");
   assert.deepEqual([...footer.matchAll(/<th scope="row">(.*?)<\/th>/g)].map(match => match[1]),
-    ["ИТОГО · шт", "ИТОГО · кг"]);
-  assert.match(footer, />109<\/td>/);
-  assert.match(footer, />15<\/td>/);
+    ["ИТОГО", "ИТОГО · шт", "ИТОГО · кг"]);
+  assert.deepEqual([...footer.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map(match => values(match[1]).slice(-5)), [
+    ["3", "", "250", "", "1,2"],
+    ["3", "109", "", "1,2", ""],
+    ["3", "15", "", "1,2", ""]
+  ]);
   assert.doesNotMatch(html, /unit:pieces|unit-kilograms/);
   const body = section(html, "tbody");
   assert.ok(body.indexOf("ИТОГО по магазину · шт") > body.indexOf("Товар 0"));
@@ -300,7 +297,7 @@ test("unknown units are labelled neutrally rather than declared incompatible", (
   assert.match(html, /разные или неизвестные единицы/);
 });
 
-test("standard footer uses supplied daily totals and ratios rather than rows or summary and preserves zero", () => {
+test("standard footer uses daily totals and ratios rather than rows or summary", () => {
   const data = report();
   data.totals.overall.daily = [0, 50, 100].map((quantity, index) => ({ ...data.totals.overall.daily[index], quantity }));
   data.totals.overall.averageQty = 50;
@@ -309,9 +306,7 @@ test("standard footer uses supplied daily totals and ratios rather than rows or 
   data.totals.overall.periodSales = { ...data.totals.overall.periodSales, quantity: 350 };
   const html = render(data);
   const footer = section(html, "tfoot");
-  const values = [...footer.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)]
-    .map((match) => match[1].replace(/<span class="turnover-visually-hidden">[\s\S]*?<\/span>/g, "").replace(/<[^>]*>/g, ""));
-  assert.deepEqual(values, ["0", "0", "50", "50", "100", "100", "50", "7", "3", "350", "0,43"]);
+  assert.deepEqual(values(footer), ["100", "50", "7", "3", "350", "0,43"]);
   assert.doesNotMatch(html.split("<table")[0], /350|turnover-result-summary|<dl/);
 });
 
@@ -335,9 +330,10 @@ test("builder exposes essential controls with one primary submit and all seconda
   const advancedStart = html.indexOf('<details class="turnover-advanced">');
   assert.ok(advancedStart >= 0);
   const essential = html.slice(0, advancedStart);
-  for (const label of ["Период", "Количество", "Деньги", "Магазины", "Товар", "Разбить по магазинам"]) {
+  for (const label of ["Период", "Магазины", "Товар", "Разбить по магазинам"]) {
     assert.ok(essential.includes(label), `missing essential control ${label}`);
   }
+  assert.doesNotMatch(essential, /type="radio"|<legend>Показатели<\/legend>/);
   assert.equal((essential.match(/type="date"/g) ?? []).length, 2);
   const advanced = html.slice(advancedStart, html.indexOf('<div class="turnover-download-actions"'));
   assert.doesNotMatch(advanced, /<details[^>]*\bopen/);
@@ -352,6 +348,15 @@ test("builder requires at least two dates for the standard half-endpoint layout"
   const html = builder("2026-11-01");
   assert.match(html, /Выберите от 2 до 366 календарных дней/);
   assert.match(html, /type="submit"[^>]*disabled/);
+});
+
+test("builder accepts a 366-day period across calendar years but rejects 367 days", () => {
+  const largest = builder("2026-11-01", "2025-11-01");
+  assert.match(largest, /366 дн\./);
+  assert.doesNotMatch(largest, /type="submit"[^>]*disabled/);
+  const tooLong = builder("2026-11-02", "2025-11-01");
+  assert.match(tooLong, /Выберите от 2 до 366 календарных дней/);
+  assert.match(tooLong, /type="submit"[^>]*disabled/);
 });
 
 test("default preview keeps calculation exclusions and optional identities independent of presentation", () => {
@@ -410,7 +415,7 @@ test("section boundaries use identities rather than labels and span every standa
     data.params.mode = mode;
     data.params.profile = "summary";
     const blocks = tables(render(data));
-    assert.equal(blocks.length, mode === "both" ? 2 : 1);
+    assert.equal(blocks.length, 1);
     for (const block of blocks) {
       const body = section(block, "tbody");
       assert.equal((body.match(/class="turnover-preview-store"/g) ?? []).length, 3);
@@ -420,7 +425,7 @@ test("section boundaries use identities rather than labels and span every standa
       assert.match(body, /Группа без названия/);
       const headers = [...body.matchAll(/scope="rowgroup" colSpan="(\d+)"/gi)];
       assert.equal(headers.length, 7);
-      for (const header of headers) assert.equal(Number(header[1]), 12);
+      for (const header of headers) assert.equal(Number(header[1]), mode === "both" ? 12 : 7);
     }
     data.params.profile = "sample";
     for (const block of tables(render(data))) {

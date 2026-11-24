@@ -1,14 +1,15 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Download } from "lucide-react";
 import { api } from "./api";
 import type {
-  CompensationActivity, CompensationActivityOption, CompensationBranch,
+  CompensationActivity, CompensationActivityOption, CompensationBranch, CompensationCalculationMode,
   CompensationIssue, CompensationRow, CompensationTotals, MarketingCompensationReport,
   ReportDateRange
 } from "./api";
 import { formatDate, formatNumber } from "./format";
 import {
-  isInactiveCompensationActivity, isInactiveCompensationBranch, projectCompensationReport
+  type CompensationBasis, compensationBases, isInactiveCompensationActivity, isInactiveCompensationBranch,
+  projectCompensationReport
 } from "../../api/src/services/marketing-compensation-presentation";
 
 type InclusiveDateRange = Required<Pick<ReportDateRange, "from" | "to">>;
@@ -81,7 +82,7 @@ function activityStatus(activity: CompensationActivity): string {
     ? "Только возвраты / корректировки" : "Рассчитано";
 }
 
-function ItemRow({ row }: { row: CompensationRow }) {
+function ItemRow({ row, basis }: { row: CompensationRow; basis: CompensationBasis }) {
   const calculationId = useId();
   const [expanded, setExpanded] = useState(false);
   return <>
@@ -93,24 +94,26 @@ function ItemRow({ row }: { row: CompensationRow }) {
     </tr>
     <tr id={calculationId} className="compensation-calculation" hidden={!expanded}>
       <td colSpan={4}>
-        {expanded ? <><dl className="compensation-periods">
-          {row.barcode ? <div><dt>Штрихкод</dt><dd className="compensation-barcode">{row.barcode}</dd></div> : null}
-          <div><dt>Цена до скидки</dt><dd>{money(row.price)}</dd></div>
-          <div><dt>Процент</dt><dd>{row.discountPct === null ? "Нет данных" : `${decimalFormatter.format(row.discountPct)} %`}</dd></div>
-          <div><dt>Компенсация на единицу</dt><dd>{money(row.unitCompensation)}</dd></div>
-          <div><dt>Период расчёта</dt><dd>{periodLabel(row.from, row.to)}</dd></div>
-        </dl>
-        <Issues issues={row.issues} label="Подробности проверки строки" />
-        {row.characteristicKey !== null ? <details className="compensation-method">
-          <summary>Технические сведения</summary>
-          <div><p>Ключ характеристики: {row.characteristicKey}</p></div>
-        </details> : null}</> : null}
+        {expanded ? <div className="compensation-calculation-content">
+          <dl className="compensation-periods">
+            {row.barcode ? <div><dt>Штрихкод</dt><dd className="compensation-barcode">{row.barcode}</dd></div> : null}
+            <div><dt>{basis.priceLabel}</dt><dd>{money(row.price)}</dd></div>
+            <div><dt>{basis.percentageLabel}</dt><dd>{row.discountPct === null ? "Нет данных" : `${decimalFormatter.format(row.discountPct)} %`}</dd></div>
+            <div><dt>Компенсация на единицу</dt><dd>{money(row.unitCompensation)}</dd></div>
+            <div><dt>Период расчёта</dt><dd>{periodLabel(row.from, row.to)}</dd></div>
+          </dl>
+          <Issues issues={row.issues} label="Подробности проверки строки" />
+          {row.characteristicKey !== null ? <details className="compensation-method">
+            <summary>Технические сведения</summary>
+            <div><p>Ключ характеристики: {row.characteristicKey}</p></div>
+          </details> : null}
+        </div> : null}
       </td>
     </tr>
   </>;
 }
 
-function Branch({ branch, activityName }: { branch: CompensationBranch; activityName: string }) {
+function Branch({ branch, activityName, basis }: { branch: CompensationBranch; activityName: string; basis: CompensationBasis }) {
   const headingId = useId();
   const detailId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -131,7 +134,7 @@ function Branch({ branch, activityName }: { branch: CompensationBranch; activity
             <th scope="col" className="num">Компенсация, ₸</th>
             <th scope="col">Расчёт</th>
           </tr></thead>
-          <tbody>{branch.rows.map((row) => <ItemRow key={JSON.stringify([row.itemKey, row.characteristicKey, row.from, row.to, row.price])} row={row} />)}</tbody>
+          <tbody>{branch.rows.map((row) => <ItemRow key={JSON.stringify([row.itemKey, row.characteristicKey, row.from, row.to, row.price])} row={row} basis={basis} />)}</tbody>
         </table>
       </div>
     </> : null}</div> : <p className="compensation-note">{isInactiveCompensationBranch(branch)
@@ -140,7 +143,7 @@ function Branch({ branch, activityName }: { branch: CompensationBranch; activity
   </section>;
 }
 
-function Activity({ activity, showInactive }: { activity: CompensationActivity; showInactive: boolean }) {
+function Activity({ activity, showInactive, basis }: { activity: CompensationActivity; showInactive: boolean; basis: CompensationBasis }) {
   const headingId = useId();
   const detailId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -156,7 +159,7 @@ function Activity({ activity, showInactive }: { activity: CompensationActivity; 
     <div id={detailId} hidden={!expanded}>{expanded ? <>
       <Issues issues={activity.issues} label="Подробности проверки акции" />
       {activity.branches.map((branch, index) => showInactive || activity.issues.length > 0 || !isInactiveCompensationBranch(branch)
-        ? <Branch key={JSON.stringify([branch.key, index])} branch={branch} activityName={activity.name} /> : null)}
+        ? <Branch key={JSON.stringify([branch.key, index])} branch={branch} activityName={activity.name} basis={basis} /> : null)}
       {!activity.branches.length ? <p className="compensation-incomplete">Нужна проверка: магазины для акции не определены. Отсутствие данных не означает нулевую компенсацию.</p> : null}
       {!showInactive && hiddenBranches > 0 ? <p className="compensation-note">Магазины без движений скрыты. Чтобы увидеть их, включите «Показать без движений» над списком.</p> : null}
     </> : null}</div>
@@ -167,6 +170,7 @@ export function CompensationResults({ report: source, showInactive, includeIncom
   report: MarketingCompensationReport; showInactive: boolean; includeIncomplete?: boolean;
 }) {
   const report = projectCompensationReport(source, includeIncomplete);
+  const basis = compensationBases[report.calculationMode];
   const excludedRows = report.excludedIncompleteRows ?? 0;
   const excludedBlocks = report.excludedIncompleteBlocks ?? 0;
   const filtered = excludedRows > 0 || excludedBlocks > 0;
@@ -180,6 +184,7 @@ export function CompensationResults({ report: source, showInactive, includeIncom
     <section className="panel compensation-summary" aria-label="Общий итог компенсаций">
       <h3>Общий итог</h3>
       <p className="compensation-note">{periodLabel(report.from, report.to)}</p>
+      <p className="compensation-note">{basis.title}</p>
       <Totals totals={report.totals} includeIncomplete={includeIncomplete} filtered={!includeIncomplete && filtered} />
       {!includeIncomplete && filtered ? <p className="compensation-note">Исключено строк без полного расчёта: {formatNumber(excludedRows)}; блоков без расчёта: {formatNumber(excludedBlocks)}. Чтобы вернуть их на сайт и в Excel, включите «Включить строки без полного расчёта».</p> : null}
     </section>
@@ -187,7 +192,7 @@ export function CompensationResults({ report: source, showInactive, includeIncom
       <h3>{filtered ? "Нет строк с полным расчётом" : noMovements ? "За выбранный период продаж и возвратов не было" : "Акций по выбранным условиям нет"}</h3>
       <p>{filtered ? "Включите «Включить строки без полного расчёта», чтобы увидеть исключённые строки и области расчёта." : noMovements ? "Пустые акции можно вернуть переключателем «Показать без движений»." : "Выберите другой период или «Все акции». Если расчёт неполный, проверьте подробности."}</p>
     </div> : null}
-    {activities.map((activity) => <Activity key={activity.key} activity={activity} showInactive={showInactive} />)}
+    {activities.map((activity) => <Activity key={activity.key} activity={activity} showInactive={showInactive} basis={basis} />)}
     <Issues issues={report.issues} label="Подробности проверки отчёта" />
     <Issues issues={excludedIssues} label="Подробности исключённых строк и блоков" />
   </>;
@@ -197,23 +202,32 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
   const headingId = useId();
   const selectorId = useId();
   const selectorHintId = useId();
-  const periodKey = JSON.stringify([dateRange.from, dateRange.to]);
+  const modeLabelId = useId();
+  const modeBasisId = useId();
+  const { from, to } = dateRange;
+  const periodKey = JSON.stringify([from, to]);
   const [selection, setSelection] = useState({ periodKey, key: "" });
   // A new period starts with all activities, never an invisible selection from the old period.
   const activityKey = selection.periodKey === periodKey ? selection.key : "";
   const [includeIncomplete, setIncludeIncomplete] = useState(false);
-  const requestKey = JSON.stringify([periodKey, activityKey, includeIncomplete]);
+  const [calculationMode, setCalculationMode] = useState<CompensationCalculationMode>("purchase-title");
+  const filters = useMemo(() => ({ from, to, activityKey: activityKey || undefined, includeIncomplete, calculationMode }),
+    [from, to, activityKey, includeIncomplete, calculationMode]);
+  const requestKey = JSON.stringify(filters);
   const [optionsAttempt, setOptionsAttempt] = useState(0);
   const [reportAttempt, setReportAttempt] = useState(0);
   const [optionsState, setOptionsState] = useState<LoadState<CompensationActivityOption[]>>({ key: periodKey, status: "loading" });
   const [reportState, setReportState] = useState<LoadState<MarketingCompensationReport>>({ key: requestKey, status: "loading" });
   const [showInactive, setShowInactive] = useState(false);
   const [downloadState, setDownloadState] = useState<DownloadState | null>(null);
+  const reportController = useRef<AbortController | null>(null);
   const downloadController = useRef<AbortController | null>(null);
   const options = optionsState.key === periodKey ? optionsState : null;
   const state = reportState.key === requestKey ? reportState : null;
   const download = downloadState?.key === requestKey ? downloadState : null;
   const report = state?.status === "success" ? state.data : null;
+  const mode = report?.calculationMode ?? calculationMode;
+  const basis = compensationBases[mode];
   const activities = options?.status === "success" ? options.data : [];
   const optionsPending = !options || options.status === "loading";
   const reportPending = !state || state.status === "loading";
@@ -240,16 +254,20 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
 
   useEffect(() => {
     const controller = new AbortController();
+    reportController.current = controller;
     setReportState({ key: requestKey, status: "loading" });
-    api.marketingCompensationReport({ ...dateRange, includeIncomplete, ...(activityKey ? { activityKey } : {}) }, controller.signal).then((data) => {
+    api.marketingCompensationReport(filters, controller.signal).then((data) => {
       if (!controller.signal.aborted) setReportState({ key: requestKey, status: "success", data });
     }).catch((caught: unknown) => {
       if (!controller.signal.aborted) setReportState({ key: requestKey, status: "error", error: caught instanceof Error ? caught.message : "Не удалось загрузить расчёт компенсаций." });
     });
-    return () => controller.abort();
-  }, [dateRange.from, dateRange.to, activityKey, includeIncomplete, requestKey, reportAttempt]);
+    return () => {
+      controller.abort();
+      reportController.current = null;
+    };
+  }, [filters, requestKey, reportAttempt]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setDownloadState(null);
     return () => {
       downloadController.current?.abort();
@@ -257,13 +275,20 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
     };
   }, [requestKey]);
 
+  function changeCalculationMode(legacy: boolean) {
+    // Invalidate in the event, before React commits the new filters.
+    reportController.current?.abort();
+    downloadController.current?.abort();
+    setCalculationMode(legacy ? "retail-rule" : "purchase-title");
+  }
+
   async function downloadExcel() {
     if (!report || downloadController.current) return;
     const controller = new AbortController();
     downloadController.current = controller;
     setDownloadState({ key: requestKey, status: "loading" });
     try {
-      const result = await api.marketingCompensationWorkbook({ ...dateRange, includeIncomplete, ...(activityKey ? { activityKey } : {}) }, controller.signal);
+      const result = await api.marketingCompensationWorkbook({ ...filters, calculationMode: report.calculationMode }, controller.signal);
       if (controller.signal.aborted || downloadController.current !== controller) return;
       const url = URL.createObjectURL(result.blob);
       const link = document.createElement("a");
@@ -305,6 +330,11 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
       </div> : null}
       {options?.status === "success" && !activities.length ? <p className="compensation-note">Акций за выбранный период нет. Выберите другой период или проверьте подробности отчёта.</p> : null}
     </div>
+    <label className="compensation-inactive-toggle compensation-mode-toggle">
+      <input type="checkbox" role="switch" checked={calculationMode === "retail-rule"} aria-labelledby={modeLabelId} aria-describedby={modeBasisId} onChange={(event) => changeCalculationMode(event.target.checked)} />
+      <span id={modeLabelId}>{compensationBases["retail-rule"].title}</span>
+      <span className="compensation-note" id={modeBasisId}>{basis.priceLabel} · {basis.percentageLabel}</span>
+    </label>
     <label className="compensation-inactive-toggle">
       <input type="checkbox" checked={includeIncomplete} onChange={(event) => setIncludeIncomplete(event.target.checked)} />
       <span>Включить строки без полного расчёта</span>
@@ -320,15 +350,20 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
     <details className="compensation-method">
       <summary>Как считается</summary>
       <div>
-        <p>Розничная цена до скидки — поле «Цена» той же строки продажи или возврата в 1С. Разные цены одного товара показаны отдельными строками; цена другой продажи, выручка и установки цен не подставляются.</p>
-        <p>Процент — только префикс названия правила скидки, например «18,57% в строке…». Название акции и числовое поле скидки не используются. Товары берутся из сегмента номенклатуры правила.</p>
-        <p>Количество — продажи со своим знаком минус абсолютное количество возвратов. Компенсация на единицу = розничная цена до скидки × процент ÷ 100. Компенсация строки = сумма на единицу × нетто количество по этой цене. Округление HALF_UP до двух знаков: сначала на единицу, затем по строке. Итоги — сумма округлённых строк, включая корректировки возвратов.</p>
+        {mode === "purchase-title" ? <>
+          <p>{basis.priceSource} Используем последнюю установку не позже движения для товара, характеристики и базовой упаковки — только при подтверждённой цене. Для возврата берём дату и магазин возврата, а не исходной продажи. Вид закупа берём из текущей карточки магазина; история изменения этой привязки не учитывается. Розничную цену вместо закупочной не подставляем.</p>
+          <p>{basis.percentageSource} Например, «Иртыш Сауда ноябрь 2026 26%» означает 26%; 2026 не участвует в расчёте. Правило скидки задаёт товары, магазины и сроки, но не процент.</p>
+        </> : <>
+          <p>Розничная цена до скидки — поле «Цена» той же строки продажи или возврата в 1С. Цена другой продажи, выручка и установки цен не подставляются.</p>
+          <p>Процент — только префикс названия правила скидки, например «18,57% в строке…». Название акции и числовое поле скидки не используются. Товары берутся из сегмента номенклатуры правила.</p>
+        </>}
+        <p>Количество — продажи со своим знаком минус абсолютное количество возвратов. Разные цены одного товара показаны отдельными строками. Компенсация на единицу = цена × процент ÷ 100. Компенсация строки = сумма на единицу × нетто количество по этой цене. Округление HALF_UP до двух знаков: сначала на единицу, затем по строке. Итоги — сумма округлённых строк, включая корректировки возвратов.</p>
         <p>«Нет данных» не означает ноль. При нехватке данных полный итог не рассчитывается; известная часть показана отдельно. Отсутствие штрихкода само по себе не мешает денежному расчёту. Штрихкод берётся только из карточки товара, без подмены данными чеков.</p>
         <p>Один товар может входить в несколько активностей: компенсация рассчитывается для каждой отдельно, без распределения продаж между активностями.</p>
       </div>
     </details>
     <div className="compensation-results" aria-busy={reportPending}>
-      {reportPending ? <div className="compensation-loading" role="status"><p>Загружаем расчёт компенсаций…</p><span>Данные предыдущего периода или отбора не показываются.</span></div> : null}
+      {reportPending ? <div className="compensation-loading" role="status"><p>Загружаем расчёт компенсаций…</p><span>Данные предыдущего периода, отбора или режима не показываются.</span></div> : null}
       {state?.status === "error" ? <div className="compensation-error" role="alert">
         <p>Не удалось загрузить компенсации. Повторите попытку.</p>
         <button type="button" className="compensation-button" onClick={() => setReportAttempt((attempt) => attempt + 1)}>Повторить</button>

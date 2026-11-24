@@ -8,7 +8,10 @@ import type {
   CompensationActivity, CompensationBranch, CompensationIssue, CompensationRow,
   CompensationTotals, MarketingCompensationReport
 } from "./marketing-compensation-types.js";
-import { isInactiveCompensationActivity, isInactiveCompensationBranch, projectCompensationReport } from "./marketing-compensation-presentation.js";
+import {
+  type CompensationBasis, compensationBases, isInactiveCompensationActivity, isInactiveCompensationBranch,
+  projectCompensationReport
+} from "./marketing-compensation-presentation.js";
 
 const unavailable = "Нет данных";
 const moneyFormat = '#,##0.00;[Red](#,##0.00);0.00';
@@ -17,7 +20,6 @@ const percentFormat = '0.##%;[Red](0.##%);0%';
 const mainName = "Компенсации";
 const detailName = "Детализация";
 const diagnosticsName = "Диагностика";
-const headings = ["Штрихкод", "Наименование", "Розничная цена до скидки, ₸", "Компенсация, %", "Компенсация на единицу, ₸", "Нетто количество", "Компенсация, ₸"];
 const border: Partial<ExcelJS.Borders> = {
   top: { style: "thin", color: { argb: "FFD9D9D9" } },
   bottom: { style: "thin", color: { argb: "FFD9D9D9" } },
@@ -84,24 +86,26 @@ function styleRow(row: ExcelJS.Row, kind: "body" | "heading" | "total" = "body")
     row.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
   }
 }
-function mergedRow(worksheet: ExcelJS.Worksheet, text: string, title = false): void {
+function mergedRow(worksheet: ExcelJS.Worksheet, text: string, title = false, height = title ? 30 : 36): void {
   const row = worksheet.addRow([text]);
   worksheet.mergeCells(row.number, 1, row.number, 7);
   row.getCell(1).font = { name: title ? "Arial" : "Calibri", size: title ? 13 : 11, bold: title };
   row.getCell(1).alignment = { vertical: "middle", wrapText: true };
-  row.height = title ? 30 : 36;
+  row.height = height;
   row.commit();
 }
 function topRows(worksheet: ExcelJS.Worksheet, title: string, note: string, labels: string[]): void {
   mergedRow(worksheet, title, true);
-  mergedRow(worksheet, note);
+  mergedRow(worksheet, note, false, 60);
   const heading = worksheet.addRow(labels);
   styleRow(heading, "heading");
   heading.commit();
 }
-function reportNote(report: MarketingCompensationReport): string {
+function reportNote(report: MarketingCompensationReport, basis: CompensationBasis): string {
   const exclusions = report.includeIncomplete ? "" : ` Исключено строк без полного расчёта: ${report.excludedIncompleteRows ?? 0}; блоков без расчёта: ${report.excludedIncompleteBlocks ?? 0}.`;
-  return `Период расчёта ${period(report.from, report.to)} (включительно). ${report.includeIncomplete ? "Нет данных — показатель неизвестен; " : ""}0 — известный ноль. Рассчитанная часть не заменяет полный итог.${exclusions}`;
+  const priceCaveat = report.calculationMode === "purchase-title"
+    ? " Привязка вида закупа — по текущей карточке магазина; возврат — на дату и в магазине движения." : "";
+  return `Период расчёта ${period(report.from, report.to)} (включительно). Режим: ${basis.title}.${priceCaveat} Для другого расчёта переключите режим на сайте и повторите выгрузку. ${report.includeIncomplete ? "Нет данных — показатель неизвестен; " : ""}0 — известный ноль. Рассчитанная часть не заменяет полный итог.${exclusions}`;
 }
 function totalRows(worksheet: ExcelJS.Worksheet, label: string, totals: CompensationTotals, includeIncomplete = false, filtered = false): void {
   if ((incomplete(totals) || filtered) && !includeIncomplete) {
@@ -142,7 +146,7 @@ function branchTotals(blocks: BranchBlock[]): CompensationTotals {
     knownCompensation: knownCompensation.toNumber(), incompleteRows
   };
 }
-function itemRow(worksheet: ExcelJS.Worksheet, item: CompensationRow): void {
+function itemRow(worksheet: ExcelJS.Worksheet, item: CompensationRow, basis: CompensationBasis): void {
   // Assign source strings directly: leading '=' is text, never an Excel formula.
   const row = worksheet.addRow([
     item.barcode, item.name === item.itemKey ? "Товар не определён" : item.name, item.price ?? unavailable,
@@ -152,7 +156,8 @@ function itemRow(worksheet: ExcelJS.Worksheet, item: CompensationRow): void {
   styleRow(row);
   row.getCell(1).numFmt = "@";
   row.getCell(2).note = `Товар: ${item.itemKey}\nХарактеристика: ${item.characteristicKey ?? unavailable}\nПериод строки: ${period(item.from, item.to)}${item.issues.length ? `\n${item.issues.map(issue => `${issue.code}: ${issue.message}`).join("\n")}` : ""}`;
-  row.getCell(3).note = `Цена до скидки из строки продажи/возврата 1С\nПериод строки: ${period(item.from, item.to)}`;
+  row.getCell(3).note = `${basis.priceSource}\nПериод строки: ${period(item.from, item.to)}`;
+  row.getCell(4).note = basis.percentageSource;
   row.commit();
 }
 
@@ -181,6 +186,9 @@ async function finishSheet(workbook: StreamingWorkbook, worksheet: StreamingShee
 async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompensationReport, signal: AbortSignal): Promise<void> {
   let written = 0;
   const includeIncomplete = report.includeIncomplete === true;
+  const basis = compensationBases[report.calculationMode];
+  const note = reportNote(report, basis);
+  const rowContext = { code: "row_context", message: `${basis.priceSource} ${basis.percentageSource}` };
   const hasExclusions = (report.excludedIncompleteRows ?? 0) > 0 || (report.excludedIncompleteBlocks ?? 0) > 0;
   const checkpoint = async () => { await setImmediate(); signal.throwIfAborted(); };
   workbook.creator = "Налив — аналитика";
@@ -213,7 +221,7 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
   const summary = sheet(workbook, mainName, [34, 46, 29, 28, 24, 27, 46], [
     "@", "@", "@", "@", moneyFormat, moneyFormat, "@"
   ]);
-  topRows(summary, "Маркетинговые компенсации", reportNote(report), [
+  topRows(summary, "Маркетинговые компенсации", note, [
     "Магазин", "Акция", "Период расчёта", "Статус", "Компенсация, ₸", "Рассчитанная часть, ₸", "Подробности"
   ]);
   const summaryTotal = (label: string, totals: CompensationTotals, review = false, filtered = false) => {
@@ -278,11 +286,14 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
   summaryTotal("ОБЩИЙ ИТОГ", report.totals, reportNeedsReview || unresolvedActivities.size > 0 || reviewBlocks.length > 0, hasExclusions);
   await finishSheet(workbook, summary, signal);
 
-  const createDetailSheet = (name: string, note = "") => {
+  const createDetailSheet = (name: string, sheetNote = "") => {
     const detail = sheet(workbook, name, [28.7109375, 66.140625, 24, 18, 24, 22, 25], [
       "@", "@", moneyFormat, percentFormat, moneyFormat, quantityFormat, moneyFormat
     ]);
-    topRows(detail, `Маркетинговые компенсации · ${name.toLocaleLowerCase("ru")}`, `${reportNote(report)}${note ? ` ${note}` : ""}`, headings);
+    topRows(detail, `Маркетинговые компенсации · ${name.toLocaleLowerCase("ru")}`, sheetNote ? `${note} ${sheetNote}` : note, [
+      "Штрихкод", "Наименование", `${basis.priceLabel}, ₸`, `${basis.percentageLabel}, %`,
+      "Компенсация на единицу, ₸", "Нетто количество", "Компенсация, ₸"
+    ]);
     return detail;
   };
   const writeStoreBlocks = async (detail: StreamingSheet, blocks: BranchBlock[]) => {
@@ -292,7 +303,7 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
         mergedRow(detail, activityLabel(activity), true);
         mergedRow(detail, `Период акции: ${activityPeriod(activity)}; расчёт ${period(activity.from, activity.to)} (включительно).`);
         for (const item of branch.rows) {
-          itemRow(detail, item);
+          itemRow(detail, item, basis);
           if (++written % 256 === 0) await checkpoint();
         }
         totalRows(detail, "Итого по акции в магазине", branch.totals, includeIncomplete, (branch.excludedIncompleteRows ?? 0) > 0);
@@ -325,7 +336,7 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
   }
 
   const diagnostics = sheet(workbook, diagnosticsName, [18, 52, 45, 60, 64, 32, 85], []);
-  topRows(diagnostics, "Диагностика исходных данных", reportNote(report), [
+  topRows(diagnostics, "Диагностика исходных данных", note, [
     "Уровень", "Маркетинг", "Филиал", "Номенклатура / характеристика", "Контекст дат", "Код", "Сообщение"
   ]);
   let diagnosticsLastRow = 3;
@@ -358,11 +369,9 @@ async function writeSheets(workbook: StreamingWorkbook, report: MarketingCompens
         code: "branch_context", message: `Продажи: ${branch.hasSales ? "есть" : "не отмечены"}; возвраты: ${branch.hasReturns ? "есть" : "не отмечены"}.`
       }], "Филиал", label, branchIdentity, null, dates);
       for (const item of branch.rows) {
-        addIssues(item.issues.length ? item.issues : [{
-          code: "row_context", message: "Цена до скидки из строки продажи/возврата 1С."
-        }], "Строка", label, branchIdentity,
+        addIssues(item.issues.length ? item.issues : [rowContext], "Строка", label, branchIdentity,
         `${item.name} [${item.itemKey}]; характеристика: ${item.characteristicKey ?? unavailable}; штрихкод: ${item.barcode ?? unavailable}`,
-        `Расчёт ${period(item.from, item.to)}; исходный интервал [${item.from}, ${item.to}); цена до скидки из строки движения 1С`);
+        `Расчёт ${period(item.from, item.to)}; исходный интервал [${item.from}, ${item.to})`);
         if (++written % 256 === 0) await checkpoint();
       }
     }

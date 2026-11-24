@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { PassThrough } from "node:stream";
+import { buffer } from "node:stream/consumers";
+import ExcelJS from "exceljs";
+import type { Prisma } from "@prisma/client";
 import { verifyReloadConsumer } from "./reload-consumer-fixture.js";
+import type * as CompensationEngine from "../src/services/marketing-compensation.js";
+import { decodePurchasePriceEvidence } from "../src/services/marketing-compensation-purchase-price.js";
+import type { MarketingCompensationReport } from "../src/services/marketing-compensation-types.js";
+import { writeMarketingCompensationWorkbook } from "../src/services/marketing-compensation-workbook.js";
 
 // Real PostgreSQL TEMP fixtures only: source records are never changed.
-test("compensations use rule prefixes and exact movement prices with certified returns", {
-  skip: !process.env.ANALYTICS_TEST_DATABASE_URL
-}, async () => {
+async function withCompensationSources(run: (
+  tx: Prisma.TransactionClient, engine: typeof CompensationEngine
+) => Promise<void>) {
   process.env.DATABASE_URL = process.env.ANALYTICS_TEST_DATABASE_URL;
   process.env.PGSCHEMA = "pg_temp";
   process.env.REPORT_CACHE_TTL_SECONDS = "0";
@@ -17,11 +25,9 @@ test("compensations use rule prefixes and exact movement prices with certified r
   // Exercise configuration's module-loading boundary after selecting the connection-local TEMP schema.
   const { prisma } = await import("../src/prisma.js");
   const { config } = await import("../src/config.js");
-  const { getMarketingCompensationReport, getMarketingCompensationActivities } = await import("../src/services/marketing-compensation.js");
+  const engine = await import("../src/services/marketing-compensation.js");
   config.PGSCHEMA = "pg_temp";
   const original = prisma.$queryRaw;
-  const certified = async () => ({ returnPriceIntervals: [{ from: "2026-09-01", to: "2026-10-01" }] });
-  const unverified = async () => ({ returnPriceIntervals: [] });
   try {
     await prisma.$transaction(async tx => {
       for (const definition of [
@@ -58,11 +64,23 @@ test("compensations use rule prefixes and exact movement prices with certified r
         ('end',null,'i',null,1000,1,1000),('deleted',null,'i',null,1000,1,1000),('r',null,'i','other',1000,1,1000)`);
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values ('r',null,'i',null,1,800)`);
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
-      const params = { from: new Date("2026-09-01"), to: new Date("2026-10-01") };
+      await run(tx, engine);
+    }, { timeout: 60000 });
+  } finally { prisma.$queryRaw = original; await prisma.$disconnect(); }
+}
+
+test("retail-rule compensation uses rule prefixes and exact movement prices with certified returns", {
+  skip: !process.env.ANALYTICS_TEST_DATABASE_URL
+}, async () => {
+  await withCompensationSources(async (tx, { getMarketingCompensationReport, getMarketingCompensationActivities }) => {
+      const certified = async () => ({ returnPriceIntervals: [{ from: "2026-09-01", to: "2026-10-01" }] });
+      const unverified = async () => ({ returnPriceIntervals: [] });
+      const params = { from: new Date("2026-09-01"), to: new Date("2026-10-01"), calculationMode: "retail-rule" as const };
       const selected = { ...params, activityKey: "b", includeIncomplete: true };
       const read = () => getMarketingCompensationReport(selected, certified);
       assert.deepEqual((await getMarketingCompensationActivities(params)).activities.map(a => a.key).sort(), ["a", "b"]);
       const result = await getMarketingCompensationReport(params, certified);
+      assert.equal(result.calculationMode, "retail-rule");
       const s1 = result.activities.find(a => a.key === "a")!.branches.find(b => b.key === "s1")!;
       assert.deepEqual(s1.rows.map(r => [r.price, r.quantity, r.unitCompensation, r.compensation]), [[800, -1, 80, -80], [1000, 2, 100, 200]]);
       assert.equal(s1.hasSales, true);
@@ -157,8 +175,251 @@ test("compensations use rule prefixes and exact movement prices with certified r
       const unsynced = await read();
       assert.equal(unsynced.totals.compensation, null);
       assert.ok(unsynced.issues.some(i => i.code === "missing_source"));
-    }, { timeout: 60000 });
-  } finally { prisma.$queryRaw = original; await prisma.$disconnect(); }
+  });
+});
+
+test("purchase-title prices exact movements by store, dimensions and timestamp and fails closed without proof", {
+  skip: !process.env.ANALYTICS_TEST_DATABASE_URL
+}, async () => {
+  await withCompensationSources(async (tx, { getMarketingCompensationReport }) => {
+    const returnPriceIntervals = [{ from: "2026-09-01", to: "2026-10-01" }];
+    let retailCoverage = returnPriceIntervals;
+    const retailSource = {
+      key: "retail", entity: "Document_ОтчетОРозничныхПродажах", kind: "dated" as const, floor: "2026-09-01", required: true,
+      tables: ["document_otchet_o_roznichnyh_prodazhah", "document_otchet_o_roznichnyh_prodazhah_tovary", "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary"]
+    };
+    const priceSource = {
+      key: "prices", entity: "Document_УстановкаЦенНоменклатуры", kind: "dated" as const, floor: "2026-08-01", required: true,
+      tables: ["document_ustanovka_tsen_nomenklatury", "document_ustanovka_tsen_nomenklatury_tovary"]
+    };
+    const selected = { from: new Date("2026-09-01"), to: new Date("2026-10-01"), activityKey: "b", includeIncomplete: true };
+    const readRetail = () => getMarketingCompensationReport({ ...selected, calculationMode: "retail-rule" }, async () => ({ returnPriceIntervals }));
+    const first = {
+      priceTypeKey: "purchase-1", itemKey: "i", characteristicKey: null, packagingKey: null,
+      documentKeys: ["first"], effectiveAt: "2026-08-30T13:00:00", price: "600", currency: "KZT",
+      verifiedThroughExclusive: "2026-09-30T12:00:00"
+    };
+    const second = { ...first, documentKeys: ["second"], effectiveAt: "2026-09-30T12:00:00", price: "500", verifiedThroughExclusive: "2026-10-01T00:00:00" };
+    const valid = { version: 2, scopes: [first, second] };
+    let evidence: unknown = valid;
+    let priceCoverage = [{ from: "2026-08-01", to: "2026-09-01" }, { from: "2026-09-01", to: "2026-10-01" }];
+    const read = (params = selected) => getMarketingCompensationReport(params, async () => ({
+      coverageSources: [{ source: priceSource, intervals: priceCoverage }, { source: retailSource, intervals: retailCoverage }],
+      returnPriceIntervals: []
+    }), decodePurchasePriceEvidence(JSON.stringify(evidence) ?? ""));
+    const zero = "00000000-0000-0000-0000-000000000000";
+    const summarize = async () => {
+      const report = await read();
+      return report.activities[0].branches[0];
+    };
+    const hasIssue = (row: { issues: Array<{ code: string }> }, code: string) => row.issues.some(i => i.code === code);
+    const openWorkbook = async (report: MarketingCompensationReport) => {
+      const output = new PassThrough();
+      const [, bytes] = await Promise.all([writeMarketingCompensationWorkbook(report, output), buffer(output)]);
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(bytes);
+      return workbook;
+    };
+
+    await tx.$executeRawUnsafe("update document_marketingovaya_aktsiya set naimenovanie_aktsii='Акция ноябрь 2026 25%' where ref_key='b'");
+    await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah set date='2026-09-30 00:30' where ref_key='r'");
+    await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah values ('return','2026-09-30 12:00','s1',true,false)");
+    await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary set _parent_ref_key='return', harakteristika_key=''");
+    await tx.$executeRawUnsafe("alter table catalog_magaziny add column vid_tsen_zakupa_key text");
+    await tx.$executeRawUnsafe("update catalog_magaziny set vid_tsen_zakupa_key = case ref_key when 's1' then 'purchase-1' else 'purchase-2' end");
+    for (const definition of [
+      "catalog_vidy_tsen (ref_key text, description text, is_folder boolean, deletion_mark boolean)",
+      "document_ustanovka_tsen_nomenklatury (ref_key text, date timestamp, posted boolean, deletion_mark boolean)",
+      "document_ustanovka_tsen_nomenklatury_tovary (_parent_ref_key text, ref_key text, vid_tseny_key text, nomenklatura_key text, harakteristika_key text, upakovka_key text, tsena numeric)"
+    ]) await tx.$executeRawUnsafe(`create temp table ${definition} on commit drop`);
+    await tx.$executeRawUnsafe(`insert into catalog_vidy_tsen values
+      ('purchase-1','Не искать по названию',null,false), ('purchase-2','закуп',null,false)`);
+    await tx.$executeRawUnsafe(`insert into document_ustanovka_tsen_nomenklatury values
+      ('first','2026-08-30 13:00',true,false), ('second','2026-09-30 12:00',true,false),
+      ('unposted','2026-09-30 11:59',false,false), ('deleted','2026-09-30 11:59',true,true),
+      ('future','2026-09-30 13:00',true,false), ('different','2026-09-30 11:59',true,false)`);
+    await tx.$executeRawUnsafe(`insert into document_ustanovka_tsen_nomenklatury_tovary values
+      (null,'first','purchase-1','i','${zero}',null,600), ('first',null,'purchase-1','i',null,'${zero}',600.00),
+      ('second',null,'purchase-1','i','','',500), ('future',null,'purchase-1','i',null,null,99),
+      ('unposted',null,'purchase-1','i',null,null,75), ('deleted',null,'purchase-1','i',null,null,76),
+      ('different',null,'purchase-2','i',null,null,77), ('different',null,'purchase-1','i','other',null,78),
+      ('different',null,'purchase-1','i',null,'case',79), ('different',null,'purchase-1','other',null,null,80)`);
+    const purchased = await read();
+    assert.equal(purchased.calculationMode, "purchase-title");
+    const branch = purchased.activities[0].branches[0];
+    assert.deepEqual(branch.rows.map(r => [r.price, r.discountPct, r.quantity, r.unitCompensation, r.compensation]),
+      [[500, 25, -1, 125, -125], [600, 25, 2, 150, 300]]);
+    assert.equal(purchased.totals.compensation, 175);
+    assert.equal((await read({ ...selected, from: new Date("2026-09-30") })).totals.compensation, 175);
+    assert.equal(branch.hasSales, true);
+    assert.equal(branch.hasReturns, true);
+    const retail = await readRetail();
+    assert.equal(retail.totals.compensation, 120);
+    for (const [report, total, mode, detail] of [
+      [purchased, 175, /Закупочная цена и процент из названия акции/, [[500, 0.25, -1, -125], [600, 0.25, 2, 300]]],
+      [retail, 120, /Прежний расчёт: розничная цена и процент из правила/, [[800, 0.1, -1, -80], [1000, 0.1, 2, 200]]]
+    ] as const) {
+      const workbook = await openWorkbook(report);
+      const summary = workbook.getWorksheet("Компенсации")!;
+      assert.match(summary.getCell("A2").text, mode);
+      const totals: ExcelJS.CellValue[] = [];
+      summary.eachRow(row => { if (row.getCell(1).text === "ОБЩИЙ ИТОГ") totals.push(row.getCell(5).value); });
+      assert.deepEqual(totals, [total]);
+      const items: ExcelJS.CellValue[][] = [];
+      workbook.getWorksheet("Детализация")!.eachRow(row => {
+        if (row.getCell(2).text === "Полное имя") items.push([3, 4, 6, 7].map(i => row.getCell(i).value));
+      });
+      assert.deepEqual(items, detail);
+    }
+
+    await tx.$executeRawUnsafe("insert into document_ustanovka_tsen_nomenklatury values ('second-duplicate','2026-09-30 12:00',true,false)");
+    await tx.$executeRawUnsafe("insert into document_ustanovka_tsen_nomenklatury_tovary values ('second-duplicate',null,'purchase-1','i',null,null,500)");
+    const uncoveredRegistrar = await summarize();
+    assert.equal(uncoveredRegistrar.totals.knownCompensation, 300);
+    assert.ok(uncoveredRegistrar.rows.some(r => r.quantity === -1 && r.price === null && hasIssue(r, "purchase_price_unverified")));
+    evidence = { version: 2, scopes: [first, { ...second, documentKeys: ["second", "second-duplicate"] }] };
+    assert.equal((await summarize()).totals.compensation, 175);
+    await tx.$executeRawUnsafe("delete from document_ustanovka_tsen_nomenklatury_tovary where _parent_ref_key='second-duplicate'");
+    evidence = valid;
+
+    await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah set date='2026-09-29 12:00' where ref_key='r'");
+    retailCoverage = [{ from: "2026-09-01", to: "2026-09-30" }];
+    const uncoveredMovement = await summarize();
+    assert.deepEqual(uncoveredMovement.totals, { compensation: null, knownCompensation: 300, incompleteRows: 1 });
+    assert.equal(uncoveredMovement.hasSales && uncoveredMovement.hasReturns, true);
+    assert.ok(hasIssue(uncoveredMovement, "retail_movement_unverified"));
+    assert.ok(uncoveredMovement.rows.some(r => r.quantity === -1 && r.price === 500 && r.compensation === null
+      && hasIssue(r, "retail_movement_unverified") && !hasIssue(r, "return_price_unverified")));
+    assert.equal((await readRetail()).totals.compensation, 120);
+    retailCoverage = returnPriceIntervals;
+    await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah set date='2026-09-30 00:30' where ref_key='r'");
+
+    for (const altered of [
+      { ...second, price: "501" }, { ...second, currency: "USD" }, { ...second, documentKeys: ["other"] },
+      { ...second, verifiedThroughExclusive: "2026-09-30T12:00:00" }, { ...second, characteristicKey: "other" },
+      { ...second, packagingKey: "case" }, { ...second, effectiveAt: "2026-09-30T11:59:59" }
+    ]) {
+      evidence = { version: 2, scopes: [first, altered] };
+      const unverified = await summarize();
+      assert.deepEqual(unverified.totals, { compensation: null, knownCompensation: 300, incompleteRows: 1 }, JSON.stringify(altered));
+      assert.ok(unverified.rows.some(r => r.quantity === -1 && r.price === null && hasIssue(r, "purchase_price_unverified")), JSON.stringify(altered));
+    }
+    evidence = { version: 2, scopes: [first] };
+    const partialWorkbook = await openWorkbook(await read());
+    const partialTotals: ExcelJS.CellValue[][] = [];
+    partialWorkbook.getWorksheet("Компенсации")!.eachRow(row => {
+      if (row.getCell(1).text === "ОБЩИЙ ИТОГ") partialTotals.push([row.getCell(5).value, row.getCell(6).value]);
+    });
+    assert.deepEqual(partialTotals, [["Не рассчитано", 300]]);
+    const issueRows: string[] = [];
+    partialWorkbook.getWorksheet("Диагностика")!.eachRow(row => {
+      if (row.getCell(6).text === "purchase_price_unverified") issueRows.push(row.getCell(7).text);
+    });
+    assert.equal(issueRows.length, 1);
+    assert.match(issueRows[0], /Закупочная цена не подтверждена/);
+    evidence = undefined;
+    const noEvidence = await summarize();
+    assert.deepEqual(noEvidence.rows.map(r => [r.price, r.quantity]), [[null, 1]]);
+    assert.equal(noEvidence.hasSales && noEvidence.hasReturns, true);
+    assert.equal(noEvidence.totals.knownCompensation, 0);
+    const projected = await read({ ...selected, includeIncomplete: false });
+    assert.equal(projected.excludedIncompleteRows, 1);
+    assert.ok(projected.excludedIncompleteDiagnostics?.some(d => hasIssue(d, "purchase_price_unverified")));
+    evidence = valid;
+
+    priceCoverage = [{ from: "2026-08-01", to: "2026-09-10" }, { from: "2026-09-11", to: "2026-10-01" }];
+    const gap = await summarize();
+    assert.deepEqual(gap.totals, { compensation: null, knownCompensation: -125, incompleteRows: 1 });
+    assert.ok(gap.rows.some(r => r.quantity === 2 && r.price === null && hasIssue(r, "purchase_price_unverified")));
+    priceCoverage = [{ from: "2026-08-01", to: "2026-10-01" }];
+
+    await tx.$executeRawUnsafe("update document_ustanovka_tsen_nomenklatury_tovary set _parent_ref_key='future' where _parent_ref_key='second'");
+    evidence = { version: 2, scopes: [{ ...first, verifiedThroughExclusive: "2026-10-01T00:00:00" }] };
+    // An absent change must not invalidate another store's key or reset to retail price.
+    await tx.$executeRawUnsafe("delete from document_ustanovka_tsen_nomenklatury_tovary where vid_tseny_key='purchase-2'");
+    await tx.$executeRawUnsafe("delete from document_otchet_o_roznichnyh_prodazhah_tovary where _parent_ref_key='other'");
+    await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah set magazin_key='s2' where ref_key='return'");
+    await tx.$executeRawUnsafe("update document_marketingovaya_aktsiya set dlya_vseh_magazinov=true where ref_key='b'");
+    await tx.$executeRawUnsafe("update document_marketingovaya_aktsiya_skidki_natsenki set magazin_key=null where _parent_ref_key='b'");
+    const otherStore = (await read()).activities[0].branches.find(b => b.key === "s2")!;
+    assert.ok(otherStore.rows.some(r => r.quantity === -1 && r.price === null && hasIssue(r, "missing_purchase_price")));
+    assert.equal(otherStore.hasReturns, true);
+    assert.equal((await readRetail()).activities[0].branches.find(b => b.key === "s2")!.rows.find(r => r.quantity === -1)?.compensation, -80);
+    await tx.$executeRawUnsafe("update document_marketingovaya_aktsiya_skidki_natsenki set magazin_key='s1' where _parent_ref_key='b'");
+    await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah set magazin_key='s1' where ref_key='return'");
+    await tx.$executeRawUnsafe("update document_ustanovka_tsen_nomenklatury_tovary set _parent_ref_key='second' where _parent_ref_key='future' and tsena=500");
+    evidence = valid;
+
+    await tx.$executeRawUnsafe("insert into document_ustanovka_tsen_nomenklatury_tovary values ('second',null,'purchase-1','i',null,null,510)");
+    const conflict = await summarize();
+    assert.equal(conflict.totals.knownCompensation, 300);
+    assert.ok(conflict.rows.some(r => r.quantity === -1 && r.price === null && hasIssue(r, "ambiguous_purchase_price")));
+    await tx.$executeRawUnsafe("delete from document_ustanovka_tsen_nomenklatury_tovary where tsena=510");
+    for (const price of [null, "0", "-1", "NaN", "Infinity"]) {
+      await tx.$executeRawUnsafe("update document_ustanovka_tsen_nomenklatury_tovary set tsena=$1::numeric where _parent_ref_key='second'", price);
+      const malformed = await summarize();
+      assert.equal(malformed.totals.knownCompensation, 300);
+      assert.ok(malformed.rows.some(r => r.quantity === -1 && r.price === null && hasIssue(r, "missing_purchase_price")));
+    }
+    await tx.$executeRawUnsafe("update document_ustanovka_tsen_nomenklatury_tovary set tsena=500 where _parent_ref_key='second'");
+    await tx.$executeRawUnsafe("update catalog_vidy_tsen set is_folder=true where ref_key='purchase-1'");
+    assert.ok((await summarize()).rows.every(r => r.price === null && hasIssue(r, "missing_purchase_price_type")));
+    await tx.$executeRawUnsafe("update catalog_vidy_tsen set is_folder=false where ref_key='purchase-1'");
+    await tx.$executeRawUnsafe("update catalog_vidy_tsen set deletion_mark=true where ref_key='purchase-1'");
+    assert.ok((await summarize()).rows.every(r => r.price === null && hasIssue(r, "missing_purchase_price_type")));
+    await tx.$executeRawUnsafe("update catalog_vidy_tsen set deletion_mark=false where ref_key='purchase-1'");
+    await tx.$executeRawUnsafe("update catalog_magaziny set vid_tsen_zakupa_key=null where ref_key='s1'");
+    assert.ok((await summarize()).rows.every(r => r.price === null && hasIssue(r, "missing_purchase_price_type")));
+    await tx.$executeRawUnsafe("update catalog_magaziny set vid_tsen_zakupa_key='purchase-1' where ref_key='s1'");
+
+    await tx.$executeRawUnsafe("alter table document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary drop column tsena");
+    assert.equal((await summarize()).totals.compensation, 175);
+    assert.equal((await readRetail()).totals.knownCompensation, 200);
+
+    for (const [title, expected] of [["0%", 0], ["Акция 100%", 700], ["Акция 12,5% и повтор 12.50%", 87.5]] as const) {
+      await tx.$executeRawUnsafe("update document_marketingovaya_aktsiya set naimenovanie_aktsii=$1 where ref_key='b'", title);
+      assert.equal((await summarize()).totals.compensation, expected);
+    }
+    for (const [title, code] of [[null, "missing_percentage"], ["25% и 30%", "conflicting_percentage"]] as const) {
+      await tx.$executeRawUnsafe("update document_marketingovaya_aktsiya set naimenovanie_aktsii=$1, number='25%' where ref_key='b'", title);
+      const unknown = await read();
+      assert.equal(unknown.totals.compensation, null);
+      assert.ok(unknown.activities[0].branches[0].rows.every(r => r.discountPct === null && hasIssue(r, code)));
+      assert.ok(hasIssue(unknown.activities[0], code));
+    }
+
+    await tx.$executeRawUnsafe("update document_marketingovaya_aktsiya set naimenovanie_aktsii='10%' where ref_key='b'");
+    await tx.$executeRawUnsafe("update document_ustanovka_tsen_nomenklatury_tovary set tsena=1.251 where _parent_ref_key='second'");
+    evidence = { version: 2, scopes: [first, { ...second, price: "1.251" }] };
+    await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary set kolichestvo=0.5");
+    const rounded = (await summarize()).rows.find(r => r.quantity === -0.5)!;
+    assert.deepEqual([rounded.unitCompensation, rounded.compensation], [0.13, -0.07]);
+
+    await tx.$executeRawUnsafe("update document_ustanovka_tsen_nomenklatury_tovary set tsena=600 where _parent_ref_key='second'");
+    evidence = { version: 2, scopes: [first, { ...second, price: "600" }] };
+    await tx.$executeRawUnsafe("update document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary set kolichestvo=2");
+    const netZero = await summarize();
+    assert.deepEqual(netZero.rows.map(r => [r.price, r.quantity, r.compensation]), [[600, 0, 0]]);
+    assert.equal(netZero.hasSales, true);
+    assert.equal(netZero.hasReturns, true);
+
+    await tx.$executeRawUnsafe("drop table document_ustanovka_tsen_nomenklatury_tovary");
+    const unsynced = await summarize();
+    assert.ok(unsynced.rows.some(r => r.price === null && hasIssue(r, "purchase_price_unverified")));
+    await tx.$executeRawUnsafe("delete from document_otchet_o_roznichnyh_prodazhah_tovary where _parent_ref_key='r' and harakteristika_key is null");
+    await tx.$executeRawUnsafe("delete from document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary");
+    await tx.$executeRawUnsafe("update document_marketingovaya_aktsiya set naimenovanie_aktsii='Недействительный диапазон 25–30%' where ref_key='b'");
+    const noMovements = await summarize();
+    retailCoverage = [{ from: "2026-09-02", to: "2026-09-30" }];
+    const unverifiedInactivity = await summarize();
+    assert.deepEqual(unverifiedInactivity.rows, []);
+    assert.equal(unverifiedInactivity.totals.compensation, null);
+    assert.ok(hasIssue(unverifiedInactivity, "retail_movement_unverified"));
+    retailCoverage = returnPriceIntervals;
+    assert.deepEqual(noMovements.rows, []);
+    assert.equal(noMovements.hasSales || noMovements.hasReturns, false);
+    assert.equal((await read()).totals.compensation, 0);
+  });
 });
 
 test("reload readiness temporary global gate refuses cached compensation workbook", { skip: !process.env.ANALYTICS_TEST_DATABASE_URL }, async () => {
