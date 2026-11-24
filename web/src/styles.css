@@ -2601,19 +2601,18 @@ select:focus {
 .turnover-configuration {
   display: grid;
   align-content: start;
-  gap: 20px;
+  gap: 12px 16px;
   min-width: 0;
   margin: 0;
-  padding: 24px;
+  padding: 16px;
   border: 0;
 }
 
 @media (min-width: 1100px) {
   .turnover-configuration {
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    grid-template-columns: minmax(0, 5fr) minmax(0, 4fr);
   }
 
-  .turnover-configuration > .turnover-filter-grid,
   .turnover-configuration > .turnover-selected,
   .turnover-configuration > .turnover-message,
   .turnover-configuration > .turnover-advanced[open] {
@@ -2980,65 +2979,59 @@ select:focus {
   border: 0;
 }
 
-.turnover-preview,
-.turnover-preview-results {
+.turnover-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  padding: 8px clamp(8px, 1vw, 16px);
+}
+
+.turnover-preview-results,
+.turnover-viewer-state {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   min-width: 0;
-  max-width: 100%;
+  min-height: 0;
 }
 
-.turnover-preview-results {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+.turnover-preview-toolbar,
+.turnover-preview-notices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
 }
 
-.turnover-preview-heading h3 {
+.turnover-preview-heading h1,
+.turnover-viewer-state h1 {
   margin: 0;
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.25;
 }
 
 .turnover-preview-heading p {
-  margin: 6px 0 0;
+  margin: 2px 0 0;
   color: var(--turnover-muted);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
 
-.turnover-preview-warnings ul {
-  margin: 6px 0 0;
-  padding-left: 20px;
-}
-
-.turnover-preview-tools,
-.turnover-preview-legend,
-.turnover-preview-legend ul {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.turnover-preview-tools {
-  gap: 8px 16px;
-}
-
-.turnover-preview-legend {
-  color: var(--turnover-muted);
+.turnover-preview-warnings {
+  color: #475467;
   font-size: 13px;
 }
 
-.turnover-preview-legend ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.turnover-preview-legend li {
-  padding: 4px 7px;
-  border-radius: 4px;
-  font-variant-numeric: tabular-nums;
+.turnover-preview-warnings ul {
+  max-width: 85ch;
+  max-height: 24dvh;
+  overflow: auto;
+  margin: 0 0 2px;
+  padding-left: 20px;
 }
 
 .turnover-preview-scroll {
@@ -3046,8 +3039,7 @@ select:focus {
   min-width: 0;
   width: 100%;
   max-width: 100%;
-  max-height: 70vh;
-  max-height: 70dvh;
+  min-height: 0;
   overflow: auto;
   overflow-anchor: none;
   overscroll-behavior-x: contain;
@@ -3068,12 +3060,13 @@ select:focus {
   border-collapse: separate;
   border-spacing: 0;
   font-size: 13px;
+  line-height: 1.35;
 }
 
 
 .turnover-preview-table th,
 .turnover-preview-table td {
-  padding: 12px;
+  padding: 5px 8px;
   border-top: 1px solid #e4e9f0;
   text-align: left;
   vertical-align: top;
@@ -3088,7 +3081,7 @@ select:focus {
 .turnover-preview-table thead th {
   color: #344054;
   background: #f2f6fc;
-  font-weight: 600;
+  font-weight: 650;
   text-align: center;
   vertical-align: middle;
 }
@@ -3097,17 +3090,14 @@ select:focus {
   border-inline-start: 1px solid #e4e9f0;
 }
 
-.turnover-preview-table thead th[scope="col"] {
-  min-width: 88px;
-}
-
-.turnover-preview-table thead tr:first-child th:first-child {
+.turnover-preview-table thead th:first-child {
+  min-width: clamp(144px, 23vw, 240px);
   text-align: left;
 }
 
-.turnover-preview-table thead tr:nth-child(2) th {
-  background: #f8fafc;
-  font-size: 12px;
+.turnover-preview-table thead .turnover-preview-date {
+  min-width: 64px;
+  white-space: nowrap;
 }
 
 .turnover-preview-sticky {
@@ -3119,6 +3109,7 @@ select:focus {
   width: 100%;
   pointer-events: none;
   font-size: 13px;
+  line-height: 1.35;
 }
 
 .turnover-preview-table .turnover-preview-store th,
@@ -3132,7 +3123,7 @@ select:focus {
   display: block;
   width: max-content;
   max-width: 100cqi;
-  padding: 8px 12px;
+  padding: 4px 8px;
   overflow-wrap: anywhere;
 }
 
@@ -3141,8 +3132,8 @@ select:focus {
 }
 
 .turnover-preview-unit {
-  display: block;
-  margin-top: 2px;
+  display: inline-block;
+  margin-inline-start: 0.4em;
   color: var(--turnover-muted);
   font-size: 12px;
 }
@@ -3152,7 +3143,6 @@ select:focus {
 }
 
 .turnover-preview-product {
-  min-width: 200px;
   max-width: 32ch;
   font-weight: 500;
   overflow-wrap: anywhere;
@@ -3221,11 +3211,6 @@ select:focus {
 
 
 @media (max-width: 600px) {
-
-
-  .turnover-configuration {
-    padding: 16px;
-  }
 
   .turnover-period-inputs,
   .turnover-filter-grid,
@@ -3712,7 +3697,7 @@ select:focus {
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-  padding: 0 24px 24px;
+  padding: 0 16px 16px;
 }
 
 .turnover-form > .turnover-download-actions > .turnover-button {
@@ -3720,7 +3705,7 @@ select:focus {
 }
 
 .turnover-form > .turnover-message {
-  margin: 0 24px 24px;
+  margin: 0 16px 16px;
 }
 
 
@@ -3833,15 +3818,10 @@ select:focus {
 @media (max-width: 640px) {
   .turnover-form > .turnover-download-actions {
     align-items: stretch;
-    padding: 0 16px 16px;
   }
 
   .turnover-form > .turnover-download-actions > .turnover-button {
     flex: 1 1 160px;
-  }
-
-  .turnover-form > .turnover-message {
-    margin: 0 16px 16px;
   }
 
 }

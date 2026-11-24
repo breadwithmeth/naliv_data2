@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TurnoverPreviewTable, TurnoverReport } from "../src/TurnoverReport";
+import { TurnoverPreviewTable, TurnoverReport, TurnoverReportViewer } from "../src/TurnoverReport";
 import type { TurnoverPreview, TurnoverPreviewRow } from "../src/api";
 
 function row(index = 0): TurnoverPreviewRow {
@@ -85,32 +85,32 @@ test("confirmed idle stock is visible by default and is not presented as zero tu
 
 test("a network SKU with active sales and unvalued idle stock keeps its quantity and does not claim network inactivity", () => {
   const data = report();
-  data.params.mode = "both";
   const product = data.rows[0]!;
   product.averageCost = product.turnoverCost = product.turnoverCostDays = null;
   for (const day of product.daily) day.stockCost = null;
   const html = render(data);
-  assert.deepEqual(productCells(html), ["20", "—", "10", "—", "2,5", "—", "3", "25", "250", "1,2", "—"]);
+  assert.deepEqual(productCells(html), ["20", "10", "2,5", "3", "25", "1,2"]);
   assert.doesNotMatch(html, /Без движения/);
 });
 
 test("the preview initially mounts no daily cells and shows the product's real base unit", () => {
   const data = report();
-  data.rows[0].unit = "кг";
+  data.rows[0].unit = "кг [fd33bbe6-8cd3-11e8-840d-3085a9455e10]";
   const html = render(data);
   const headers = section(html, "thead");
   for (const label of ["Номенклатура", "Сумма остатков за период", "Средний товарный запас",
     "Коэффициент оборачиваемости", "Дней в периоде", "Продажи за период", "Дни оборота"]) {
     assert.ok(headers.includes(`>${label}</th>`), `missing standard column ${label}`);
   }
-  assert.equal((headers.match(/<tr>/g) ?? []).length, 2);
+  assert.equal((headers.match(/<tr>/g) ?? []).length, 1);
   assert.doesNotMatch(headers, /01\.11\.|02\.11\.|03\.11\.|Магазин|Деньги/);
   assert.match(html, /<button[^>]*aria-expanded="false"[^>]*aria-controls="([^"]+)"[^>]*>Показать дни \(3\)<\/button>/);
   const controlledId = html.match(/aria-controls="([^"]+)"/)?.[1];
   assert.ok(controlledId && html.includes(`id="${controlledId}"`));
   assert.match(section(html, "tbody"), /Товар 0[\s\S]*>кг<\/span>/);
+  assert.doesNotMatch(html, /fd33bbe6-8cd3-11e8-840d-3085a9455e10/);
   assert.deepEqual(productCells(html), ["20", "10", "2,5", "3", "25", "1,2"]);
-  assert.doesNotMatch(html, /turnover-result-summary|turnover-preview-identifiers|Подробные столбцы|Розничная выручка|SKU|Артикул|article-0|sku-0|Остаток на начало|Остаток на конец|Оборотов за период:|<dl|n\/a/);
+  assert.doesNotMatch(html, /turnover-result-summary|turnover-preview-identifiers|Подробные столбцы|Розничная выручка|SKU|Артикул|article-0|sku-0|Остаток на начало|Остаток на конец|Оборотов за период:|<dl|n\/a|Шкала коэффициента|показатель не рассчитан\./);
 });
 
 test("a two-day period uses both endpoint halves even while the daily columns are hidden", () => {
@@ -131,7 +131,6 @@ test("a two-day period uses both endpoint halves even while the daily columns ar
 test("standard preview pages 100 products and repeats sections with unchanged authoritative totals", () => {
   const data = report();
   data.params.profile = "summary";
-  data.params.mode = "both";
   data.rows = Array.from({ length: 101 }, (_, index) => row(index));
   data.totals.overall.periodSales = { ...data.totals.overall.periodSales, quantity: 2525 };
   data.totals.overall.averageQty = 900;
@@ -162,48 +161,37 @@ test("preview combines shortening and exclusions in one short notice and keeps f
   const data = report();
   data.coverage.requestedTo = "2026-11-06";
   data.excludedIncompleteRows = 7;
-  data.warnings = ["Стоимость части товаров неизвестна.", "Часть остатков не загружена."];
+  data.coverage.missingStockDates = ["2026-11-02"];
+  data.warnings = [
+    "Часть денежных показателей недоступна из-за пропусков снимков или учётных цен.",
+    "Не во все дни выбранного периода есть проведённый розничный отчёт магазина."
+  ];
   const html = render(data);
   assert.match(html, /01\.11\.2026 — 03\.11\.2026/);
   assert.match(html, /Период сокращён[^<]*05\.11\.2026/);
   assert.match(html, /Исключено строк без полного расчёта: 7/);
-  assert.equal((html.match(/<p class="turnover-message"/g) ?? []).length, 1);
+  assert.match(html, /Нет дневных снимков остатков: 1 из 3/);
   const details = section(html, "details");
-  assert.match(details, /Подробности проверки \(2\)/);
-  for (const warning of data.warnings) assert.ok(details.includes(warning));
-  assert.doesNotMatch(html, /<details[^>]*\bopen/);
+  assert.match(details, /Предупреждения \(1\)/);
+  assert.ok(details.includes(data.warnings[1]));
+  assert.doesNotMatch(html, /Часть денежных показателей|<details[^>]*\bopen/);
   const visible = html.replace(/<details[^>]*>[\s\S]*?<\/details>/g, "");
-  assert.doesNotMatch(visible, /Стоимость части|Часть остатков/);
+  assert.doesNotMatch(visible, /Не во все дни/);
 });
 
-test("money standard table uses supplied stock cost and sales cost with an explicit cost-basis caption", () => {
+test("the standard preview does not expose cost amounts or a second basis", () => {
   const data = report();
-  data.params.mode = "money";
   const product = data.rows[0]!;
   product.periodSales = { ...product.periodSales, cost: 150 };
   product.turnoverCost = 1.5;
   product.turnoverCostDays = 2;
   const html = render(data);
-  assert.match(section(html, "caption"), /стоимость по себестоимости, ₸/);
-  assert.deepEqual(productCells(html), ["200", "100", "1,5", "3", "150", "2"]);
-  assert.doesNotMatch(section(html, "tbody"), />400<\/td>/);
-  assert.doesNotMatch(html, /Розничная выручка|SKU|Артикул|>Единица<\/th>|>Магазин<\/th>/);
-});
-
-test("both bases share one paired table, one period column and one authoritative footer", () => {
-  const data = report();
-  data.params.mode = "both";
-  data.totals.overall.periodSales = { ...data.totals.overall.periodSales, quantity: 99, cost: 990 };
-  const html = render(data);
+  assert.match(section(html, "caption"), /количество в единицах товара/);
+  assert.deepEqual(productCells(html), ["20", "10", "2,5", "3", "25", "1,2"]);
+  assert.doesNotMatch(html, /₸|По стоимости|Розничная выручка|SKU|Артикул/);
+  assert.doesNotMatch(section(html, "tbody"), />(?:100|150|400)<\/td>/);
   assert.equal(tables(html).length, 1);
-  const headers = section(html, "thead");
-  assert.equal((headers.match(/>Дней в периоде<\/th>/g) ?? []).length, 1);
-  assert.equal((headers.match(/>По количеству<\/th>/g) ?? []).length, 2);
-  assert.equal((headers.match(/>По стоимости<\/th>/g) ?? []).length, 2);
-  assert.equal((headers.match(/>₸ по себестоимости<\/th>/g) ?? []).length, 3);
-  assert.deepEqual(productCells(html), ["20", "200", "10", "100", "2,5", "2,5", "3", "25", "250", "1,2", "1,2"]);
-  assert.match(section(html, "tfoot"), />99<\/td><td[^>]*>990<\/td>/);
-  assert.equal((html.match(/aria-label="Страницы отчёта"/g) ?? []).length, 1);
+  assert.match(section(html, "tfoot"), />25<\/td>/);
 });
 
 test("coefficient color uses raw thresholds and unknown numbers have a neutral accessible dash", () => {
@@ -218,7 +206,6 @@ test("coefficient color uses raw thresholds and unknown numbers have a neutral a
   assert.match(body, /turnover-coefficient-red[^>]*>2</, "display rounding does not set the status");
   assert.match(body, /<td class="turnover-numeric">-1<\/td>/);
   for (const label of ["Плохо", "Средне", "Хорошо"]) assert.match(body, new RegExp(`turnover-visually-hidden">[^<]*${label}`));
-  for (const range of ["0 ≤ x < 2", "2 ≤ x < 3", "x ≥ 3"]) assert.ok(html.includes(range.replace("<", "&lt;")));
   assert.equal((body.match(/aria-label="Показатель не рассчитан"/g) ?? []).length, 3);
   assert.equal((body.match(/>1,2<\/td>/g) ?? []).length, data.rows.length);
   assert.doesNotMatch(body, /n\/a/);
@@ -255,9 +242,8 @@ test("missing identifiers and unknown stores do not add columns or identifier no
   assert.equal(productCells(html).length, 6);
 });
 
-test("mixed totals present money once and keep quantities in their own unit rows", () => {
+test("mixed totals keep quantities in their own unit rows without a money total", () => {
   const data = report();
-  data.params.mode = "both";
   data.totals.byUnit = [
     { ...data.totals.overall, unitKey: "unit:pieces", unit: "шт",
       periodSales: { ...data.totals.overall.periodSales, quantity: 109 } },
@@ -274,11 +260,10 @@ test("mixed totals present money once and keep quantities in their own unit rows
   const html = render(data);
   const footer = section(html, "tfoot");
   assert.deepEqual([...footer.matchAll(/<th scope="row">(.*?)<\/th>/g)].map(match => match[1]),
-    ["ИТОГО", "ИТОГО · шт", "ИТОГО · кг"]);
-  assert.deepEqual([...footer.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map(match => values(match[1]).slice(-5)), [
-    ["3", "", "250", "", "1,2"],
-    ["3", "109", "", "1,2", ""],
-    ["3", "15", "", "1,2", ""]
+    ["ИТОГО · шт", "ИТОГО · кг"]);
+  assert.deepEqual([...footer.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map(match => values(match[1]).slice(-3)), [
+    ["3", "109", "1,2"],
+    ["3", "15", "1,2"]
   ]);
   assert.doesNotMatch(html, /unit:pieces|unit-kilograms/);
   const body = section(html, "tbody");
@@ -313,17 +298,24 @@ test("standard footer uses daily totals and ratios rather than rows or summary",
 test("empty selection displays recovery guidance without sections or unavailable footer", () => {
   const data = report();
   data.rows = [];
-  data.warnings = ["Ограничение источника"];
+  data.warnings = ["Фильтрам не соответствуют наблюдаемые остатки."];
   const html = render(data);
   assert.match(section(html, "tbody"), /По выбранным условиям товаров нет/);
   assert.match(html, /Измените отбор/);
-  assert.match(section(html, "details"), /Ограничение источника/);
+  assert.match(section(html, "details"), /Фильтрам не соответствуют наблюдаемые остатки/);
   assert.doesNotMatch(html, /<tfoot|ИТОГО|scope="rowgroup"|aria-label="Показатель не рассчитан"/);
 });
 
 test("builder exposes essential controls with one primary submit and all secondary filters initially closed", () => {
   const html = builder();
-  assert.match(html, /<button[^>]*type="submit"[^>]*turnover-primary[^>]*>Показать отчёт<\/button>/);
+  const formTag = html.match(/<form\b[^>]*>/)?.[0] ?? "";
+  for (const attribute of ['action="/reports/turnover"', 'target="_blank"', 'rel="noopener"']) {
+    assert.ok(formTag.includes(attribute), `missing ${attribute}`);
+  }
+  assert.match(html, /<button[^>]*type="submit"[^>]*turnover-primary[^>]*>Открыть отчёт в новой вкладке<\/button>/);
+  assert.match(html, /<input type="hidden" name="mode" value="quantity"/);
+  assert.match(html, /<input type="hidden" name="to" value="2026-11-03"/);
+  assert.doesNotMatch(html, /<table/);
   assert.equal((html.match(/class="[^"]*turnover-primary/g) ?? []).length, 1);
   assert.match(html, /<button[^>]*type="button"[^>]*>[\s\S]*?Скачать Excel<\/button>/);
   assert.doesNotMatch(html, /<aside|Ваш Excel|Ответ из кэша|n\/a|Подробные столбцы|Как считается/);
@@ -342,6 +334,20 @@ test("builder exposes essential controls with one primary submit and all seconda
     assert.ok(!essential.includes(label), `secondary setting outside advanced: ${label}`);
   }
   assert.doesNotMatch(advanced, /type="checkbox"[^>]*checked/);
+});
+
+test("standalone viewer shows a loading state without dashboard navigation or builder form", () => {
+  const html = renderToStaticMarkup(createElement(TurnoverReportViewer, { search: "?from=2026-11-01&to=2026-11-03" }));
+  assert.match(html, /<main[^>]*turnover-viewer/);
+  assert.match(html, /<h1>Оборачиваемость<\/h1>/);
+  assert.match(html, /role="status"[^>]*>Загружаем отчёт/);
+  assert.doesNotMatch(html, /<nav|<form|<table/);
+});
+
+test("standalone viewer explains an invalid period without pretending to load a report", () => {
+  const html = renderToStaticMarkup(createElement(TurnoverReportViewer, { search: "?from=2026-11-01&to=2026-11-01" }));
+  assert.match(html, /role="alert"[^>]*>Выберите от 2 до 366 календарных дней/);
+  assert.doesNotMatch(html, /Загружаем отчёт/);
 });
 
 test("builder requires at least two dates for the standard half-endpoint layout", () => {
@@ -388,7 +394,7 @@ test("all-filtered results explain exclusions without unavailable financial cell
   data.rows[0].turnoverQtyDays = null;
   const html = render(data);
   assert.match(html, /Все строки.*исключены/);
-  assert.match(html, /Включить строки без полного расчёта/);
+  assert.match(html, /включите строки без полного расчёта/i);
   assert.doesNotMatch(html, /<tfoot|aria-label="Показатель не рассчитан"/);
 });
 
@@ -402,7 +408,7 @@ test("store splitting stays visibly unchecked and independent of selected stores
   assert.doesNotMatch(html, /type="radio"[^>]*value="(?:sample|stores)"/);
 });
 
-test("section boundaries use identities rather than labels and span every standard column in both modes", () => {
+test("section boundaries use identities rather than labels and span every quantitative column", () => {
   const data = report();
   data.params.sort = "name";
   data.rows = [
@@ -411,29 +417,21 @@ test("section boundaries use identities rather than labels and span every standa
     { ...row(2), storeKey: "s2", storeName: "Одинаковый", rootGroupKey: "g1", rootGroupName: "Без группы" },
     { ...row(3), storeKey: null, storeName: "", rootGroupKey: "g2", rootGroupName: "" }
   ];
-  for (const mode of ["quantity", "money", "both"] as const) {
-    data.params.mode = mode;
-    data.params.profile = "summary";
-    const blocks = tables(render(data));
-    assert.equal(blocks.length, 1);
-    for (const block of blocks) {
-      const body = section(block, "tbody");
-      assert.equal((body.match(/class="turnover-preview-store"/g) ?? []).length, 3);
-      assert.equal((body.match(/class="turnover-preview-group"/g) ?? []).length, 4);
-      assert.equal((body.match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 4);
-      assert.match(body, /Магазин не определён/);
-      assert.match(body, /Группа без названия/);
-      const headers = [...body.matchAll(/scope="rowgroup" colSpan="(\d+)"/gi)];
-      assert.equal(headers.length, 7);
-      for (const header of headers) assert.equal(Number(header[1]), mode === "both" ? 12 : 7);
-    }
-    data.params.profile = "sample";
-    for (const block of tables(render(data))) {
-      const body = section(block, "tbody");
-      assert.doesNotMatch(body, /class="turnover-preview-store"/);
-      assert.equal((body.match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 4);
-    }
-  }
+  data.params.profile = "summary";
+  const [block] = tables(render(data));
+  const body = section(block, "tbody");
+  assert.equal((body.match(/class="turnover-preview-store"/g) ?? []).length, 3);
+  assert.equal((body.match(/class="turnover-preview-group"/g) ?? []).length, 4);
+  assert.equal((body.match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 4);
+  assert.match(body, /Магазин не определён/);
+  assert.match(body, /Группа без названия/);
+  const headers = [...body.matchAll(/scope="rowgroup" colSpan="(\d+)"/gi)];
+  assert.equal(headers.length, 7);
+  for (const header of headers) assert.equal(Number(header[1]), 7);
+  data.params.profile = "sample";
+  const network = section(render(data), "tbody");
+  assert.doesNotMatch(network, /class="turnover-preview-store"/);
+  assert.equal((network.match(/scope="row" class="turnover-preview-product"/g) ?? []).length, 4);
   data.rows = [];
   assert.doesNotMatch(section(render(data), "tbody"), /scope="rowgroup"/);
 });

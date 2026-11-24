@@ -252,7 +252,8 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       assert.deepEqual(skuAudit.rows[0]!.daily.map((day) => day.quantity), [0, 0, 5]);
       const grouped = await getTurnoverReport({ ...params, groupBy: "store" });
       assert.equal(grouped.rows.length, 3);
-      assert.equal(new Set(grouped.rows.map((row) => row.unit)).size, 3);
+      assert.equal(new Set(grouped.rows.map(row => row.key)).size, 3);
+      assert.deepEqual(grouped.rows.map(row => row.unit).sort(), ["л", "шт", "шт"]);
       assert.deepEqual(grouped.totals, report.totals);
       const groupAudit = await getTurnoverReport({ ...params, groupBy: "store", auditGroup: grouped.rows[0]!.key });
       assert.equal(groupAudit.rows.filter((row) => row.daily.length > 0).length, 1);
@@ -758,8 +759,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           assert.equal(otherProducts.rows.filter((row) => row.sku === "i1").length, 1);
           assert.equal(otherProducts.rows.find((row) => row.sku === "i2")!.closingQty, 5);
           assert.equal(otherProducts.rows.find((row) => row.sku === "i3")!.closingQty, 7);
-          assert.notEqual(otherProducts.rows.find((row) => row.sku === "i1")!.unit,
-            otherProducts.rows.find((row) => row.sku === "i2")!.unit);
+          assert.deepEqual(["i1", "i2"].map(sku => otherProducts.rows.find(row => row.sku === sku)!.unit), ["шт", "шт"]);
           await tx.$executeRawUnsafe(`insert into information_register_sebestoimost_nomenklatury_record_type values
             ('2026-08-02',true,'s2','i1','',0,2)`);
           const missingCost = (await getTurnoverReport(request)).rows[0]!;
@@ -893,7 +893,9 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
         await tx.$executeRawUnsafe("update catalog_nomenklatura set edinitsa_izmereniya_key=$1 where edinitsa_izmereniya_key='u2'", secondUnit);
         const units = await getTurnoverReport(params);
         assert.equal(units.daily.filter((day) => day.date === "2026-08-03").length, 3);
-        assert.equal(new Set(units.daily.filter((day) => day.date === "2026-08-03").map((day) => day.unit)).size, 3);
+        const lastDay = units.daily.filter(day => day.date === "2026-08-03");
+        assert.equal(new Set(lastDay.map(day => day.unitKey)).size, 3);
+        assert.deepEqual(lastDay.map(day => day.unit).sort(), ["л", "шт", "шт"]);
       });
       await t.test("SKU filtering preserves warehouse-derived store day coverage", async () => {
         await tx.$executeRawUnsafe("insert into catalog_magaziny values ('s3','Warehouse-derived store')");

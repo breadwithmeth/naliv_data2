@@ -43,12 +43,13 @@ export function isStandardTurnoverLayout(params: Layout): boolean {
   return params.profile === "sample" || (params.profile === "summary" && (params.groupBy ?? "sku") === "sku" && params.sort === "name");
 }
 
-export function includeTurnoverRow(row: CalculationRow & Pick<TurnoverRow, "idleStock">, params: Layout): boolean {
-  if (row.idleStock === true) return true;
+function populationMode(params: Layout): TurnoverMode {
   const mode = params.mode ?? "both";
-  return mode === "both" && isStandardTurnoverLayout(params)
-    ? isCompleteTurnoverRow(row, "quantity") || isCompleteTurnoverRow(row, "money")
-    : isCompleteTurnoverRow(row, mode);
+  return mode === "both" && isStandardTurnoverLayout(params) ? "quantity" : mode;
+}
+
+export function includeTurnoverRow(row: CalculationRow & Pick<TurnoverRow, "idleStock">, params: Layout): boolean {
+  return row.idleStock === true || isCompleteTurnoverRow(row, populationMode(params));
 }
 
 export function isCompleteTurnoverDailyRow(day: TurnoverDailyRow, mode: TurnoverMode = "both"): boolean {
@@ -75,11 +76,10 @@ function unavailableTurnoverTotal(): TurnoverTotal {
  */
 export function completeTurnoverReport<T extends TurnoverReport | TurnoverPreview>(report: T): T {
   if (report.params.includeIncomplete || report.populationFiltered) return report;
-  const mode = report.params.mode ?? "both";
+  const mode = populationMode(report.params);
   const included = (row: CalculationRow & Pick<TurnoverRow, "idleStock">) => includeTurnoverRow(row, report.params);
   const rows = report.rows.every(included) ? report.rows : report.rows.filter(included);
-  // A paired daily total may have a known quantity but unknown cost, or vice versa.
-  const daily = (mode === "both" && isStandardTurnoverLayout(report.params)) || report.daily.every(day => isCompleteTurnoverDailyRow(day, mode))
+  const daily = report.daily.every(day => isCompleteTurnoverDailyRow(day, mode))
     ? report.daily : report.daily.filter(day => isCompleteTurnoverDailyRow(day, mode));
   const excluded = report.rows.length - rows.length;
   if (!excluded && daily.length === report.daily.length) return report;

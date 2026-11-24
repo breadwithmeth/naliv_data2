@@ -4,16 +4,19 @@ import type { EventEmitter } from "node:events";
 import type { Writable } from "node:stream";
 import { setImmediate } from "node:timers/promises";
 import type { TurnoverMode, TurnoverReport, TurnoverRow, TurnoverTotal, TurnoverUnitTotal } from "./turnover-types.js";
-import type { TurnoverStandardGroup } from "./turnover-presentation.js";
+import type { TurnoverStandardColumn } from "./turnover-presentation.js";
 import { formatTurnoverCoefficientRange, styleTurnoverCoefficient } from "./turnover-coefficient-workbook.js";
-import { TURNOVER_IDLE_LABEL, turnoverStandardDates, turnoverStandardGrid, turnoverStandardTotalRows, turnoverStandardValue, turnoverUnitLabels } from "./turnover-presentation.js";
+import {
+  TURNOVER_IDLE_LABEL, turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows,
+  turnoverStandardValue, turnoverUnitDisplayName, turnoverUnitLabels
+} from "./turnover-presentation.js";
 import { completeTurnoverReport, TURNOVER_COEFFICIENT_THRESHOLDS } from "./turnover-domain.js";
 
 const MAIN_UNITS = "рассчет оборачиваемости";
 const MAIN_MONEY = "рассчет оборачиваемости ";
-const MAIN_BOTH = "Оборачиваемость";
-const SALES_SINGLE = "Продажи за период ";
-const SALES_BOTH = "Продажи за период";
+const SALES_SHEET = "Продажи за период ";
+const QUANTITY_FORMAT = "#,##0.###";
+const MONEY_FORMAT = "#,##0.00";
 const MARGINS = { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 };
 type PageSetupWithCopies = ExcelJS.PageSetup & { copies?: number };
 
@@ -41,13 +44,12 @@ function setFullPageSetup(sheet: ExcelJS.Worksheet) {
 type LayoutEntry = { kind: "section"; label: string; column: number } | { kind: "product"; row: TurnoverRow }
   | { kind: "total"; label: string; store: string | null; row: TurnoverTotal; byUnit: readonly TurnoverUnitTotal[] };
 type Basis = Exclude<TurnoverMode, "both">;
-type Leaf = TurnoverStandardGroup["leaves"][number];
 type FormulaColumns = { fullFirst: string; halfFirst: string; halfLast: string; fullLast: string;
-  weighted: string; average: string; coefficient: string; salesSource: string; sales: string };
+  weighted: string; average: string; coefficient: string; periodDays: string; sales: string };
 type RowInput = { row: TurnoverRow | TurnoverTotal; quantity: boolean; money: boolean; context: ExcelJS.CellValue[] };
 type CalculationLayout = {
-  leaves: Leaf[]; positions: ReadonlyMap<Basis, FormulaColumns>; periodDays: number; periodColumn: string;
-  salesSheet: string; unavailable: "n/a" | null; mode: TurnoverMode;
+  columns: readonly TurnoverStandardColumn[]; refs: FormulaColumns; basis: Basis; periodDays: number;
+  salesReference: string; unavailable: "n/a" | null;
 };
 type StreamingSheet = ExcelJS.Worksheet & { commit(): void };
 type StreamingWorkbook = ExcelJS.stream.xlsx.WorkbookWriter & { zip: EventEmitter & { abort(): void }; stream: Writable };
@@ -100,12 +102,11 @@ function numeric(value: number | null | undefined): value is number {
 function mainCellValues(
   entry: RowInput, layout: CalculationLayout, rowNumber: number, salesRow: number, alignedDaily: boolean
 ): ExcelJS.CellValue[] {
-  const { row, context } = entry;
-  const { leaves, positions, periodDays, periodColumn, unavailable, salesSheet, mode } = layout;
+  const { row, context: values } = entry;
+  const { columns, refs, basis, periodDays, unavailable, salesReference } = layout;
   const missing = unavailable ? '"n/a"' : '""';
-  const values = context.slice();
-  for (const { basis, column } of leaves) {
-    if (basis === "shared") {
+  for (const column of columns) {
+    if (column.kind === "periodDays") {
       values.push(periodDays);
       continue;
     }
@@ -117,10 +118,8 @@ function mainCellValues(
       values.push(TURNOVER_IDLE_LABEL);
       continue;
     }
-    const refs = positions.get(basis)!;
     const value = column.kind === "weighted" && !alignedDaily ? null : turnoverStandardValue(row, column, basis, periodDays);
     let formula: string | undefined;
-    let arrayRef: string | undefined;
     if (column.kind === "day") {
       if (column.half && alignedDaily) {
         const full = `${column.index === 0 ? refs.fullFirst : refs.fullLast}${rowNumber}`;
@@ -135,23 +134,20 @@ function mainCellValues(
       continue;
     }
     switch (column.kind) {
-      case "weighted":
-      case "average": {
-        // Single-cell array formulas prevent implicit intersection of IFERROR's range operands.
-        // A masked-out error in the other basis must not contaminate this basis (0 * #N/A is an error).
-        const start = `${refs.halfFirst}${rowNumber}`, end = `${refs.halfLast}${rowNumber}`;
-        const range = `${start}:${end}`, sum = `${refs.weighted}${rowNumber}`;
-        const select = mode === "both" ? `--(MOD(COLUMN(${range})-COLUMN(${start}),2)=0),` : "";
-        const positive = `--ISNUMBER(${range}),--IFERROR(${range}>0,FALSE)`;
+      case "weighted": {
         if (!alignedDaily) break;
-        arrayRef = `${column.kind === "weighted" ? refs.weighted : refs.average}${rowNumber}`;
-        if (column.kind === "weighted") {
-          formula = `IFERROR(IF(SUMPRODUCT(${select}--ISNUMBER(${range}))=${periodDays},SUMPRODUCT(${select}${positive},IFERROR(${range},0)),${missing}),${missing})`;
-        } else {
-          const half = (cell: string) => `IF(IFERROR(AND(ISNUMBER(${cell}),${cell}>0),FALSE),0.5,0)`;
-          const weight = `SUMPRODUCT(${select}${positive})-${half(start)}-${half(end)}`;
-          formula = `IFERROR(IF(ISNUMBER(${sum}),IF(${sum}=0,0,${sum}/(${weight})),${missing}),${missing})`;
-        }
+        // Start and end at the half-days, excluding the duplicate full endpoints.
+        // COUNT rejects blank, text and error cells without treating them as numeric zero.
+        const range = `${refs.halfFirst}${rowNumber}:${refs.halfLast}${rowNumber}`;
+        formula = `IFERROR(IF(COUNT(${range})=${periodDays},SUMIF(${range},">0"),${missing}),${missing})`;
+        break;
+      }
+      case "average": {
+        if (!alignedDaily) break;
+        const start = `${refs.halfFirst}${rowNumber}`, end = `${refs.halfLast}${rowNumber}`;
+        const sum = `${refs.weighted}${rowNumber}`;
+        const weight = `COUNTIF(${start}:${end},">0")-IF(${start}>0,0.5,0)-IF(${end}>0,0.5,0)`;
+        formula = `IFERROR(IF(ISNUMBER(${sum}),IF(${sum}=0,0,${sum}/(${weight})),${missing}),${missing})`;
         break;
       }
       case "coefficient": {
@@ -160,27 +156,17 @@ function mainCellValues(
         break;
       }
       case "sales": {
-        const source = `'${salesSheet}'!${refs.salesSource}${salesRow}`;
+        const source = `${salesReference}${salesRow}`;
         formula = `IF(ISNUMBER(${source}),${source},${missing})`;
         break;
       }
       case "turnoverDays": {
         const coefficient = `${refs.coefficient}${rowNumber}`;
-        formula = `IFERROR(IF(AND(ISNUMBER(${coefficient}),${coefficient}>0),${periodColumn}${rowNumber}/${coefficient},${missing}),${missing})`;
+        formula = `IFERROR(IF(AND(ISNUMBER(${coefficient}),${coefficient}>0),${refs.periodDays}${rowNumber}/${coefficient},${missing}),${missing})`;
         break;
       }
     }
-    if (formula) {
-      // ExcelJS 4.4 supports these array properties in the serializer but its types omit them.
-      const cell: ExcelJS.CellFormulaValue & { shareType?: "array"; ref?: string } = { formula, result: value ?? unavailable ?? "" };
-      if (arrayRef) {
-        cell.shareType = "array";
-        cell.ref = arrayRef;
-      }
-      values.push(cell);
-    } else {
-      values.push(value ?? unavailable);
-    }
+    values.push(formula ? { formula, result: value ?? unavailable ?? "" } : value ?? unavailable);
   }
   return values;
 }
@@ -213,93 +199,87 @@ async function finishSheet(workbook: StreamingWorkbook, sheet: StreamingSheet, s
   }
 }
 
-function addHeaders(sheet: StreamingSheet, identity: string[], groups: { label: string; labels: string[] }[], contextHeading = "Идентификация") {
-  const top = sheet.addRow([]);
-  const bottom = sheet.addRow([...identity, ...groups.flatMap(group => group.labels)]);
-  let col = 1;
-  for (const { label, labels } of [{ label: contextHeading, labels: identity }, ...groups]) {
-    // Do not merge across the vertical frozen pane; the unit column is scrollable.
-    const end = col + labels.length - (col === 1 ? 2 : 1);
-    if (end > col) sheet.mergeCells(1, col, 1, end);
-    top.getCell(col).value = label;
-    col += labels.length;
-  }
-  for (const row of [top, bottom]) {
-    row.height = 30;
-    row.eachCell(cell => {
-      cell.font = { bold: true };
-      cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2E8F0" } };
-    });
-  }
-  top.commit();
-  bottom.commit();
+function addHeader(sheet: StreamingSheet, labels: string[]) {
+  const row = sheet.addRow(labels);
+  row.height = 30;
+  row.eachCell(cell => {
+    cell.font = { bold: true };
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2E8F0" } };
+  });
+  return row;
 }
 
-async function createSheets(workbook: StreamingWorkbook, report: TurnoverReport, days: string[], mode: TurnoverMode, signal: AbortSignal) {
+function calculationHeader(column: TurnoverStandardColumn, basis: Basis): string {
+  if (column.kind === "day") return column.half ? `${column.label} / 2` : column.label;
+  if (basis === "money") {
+    if (column.kind === "weighted" || column.kind === "average") return `${column.label}, ₸`;
+    if (column.kind === "sales") return "Себестоимость продаж, ₸";
+  }
+  return column.label;
+}
+
+async function createSheets(workbook: StreamingWorkbook, report: TurnoverReport, days: string[], basis: Basis, signal: AbortSignal) {
   const splitStores = report.params.profile !== "sample";
   const itemColumn = splitStores ? 3 : 2;
   const identity = [...(splitStores ? ["Магазин"] : []), "Группа", "Номенклатура", "Ед. учёта"];
   const identityColumns = [...(splitStores ? [{ width: 26 }] : []), { width: 28 }, { width: 44 }, { width: 13 }];
-  const groups = turnoverStandardGrid(days, mode);
-  const leaves = groups.flatMap(group => group.leaves);
-  const dayColumns = groups.slice(0, days.length).reduce((count, group) => count + group.leaves.length, 0);
-  const firstSummary = identity.length + dayColumns + 1;
-  const positions = new Map<Basis, FormulaColumns>();
-  const periodColumn = columnLetter(identity.length + 1 + leaves.findIndex(leaf => leaf.column.kind === "periodDays"));
-  const salesName = mode === "both" ? SALES_BOTH : SALES_SINGLE;
+  const columns = turnoverStandardColumns(days);
+  const firstDay = identity.length + 1;
+  const firstSummary = firstDay + days.length + 2;
+  const metric = (kind: TurnoverStandardColumn["kind"]) => firstDay + columns.findIndex(column => column.kind === kind);
+  const refs: FormulaColumns = {
+    fullFirst: columnLetter(firstDay), halfFirst: columnLetter(firstDay + 1),
+    halfLast: columnLetter(firstSummary - 2), fullLast: columnLetter(firstSummary - 1),
+    weighted: columnLetter(metric("weighted")), average: columnLetter(metric("average")),
+    coefficient: columnLetter(metric("coefficient")), periodDays: columnLetter(metric("periodDays")), sales: columnLetter(metric("sales"))
+  };
+  const money = basis === "money";
   const unavailable = report.params.includeIncomplete ? "n/a" : null;
-  const calculation: CalculationLayout = { leaves, positions, periodDays: days.length, periodColumn, salesSheet: salesName, unavailable, mode };
-  const views: ExcelJS.AddWorksheetOptions["views"] = [{ state: "frozen", xSplit: itemColumn, ySplit: 2 }];
-  const main = workbook.addWorksheet(mode === "both" ? MAIN_BOTH : mode === "money" ? MAIN_MONEY : MAIN_UNITS, {
+  const salesReference = `'${SALES_SHEET}'!${columnLetter(identity.length + (money ? 2 : 1))}`;
+  const calculation: CalculationLayout = { columns, refs, basis, periodDays: days.length, salesReference, unavailable };
+  const views: ExcelJS.AddWorksheetOptions["views"] = [{ state: "frozen", xSplit: itemColumn, ySplit: 1 }];
+  const main = workbook.addWorksheet(money ? MAIN_MONEY : MAIN_UNITS, {
     views, properties: { outlineLevelCol: 1, outlineProperties: { summaryBelow: true, summaryRight: true } }
   }) as StreamingSheet;
-  const sales = workbook.addWorksheet(salesName, { views }) as StreamingSheet;
-  main.columns = [...identityColumns, ...leaves.map(({ column, basis }, index) => {
-    if (column.kind === "day") return { width: 16, hidden: true, outlineLevel: 1 };
+  const sales = workbook.addWorksheet(SALES_SHEET, { views }) as StreamingSheet;
+  const measureFormat = money ? MONEY_FORMAT : QUANTITY_FORMAT;
+  main.columns = [...identityColumns, ...columns.map((column, index) => {
+    if (column.kind === "day") return { width: 11, hidden: true, outlineLevel: 1, style: { numFmt: measureFormat } };
     const numFmt = column.kind === "periodDays" ? "0" : column.kind === "coefficient" || column.kind === "turnoverDays"
-      ? "0.00" : basis === "money" ? "#,##0.00" : "#,##0.###";
+      ? "0.00" : measureFormat;
     // ExcelJS coalesces adjacent equal-width/style columns without comparing `collapsed`.
-    return { width: index === dayColumns ? 24 : 19, style: { numFmt } };
+    return { width: firstDay + index === firstSummary ? 24 : 19, style: { numFmt } };
   })];
   // Excel needs a single collapse flag on the visible summary column to the right of the hidden detail.
   // Override only these instances; ExcelJS derives the flag from outlineLevel on the detail columns.
-  for (let index = identity.length + 1; index <= firstSummary; index++) {
-    Object.defineProperty(main.getColumn(index), "collapsed", { get: index === firstSummary ? () => true : () => false });
+  const detail = { get: () => false };
+  for (let index = firstDay; index < firstSummary; index++) {
+    Object.defineProperty(main.getColumn(index), "collapsed", detail);
   }
-  const salesMeasures = ["Кол-во", ...(mode === "quantity" ? [] : ["₸ по себестоимости"])];
-  sales.columns = [...identityColumns, { width: 16, style: { numFmt: "#,##0.###" } },
-    ...(mode === "quantity" ? [] : [{ width: 22, style: { numFmt: "#,##0.00" } }])];
+  Object.defineProperty(main.getColumn(firstSummary), "collapsed", { get: () => true });
+  sales.columns = [...identityColumns, { width: 16, style: { numFmt: QUANTITY_FORMAT } }, { width: 25, style: { numFmt: MONEY_FORMAT } }];
   setFullPageSetup(main);
-  if (mode === "quantity") sales.pageSetup.margins = MARGINS;
-  else setFullPageSetup(sales);
+  if (money) setFullPageSetup(sales);
+  else sales.pageSetup.margins = MARGINS;
   const { poorStart, mediumStart, goodStart } = TURNOVER_COEFFICIENT_THRESHOLDS;
-  const legend = `Коэффициент: Плохо [${poorStart}; ${mediumStart}) · Средне [${mediumStart}; ${goodStart}) · Хорошо ≥ ${goodStart}`;
-  addHeaders(main, identity, groups.map(group => ({ label: group.label, labels: group.leaves.map(leaf => leaf.label) })), legend);
-  addHeaders(sales, identity, [{ label: "Продажи за период", labels: salesMeasures }]);
-  for (const basis of ["quantity", "money"] as const) {
-    if (mode !== "both" && mode !== basis) continue;
-    const basisDays = leaves.flatMap(({ column, basis: leafBasis }, index) =>
-      leafBasis === basis && column.kind === "day" ? [columnLetter(identity.length + index + 1)] : []);
-    const metric = (kind: "weighted" | "average" | "coefficient" | "sales") =>
-      columnLetter(identity.length + 1 + leaves.findIndex(leaf => leaf.basis === basis && leaf.column.kind === kind));
-    positions.set(basis, {
-      fullFirst: basisDays[0]!, halfFirst: basisDays[1]!, halfLast: basisDays.at(-2)!, fullLast: basisDays.at(-1)!,
-      weighted: metric("weighted"), average: metric("average"), coefficient: metric("coefficient"), sales: metric("sales"),
-      salesSource: columnLetter(identity.length + (basis === "quantity" ? 1 : 2))
-    });
-  }
+  const mainHeader = addHeader(main, [...identity, ...columns.map(column => calculationHeader(column, basis))]);
+  mainHeader.getCell(refs.coefficient).note = `Коэффициент: Плохо [${poorStart}; ${mediumStart}) · Средне [${mediumStart}; ${goodStart}) · Хорошо ≥ ${goodStart}`;
+  mainHeader.commit();
+  addHeader(sales, [...identity, "Кол-во", "Продажи за период по себестоимости, ₸"]).commit();
   const unitLabels = turnoverUnitLabels(report.totals.byUnit);
   let firstCoefficientRow: number | undefined;
   let lastCoefficientRow = 0;
-  let beforeOverall = 2;
+  let beforeOverall = 1;
   const addProduct = (entry: RowInput, footer = false) => {
     const alignedDaily = entry.row.daily.length === days.length && entry.row.daily.every((day, index) => day.date === days[index]);
     if (!footer && !alignedDaily) throw new Error("Для сводного отчёта нужны дневные остатки за весь период");
     const { quantity, cost } = entry.row.periodSales;
-    const salesValues = [...entry.context, entry.quantity ? (numeric(quantity) ? quantity : unavailable) : null];
-    if (mode !== "quantity") salesValues.push(entry.money ? (numeric(cost) ? cost : unavailable) : null);
-    const salesRow = sales.addRow(salesValues);
+    const salesRow = sales.addRow([
+      ...entry.context,
+      entry.quantity ? (numeric(quantity) ? quantity : unavailable) : null,
+      entry.money ? (numeric(cost) ? cost : unavailable) : null
+    ]);
     const mainRow = main.addRow([]);
     mainRow.values = mainCellValues(entry, calculation, mainRow.number, salesRow.number, alignedDaily);
     if (footer) for (const row of [mainRow, salesRow]) {
@@ -307,9 +287,7 @@ async function createSheets(workbook: StreamingWorkbook, report: TurnoverReport,
       row.eachCell(cell => { cell.border = { top: { style: "thin", color: { argb: "FF9CA3AF" } } }; });
       if (entry.row.unit === null) row.getCell(itemColumn).note = "Количество в итогах не складывается: разные или неизвестные единицы.";
     }
-    for (const [basis, refs] of positions) {
-      if (entry[basis]) styleTurnoverCoefficient(mainRow.getCell(refs.coefficient), basis === "quantity" ? entry.row.turnoverQty : entry.row.turnoverCost);
-    }
+    if (entry[basis]) styleTurnoverCoefficient(mainRow.getCell(refs.coefficient), money ? entry.row.turnoverCost : entry.row.turnoverQty);
     firstCoefficientRow ??= mainRow.number;
     lastCoefficientRow = mainRow.number;
     mainRow.commit();
@@ -322,16 +300,18 @@ async function createSheets(workbook: StreamingWorkbook, report: TurnoverReport,
       sectionRow(main, entry.label, entry.column);
       sectionRow(sales, entry.label, entry.column);
     } else if (entry.kind === "total") {
-      if (entry.store === null) beforeOverall = lastCoefficientRow || 2;
-      for (const total of turnoverStandardTotalRows(entry.label, entry.row, entry.byUnit, mode, unitLabels)) {
-        const context = [...(splitStores ? [entry.store] : []), null, total.label, total.row.unit];
+      if (entry.store === null) beforeOverall = lastCoefficientRow || 1;
+      // The standard quantity sheet still needs the monetary scope row on its sales sheet.
+      for (const total of turnoverStandardTotalRows(entry.label, entry.row, entry.byUnit, money ? "money" : "both", unitLabels)) {
+        const unit = total.row.unit === null ? null : turnoverUnitDisplayName(total.row.unit, total.key);
+        const context = [...(splitStores ? [entry.store] : []), null, total.label, unit];
         // Explicit money files have always included the quantity sales column as a reference.
-        const quantity = mode === "money" ? total.row.unit !== null : total.quantity;
-        addProduct({ ...total, quantity, context }, true);
+        const quantity = money ? total.row.unit !== null : total.quantity;
+        addProduct({ row: total.row, quantity, money: total.money, context }, true);
       }
     } else {
       const row = entry.row;
-      const context = [...(splitStores ? [storeLabel(row)] : []), groupLabel(row), row.name, row.unit];
+      const context = [...(splitStores ? [storeLabel(row)] : []), groupLabel(row), row.name, turnoverUnitDisplayName(row.unit)];
       addProduct({ row, quantity: true, money: true, context });
     }
     if (++written % 1024 === 0) {
@@ -340,9 +320,9 @@ async function createSheets(workbook: StreamingWorkbook, report: TurnoverReport,
       if (workbook.stream.writableNeedDrain) await once(workbook.stream, "drain", { signal });
     }
   }
-  if (mode !== "quantity") main.autoFilter = `A2:${columnLetter(identity.length + leaves.length)}${beforeOverall}`;
+  if (money) main.autoFilter = `A1:${columnLetter(identity.length + columns.length)}${beforeOverall}`;
   if (firstCoefficientRow !== undefined) {
-    for (const { coefficient } of positions.values()) formatTurnoverCoefficientRange(main, coefficient, firstCoefficientRow, lastCoefficientRow);
+    formatTurnoverCoefficientRange(main, refs.coefficient, firstCoefficientRow, lastCoefficientRow);
   }
   await finishSheet(workbook, main, signal);
   await finishSheet(workbook, sales, signal);
@@ -354,7 +334,7 @@ export async function writeTurnoverSampleWorkbook(report: TurnoverReport, output
   if (report.params.groupBy !== "sku") throw new Error("Сводный отчёт формируется по товарам (SKU)");
   const days = turnoverStandardDates(report.params.from, report.params.to);
   if (days.length < 2) throw new Error("Сводный отчёт требует период не менее 2 календарных дней");
-  const mode = report.params.mode ?? "both";
+  const basis = report.params.mode === "money" ? "money" : "quantity";
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: output, useStyles: true, useSharedStrings: true }) as StreamingWorkbook;
   const canceled = new AbortController();
   const onError = (error: Error) => canceled.abort(error);
@@ -364,7 +344,7 @@ export async function writeTurnoverSampleWorkbook(report: TurnoverReport, output
   workbook.zip.once("error", onError);
   const interrupted = once(canceled.signal, "abort");
   try {
-    await createSheets(workbook, report, days, mode, canceled.signal);
+    await createSheets(workbook, report, days, basis, canceled.signal);
     canceled.signal.throwIfAborted();
     await Promise.race([
       workbook.commit(),

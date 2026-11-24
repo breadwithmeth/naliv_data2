@@ -235,11 +235,6 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
     return () => controller.abort();
   }, [currentPage, currentView, user.role, overviewRevision]);
 
-  async function logout() {
-    await api.logout().catch(() => undefined);
-    onLogout();
-  }
-
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -273,7 +268,7 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
             <div className="account-menu-panel">
               <strong>{user.role === "admin" ? "Администратор" : "Маркетолог"}</strong>
               <span>{user.email}</span>
-              <button type="button" onClick={logout}><LogOut size={16} />Выйти</button>
+              <button type="button" onClick={onLogout}><LogOut size={16} />Выйти</button>
             </div>
           </details>
         </header>
@@ -281,7 +276,7 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
         {showPeriod ? <div className="workspace-filter">
           <ReportFilterBar dateRange={dateRange} onDateRangeChange={setDateRange} />
         </div> : null}
-        <HandbookDifferences />
+        {!(currentPage === "stock" && currentView === "turnover") ? <HandbookDifferences /> : null}
 
         <div className="workspace-body">
           {currentPage === "home" ? (

@@ -148,6 +148,8 @@ test("default turnover population is filtered before daily, grouping and totals,
   let unavailableOpening = false;
   let unknownUnit = false;
   let mixedUnits = false;
+  let duplicateLitres = false;
+  let pieceLabel = "шт";
   let firstItemName = "complete";
   const source = () => ({
     items: ["complete", "missing-cost", "zero-sales", "returns"].map(key => ({
@@ -155,7 +157,8 @@ test("default turnover population is filtered before daily, grouping and totals,
       unit: unknownUnit ? null : mixedUnits && key === "missing-cost" ? "piece" : "litre", minimums: {}
     })),
     stores: [{ key: "s", name: "Shop" }], warehouses: [], brands: [], groups: [{ key: "group", name: "Group" }],
-    units: [{ key: "litre", name: "л" }, { key: "piece", name: "шт" }],
+    units: [{ key: "litre", name: "л" }, { key: "piece", name: pieceLabel }, { key: "fd33bbe6-8cd3-11e8-840d-3085a9455e10", name: "шт" },
+      ...(duplicateLitres ? [{ key: "other-litre", name: "л" }] : [])],
     snapshots: unavailableOpening ? dates.slice(1).concat("2026-11-04") : [...dates, "2026-11-04"], selectedSkus: [],
     stock: ["complete", "missing-cost", "zero-sales", "returns"].map(sku => ["s", sku, "", [...dates, "2026-11-04"].map(date => [date, 10])]),
     sales: ["complete", "missing-cost", "zero-sales", "returns"].map(sku => ["s", sku, "", dates.map(date =>
@@ -229,9 +232,20 @@ test("default turnover population is filtered before daily, grouping and totals,
     assert.equal(guarded.totals.overall.periodSales.quantity, null);
     mixedUnits = true;
     const mixed = await getTurnoverReport({ ...request, mode: "quantity", profile: "sample" }, reloadReader);
+    assert.equal(mixed.rows.find(row => row.sku === "complete")!.periodSales.cost, 60);
+    assert.equal(mixed.rows.find(row => row.sku === "complete")!.turnoverCost, null);
+    assert.equal(mixed.rows.find(row => row.sku === "missing-cost")!.unit, "шт");
+    assert.equal(mixed.rows.find(row => row.sku === "missing-cost")!.periodSales.cost, null);
     assert.equal(mixed.totals.overall.periodSales.quantity, null);
     assert.equal(mixed.excludedIncompleteRows, 2);
     assert.deepEqual(mixed.totals.byUnit.map(total => [total.unit, total.periodSales.quantity]).sort(), [["л", 6], ["шт", 6]]);
+    duplicateLitres = true;
+    pieceLabel = "   ";
+    const disambiguated = await getTurnoverReport({ ...request, profile: "sample" }, reloadReader);
+    assert.deepEqual(disambiguated.rows.map(row => [row.sku, row.unit]), [["complete", "л (1)"]]);
+    assert.equal(disambiguated.totals.overall.unit, "л (1)");
+    duplicateLitres = false;
+    pieceLabel = "шт";
     mixedUnits = false;
     const money = await getTurnoverReport({ ...request, mode: "money" }, reloadReader);
     assert.equal(money.rows.length, 1);
@@ -240,6 +254,8 @@ test("default turnover population is filtered before daily, grouping and totals,
     assert.equal(noUnits.rows.length, 0);
     assert.equal(noUnits.excludedIncompleteRows, 4);
     assert.equal(noUnits.totals.overall.openingQty, null);
+    assert.equal((await getTurnoverReport({ ...request, profile: "sample" }, reloadReader)).rows.length, 0,
+      "a money-only SKU cannot enter the standard quantity workbook or its sales total");
     assert.equal((await getTurnoverReport({ ...request, mode: "money" }, reloadReader)).rows.length, 1);
     unknownUnit = false;
     unavailableOpening = true;

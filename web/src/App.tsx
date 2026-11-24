@@ -1,17 +1,27 @@
 import { ShieldCheck } from "lucide-react";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "./api";
 import type { User } from "./api";
 
 const Dashboard = lazy(() => import("./Dashboard"));
+const TurnoverViewer = lazy(() => import("./TurnoverReport").then(({ TurnoverReportViewer }) => ({ default: TurnoverReportViewer })));
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  const sessionChannel = useRef<BroadcastChannel | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
+    const channel = new BroadcastChannel("naliv-session");
+    sessionChannel.current = channel;
+    channel.onmessage = ({ data }) => {
+      if (data !== "logout") return;
+      controller.abort();
+      setUser(null);
+      setCheckingSession(false);
+    };
     api
       .me(controller.signal)
       .then((result) => {
@@ -23,8 +33,18 @@ export function App() {
       .finally(() => {
         if (!controller.signal.aborted) setCheckingSession(false);
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      channel.close();
+      sessionChannel.current = null;
+    };
   }, []);
+
+  async function logout() {
+    const sessionEnded = await api.logout().then(() => true, () => false);
+    if (sessionEnded) sessionChannel.current?.postMessage("logout");
+    setUser(null);
+  }
 
   if (checkingSession) {
     return <FullScreenState title="Проверяем сессию" />;
@@ -34,9 +54,23 @@ export function App() {
     return <LoginScreen onLogin={setUser} />;
   }
 
+  if (window.location.pathname === "/reports/turnover") {
+    if (user.role !== "admin") {
+      return <main className="turnover-workspace turnover-viewer">
+        <div className="turnover-viewer-state">
+          <h1>Оборачиваемость</h1>
+          <p className="turnover-message turnover-error" role="alert">Отчёт доступен только администраторам.</p>
+        </div>
+      </main>;
+    }
+    return <Suspense fallback={<FullScreenState title="Загружаем отчёт" />}>
+      <TurnoverViewer search={window.location.search} />
+    </Suspense>;
+  }
+
   return (
     <Suspense fallback={<FullScreenState title="Загружаем панель" />}>
-      <Dashboard key={`${user.role}:${user.email}`} user={user} onLogout={() => setUser(null)} />
+      <Dashboard key={`${user.role}:${user.email}`} user={user} onLogout={logout} />
     </Suspense>
   );
 }

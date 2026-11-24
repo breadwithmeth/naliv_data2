@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Download } from "lucide-react";
 import { api } from "./api";
 import type {
@@ -7,12 +7,13 @@ import type {
 } from "./api";
 import { formatDecimal, formatNumber } from "./format";
 import {
-  completeTurnoverReport, hasKnownTurnoverUnit, includeTurnoverRow, TURNOVER_COEFFICIENT_THRESHOLDS, turnoverCoefficientBand
+  completeTurnoverReport, hasKnownTurnoverUnit, includeTurnoverRow, turnoverCoefficientBand
 } from "../../api/src/services/turnover-domain";
 import {
-  TURNOVER_IDLE_LABEL, turnoverStandardDates, turnoverStandardGrid, turnoverStandardTotalRows, turnoverStandardValue, turnoverUnitLabels
+  TURNOVER_IDLE_LABEL, turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows, turnoverStandardValue,
+  turnoverUnitDisplayName, turnoverUnitLabels
 } from "../../api/src/services/turnover-presentation";
-import type { TurnoverStandardGroup } from "../../api/src/services/turnover-presentation";
+import type { TurnoverStandardColumn } from "../../api/src/services/turnover-presentation";
 
 const DAY_MS = 86_400_000;
 type ReportFormat = "sample" | "stores";
@@ -35,16 +36,16 @@ type DownloadState = {
   requestKey?: string; message?: string;
 };
 type PreviewState =
-  | { requestKey: string; status: "loading" }
-  | { requestKey: string; status: "success"; report: TurnoverPreview }
-  | { requestKey: string; status: "error"; message: string };
+  | { status: "loading" }
+  | { status: "success"; report: TurnoverPreview }
+  | { status: "error"; message: string };
 const PREVIEW_PAGE_SIZE = 100;
 const COEFFICIENT_LABELS = { red: "Плохо", orange: "Средне", green: "Хорошо" } as const;
 type StandardMetrics = Pick<TurnoverPreviewRow,
   "daily" | "averageQty" | "averageCost" | "periodSales" | "idleStock" |
   "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays"
 >;
-type GridLeaf = TurnoverStandardGroup["leaves"][number] & { key: string };
+type GridColumn = { column: TurnoverStandardColumn; label: string; key: string };
 
 function dateNumber(value: string | undefined): number | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -105,7 +106,7 @@ function prepareRequest(range: InclusiveDateRange, filters: Filters): PreparedRe
       from: range.from,
       // Dashboard and all builder controls own inclusive dates. Only the API end is exclusive.
       to: new Date(to + DAY_MS).toISOString().slice(0, 10),
-      mode: "both", profile: detail ? "summary" : "sample", groupBy: "sku", sort: "name",
+      mode: "quantity", profile: detail ? "summary" : "sample", groupBy: "sku", sort: "name",
       storeScope: filters.includeNonRetail ? "all" : "retail",
       ...(filters.excludeZero ? { excludeZero: true } : {}),
       includeIncomplete: filters.includeIncomplete,
@@ -116,6 +117,17 @@ function prepareRequest(range: InclusiveDateRange, filters: Filters): PreparedRe
       ...(filters.search.trim() ? { search: filters.search.trim() } : {})
     }
   };
+}
+
+function prepareViewerRequest(search: string): PreparedRequest {
+  const params = new URLSearchParams(search);
+  return prepareRequest({ from: params.get("from") ?? "", to: params.get("to") ?? "" }, {
+    store: params.getAll("store"), warehouse: params.get("warehouse") ?? "",
+    category: params.getAll("category"), brand: params.get("brand") ?? "", search: params.get("search") ?? "",
+    format: params.get("profile") === "summary" ? "stores" : "sample",
+    includeNonRetail: params.get("storeScope") === "all", excludeZero: params.get("excludeZero") === "true",
+    includeIncomplete: params.get("includeIncomplete") === "true"
+  });
 }
 
 function OptionSelect({ label, value, options, disabled, onChange, placeholder = "Все", hint }: {
@@ -186,12 +198,11 @@ function CoefficientCell({ value }: { value: number | null }) {
   </td>;
 }
 
-function StandardMetricCells({ metrics, leaves, periodDays, quantity = true, money = true }: {
-  metrics: StandardMetrics; leaves: readonly GridLeaf[]; periodDays: number; quantity?: boolean; money?: boolean;
+function StandardMetricCells({ metrics, columns, periodDays }: {
+  metrics: StandardMetrics; columns: readonly GridColumn[]; periodDays: number;
 }) {
-  return <>{leaves.map(({ column, basis, key }) => {
-    if ((basis === "quantity" && !quantity) || (basis === "money" && !money)) return <td key={key} />;
-    const value = basis === "shared" ? periodDays : turnoverStandardValue(metrics, column, basis, periodDays);
+  return <>{columns.map(({ column, key }) => {
+    const value = turnoverStandardValue(metrics, column, "quantity", periodDays);
     if (column.kind === "turnoverDays" && value === null && metrics.idleStock) {
       return <td key={key} className="turnover-idle-label" title="Есть остаток на конец периода, продаж и закупок не было">{TURNOVER_IDLE_LABEL}</td>;
     }
@@ -217,8 +228,8 @@ function contextAt(boundaries: readonly ContextBoundary[], edge: number, kind: "
   return current?.kind === kind && (boundaries[start]?.top ?? Infinity) >= edge + current.height ? current : undefined;
 }
 
-function PreviewScroll({ noteId, showDays, report, children }: {
-  noteId: string; showDays: boolean; report: TurnoverPreview; children: ReactNode;
+function PreviewScroll({ showDays, report, children }: {
+  showDays: boolean; report: TurnoverPreview; children: ReactNode;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const [context, setContext] = useState<{ store?: string; group?: string }>({});
@@ -281,7 +292,7 @@ function PreviewScroll({ noteId, showDays, report, children }: {
   }, [showDays, report]);
 
   return <div ref={viewport} className="turnover-preview-scroll" role="region"
-    aria-label="Таблица оборачиваемости" tabIndex={0} aria-describedby={noteId}>
+    aria-label="Таблица оборачиваемости" tabIndex={0}>
     <div className="turnover-preview-sticky" aria-hidden="true">
       {context.store ? <div className="turnover-preview-store"><span className="turnover-section-label">{context.store}</span></div> : null}
       {context.group ? <div className="turnover-preview-group"><span className="turnover-section-label">{context.group}</span></div> : null}
@@ -301,18 +312,12 @@ export function TurnoverPreviewTable({ report: source, page, onPageChange }: {
   const includeIncomplete = Boolean(report.params.includeIncomplete);
   const excludedIncompleteRows = report.excludedIncompleteRows ?? 0;
   const headingId = useId();
-  const noteId = useId();
-  const mode = report.params.mode ?? "both";
   const days = useMemo(() => turnoverStandardDates(report.params.from, report.params.to), [report.params.from, report.params.to]);
-  const groups = useMemo(() => turnoverStandardGrid(showDays ? days : [], mode).map(({ label, leaves }) => {
-    const column = leaves[0]!.column;
-    const key = column.kind === "day" ? column.date : column.kind;
-    return { label, key, leaves: leaves.map((leaf, index) => ({ ...leaf, key: `${key}:${index}` })) };
-  }), [showDays, days, mode]);
-  const leaves = useMemo(() => groups.flatMap((group) => group.leaves), [groups]);
-  const columnCount = leaves.length + 1;
-  const caption = mode === "both" ? "количество в единицах товара и стоимость по себестоимости, ₸"
-    : mode === "money" ? "стоимость по себестоимости, ₸" : "количество в единицах товара";
+  const columns = useMemo(() => turnoverStandardColumns(showDays ? days : []).map((column) => column.kind === "day"
+    ? { column, label: column.half ? `${column.label} ½` : column.label, key: `${column.date}:${column.half}` }
+    : { column, label: column.label, key: column.kind }
+  ), [showDays, days]);
+  const columnCount = columns.length + 1;
   const stores = report.params.profile !== "sample";
   const pageCount = Math.max(1, Math.ceil(report.rows.length / PREVIEW_PAGE_SIZE));
   const currentPage = Math.min(Math.max(0, page), pageCount - 1);
@@ -320,8 +325,10 @@ export function TurnoverPreviewTable({ report: source, page, onPageChange }: {
   const rows = report.rows.slice(start, start + PREVIEW_PAGE_SIZE);
   const storeTotals = new Map(report.totals.byStore.map(total => [total.storeKey, total]));
   const unitLabels = turnoverUnitLabels(report.totals.byUnit);
-  const hasNonAdditiveQuantityTotals = report.rows.length > 0 && report.params.mode !== "money"
-    && (report.totals.overall.unit === null || report.totals.byStore.some(({ total }) => total.unit === null));
+  const hasUnlabelledQuantityTotal = report.rows.length > 0 && (
+    (report.totals.overall.unit === null && !report.totals.byUnit.length) ||
+    report.totals.byStore.some(({ total, byUnit }) => total.unit === null && !byUnit.length)
+  );
   const period = `${previewDate(report.params.from)} — ${previewDate(report.params.to, true)}`;
   const notices = [
     ...(report.coverage.requestedTo
@@ -329,57 +336,46 @@ export function TurnoverPreviewTable({ report: source, page, onPageChange }: {
     ...(!includeIncomplete && excludedIncompleteRows > 0
       ? [`Исключено строк без полного расчёта: ${formatNumber(excludedIncompleteRows)}.`] : []),
     ...(includeIncomplete && report.rows.some((row) => !includeTurnoverRow(row, report.params))
-      ? ["Включены строки без полного расчёта."] : [])
+      ? ["Включены строки без полного расчёта."] : []),
+    ...(report.coverage.missingStockDates.length ? [
+      `Нет дневных снимков остатков: ${formatNumber(report.coverage.missingStockDates.length)} из ${formatNumber(report.coverage.expectedDays)}.`
+    ] : []),
+    ...(hasUnlabelledQuantityTotal ? ["Общий итог недоступен: разные или неизвестные единицы."] : [])
   ];
+  // The analytical endpoint also describes monetary data, orders and comparisons absent from this view.
+  const warnings = report.warnings.filter((warning) => /^(Нельзя подтвердить отсутствие|Фильтрам не соответствуют|Нет снимка точно|Не во все дни выбранного периода|В части дней есть проведённые чеки|У части SKU нет подтверждённой|Итоги исходной выборки не показаны)/.test(warning));
   const footer = (label: string, total: TurnoverPreview["totals"]["overall"], byUnit: TurnoverPreview["totals"]["byUnit"], subtotal = false) =>
-    turnoverStandardTotalRows(label, total, byUnit, mode, unitLabels).map(({ key, label, row, quantity, money }, index) =>
+    turnoverStandardTotalRows(label, total, byUnit, "quantity", unitLabels).map(({ key, label, row }, index) =>
       <tr key={key ?? label} className="turnover-overall-total" data-turnover-boundary={subtotal && index === 0 ? "subtotal" : undefined}>
         <th scope="row">{label}</th>
-        <StandardMetricCells metrics={row} leaves={leaves} periodDays={days.length} quantity={quantity} money={money} />
+        <StandardMetricCells metrics={row} columns={columns} periodDays={days.length} />
       </tr>);
-  const { poorStart, mediumStart, goodStart } = TURNOVER_COEFFICIENT_THRESHOLDS;
   return <section className="turnover-preview-results" aria-labelledby={headingId}>
-    <div className="turnover-preview-heading">
-      <h3 id={headingId}>Результат</h3>
-      <p>{period} · строк: {formatNumber(report.rows.length)} · {stores ? "По магазинам" : "Вся сеть"}</p>
-    </div>
-    {notices.length ? <p className="turnover-message" role="status">{notices.join(" ")}</p> : null}
-    {report.warnings.length ? <details className="turnover-message turnover-preview-warnings">
-      <summary>Подробности проверки ({formatNumber(report.warnings.length)})</summary>
-      <ul>{report.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
-    </details> : null}
-    <p className="turnover-note" id={noteId}>—: показатель не рассчитан.
-      {hasNonAdditiveQuantityTotals ? " Количество нельзя сложить: разные или неизвестные единицы." : null}</p>
-    <div className="turnover-preview-tools">
-      <button type="button" className="turnover-button" aria-expanded={showDays} aria-controls={tableId}
+    <header className="turnover-preview-toolbar">
+      <div className="turnover-preview-heading">
+        <h1 id={headingId}>Оборачиваемость</h1>
+        <p>{period} · {stores ? "По магазинам" : "Вся сеть"} · строк: {formatNumber(report.rows.length)}</p>
+      </div>
+      {rows.length ? <button type="button" className="turnover-button" aria-expanded={showDays} aria-controls={tableId}
         onClick={() => setDisclosure({ source, showDays: !showDays })}>
         {showDays ? "Скрыть дни" : `Показать дни (${formatNumber(days.length)})`}
-      </button>
-      <div className="turnover-preview-legend">
-        <span>Коэффициент:</span>
-        <ul aria-label="Шкала коэффициента оборачиваемости">
-          <li className="turnover-coefficient-red">{COEFFICIENT_LABELS.red}: {poorStart} ≤ x &lt; {mediumStart}</li>
-          <li className="turnover-coefficient-orange">{COEFFICIENT_LABELS.orange}: {mediumStart} ≤ x &lt; {goodStart}</li>
-          <li className="turnover-coefficient-green">{COEFFICIENT_LABELS.green}: x ≥ {goodStart}</li>
-        </ul>
-        <span>Отрицательные и нерассчитанные — без оценки.</span>
-      </div>
-    </div>
-    <PreviewScroll key={currentPage} noteId={noteId} showDays={showDays} report={report}>
+      </button> : null}
+    </header>
+    {notices.length || warnings.length ? <div className="turnover-preview-notices">
+      {notices.length ? <p className="turnover-note" role="status">{notices.join(" ")}</p> : null}
+      {warnings.length ? <details className="turnover-preview-warnings">
+        <summary>Предупреждения ({formatNumber(warnings.length)})</summary>
+        <ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+      </details> : null}
+    </div> : null}
+    <PreviewScroll key={currentPage} showDays={showDays} report={report}>
       <table id={tableId} className="turnover-preview-table">
-        <caption className="turnover-visually-hidden">Оборачиваемость: {caption}</caption>
-        <colgroup span={1} />
-        {groups.map(({ key, leaves }) => <colgroup key={key} span={leaves.length} />)}
-        <thead>
-          <tr>
-            <th scope="col" rowSpan={2}>Номенклатура</th>
-            {groups.map(({ key, label, leaves }) => leaves.length === 1
-              ? <th key={key} scope="col" rowSpan={2}>{label}</th>
-              : <th key={key} scope="colgroup" colSpan={leaves.length}>{label}</th>)}
-          </tr>
-          <tr>{groups.flatMap(({ leaves }) => leaves.length > 1
-            ? leaves.map((leaf) => <th key={leaf.key} scope="col">{leaf.label}</th>) : [])}</tr>
-        </thead>
+        <caption className="turnover-visually-hidden">Оборачиваемость: количество в единицах товара</caption>
+        <thead><tr>
+          <th scope="col">Номенклатура</th>
+          {columns.map(({ key, label, column }) => <th key={key} scope="col"
+            className={column.kind === "day" ? "turnover-preview-date" : undefined}>{label}</th>)}
+        </tr></thead>
         <tbody>
           {rows.length ? rows.map((row, index) => {
             const previous = rows[index - 1];
@@ -396,16 +392,16 @@ export function TurnoverPreviewTable({ report: source, page, onPageChange }: {
               </th></tr> : null}
               <tr>
                 <th scope="row" className="turnover-preview-product">{row.name}
-                  {mode !== "money" && hasKnownTurnoverUnit(row.unit) ? <span className="turnover-preview-unit">{row.unit}</span> : null}
+                  {hasKnownTurnoverUnit(row.unit) ? <span className="turnover-preview-unit">{turnoverUnitDisplayName(row.unit)}</span> : null}
                 </th>
-                <StandardMetricCells metrics={row} leaves={leaves} periodDays={days.length} />
+                <StandardMetricCells metrics={row} columns={columns} periodDays={days.length} />
               </tr>
               {subtotal ? footer("ИТОГО по магазину", subtotal.total, subtotal.byUnit, true) : null}
             </Fragment>;
           }) : <tr><td colSpan={columnCount} className="turnover-preview-empty">
             {excludedIncompleteRows > 0 && !includeIncomplete
-              ? "Все строки по выбранным условиям исключены: нет полного расчёта. В дополнительных настройках отметьте «Включить строки без полного расчёта» и нажмите «Показать отчёт»."
-              : "По выбранным условиям товаров нет. Измените отбор и нажмите «Показать отчёт»."}
+              ? "Все строки по выбранным условиям исключены: нет полного расчёта. На вкладке с параметрами включите строки без полного расчёта и откройте отчёт снова."
+              : "По выбранным условиям товаров нет. Измените отбор на вкладке с параметрами и откройте отчёт снова."}
           </td></tr>}
         </tbody>
         {report.rows.length ? <tfoot aria-label="Итог по всему отбору" data-turnover-boundary="overall">
@@ -413,8 +409,8 @@ export function TurnoverPreviewTable({ report: source, page, onPageChange }: {
         </tfoot> : null}
       </table>
     </PreviewScroll>
-    {report.rows.length ? <nav className="turnover-preview-pagination" aria-label="Страницы отчёта">
-      <p className="turnover-note" role="status">Страница {currentPage + 1} из {pageCount} · Всего строк: {formatNumber(report.rows.length)}
+    {pageCount > 1 ? <nav className="turnover-preview-pagination" aria-label="Страницы отчёта">
+      <p className="turnover-note" role="status">Страница {currentPage + 1} из {pageCount}
         {` · ${formatNumber(start + 1)}–${formatNumber(Math.min(start + PREVIEW_PAGE_SIZE, report.rows.length))}`}
       </p>
       <div>
@@ -425,6 +421,53 @@ export function TurnoverPreviewTable({ report: source, page, onPageChange }: {
   </section>;
 }
 
+export function TurnoverReportViewer({ search }: { search: string }) {
+  const prepared = useMemo(() => prepareViewerRequest(search), [search]);
+  const [state, setState] = useState<PreviewState>({ status: "loading" });
+  const [attempt, setAttempt] = useState(0);
+  const [page, setPage] = useState(0);
+
+  useEffect(() => {
+    const title = document.title;
+    document.title = "Оборачиваемость";
+    return () => { document.title = title; };
+  }, []);
+
+  useEffect(() => {
+    if (!prepared.valid) return;
+    const controller = new AbortController();
+    api.turnoverReport(prepared.request, controller.signal).then((report) => {
+      if (!controller.signal.aborted) setState({ status: "success", report });
+    }).catch((caught) => {
+      if (!controller.signal.aborted) setState({
+        status: "error", message: caught instanceof Error ? caught.message : "Не удалось загрузить отчёт."
+      });
+    });
+    return () => controller.abort();
+  }, [prepared, attempt]);
+
+  function retry() {
+    setPage(0);
+    setState({ status: "loading" });
+    setAttempt((value) => value + 1);
+  }
+
+  return <main className="turnover-workspace turnover-viewer">
+    {prepared.valid && state.status === "success"
+      ? <TurnoverPreviewTable report={state.report} page={page} onPageChange={setPage} />
+      : <div className="turnover-viewer-state">
+        <h1>Оборачиваемость</h1>
+        {!prepared.valid ? <p className="turnover-message turnover-error" role="alert">{prepared.error} Откройте отчёт снова с вкладки параметров.</p>
+          : state.status === "error" ? <div className="turnover-message turnover-error" role="alert">
+            <strong>Не удалось загрузить отчёт.</strong>
+            <p>{state.message}</p>
+            <button type="button" className="turnover-button" onClick={retry}>Повторить</button>
+          </div>
+            : <p className="turnover-note" role="status">Загружаем отчёт…</p>}
+      </div>}
+  </main>;
+}
+
 export function TurnoverReport({ dateRange, onDateRangeChange }: {
   dateRange: InclusiveDateRange; onDateRangeChange: (range: InclusiveDateRange) => void;
 }) {
@@ -432,7 +475,6 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   const periodHintId = useId();
   const periodErrorId = useId();
   const categoryHintId = useId();
-  const previewId = useId();
   const [filters, setFilters] = useState<Filters>({
     store: [], warehouse: "", category: [], brand: "", search: "",
     format: "sample", includeNonRetail: false, excludeZero: false, includeIncomplete: false
@@ -442,9 +484,6 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   const [optionsAttempt, setOptionsAttempt] = useState(0);
   const [state, setState] = useState<DownloadState>({ status: "idle" });
   const controller = useRef<AbortController | null>(null);
-  const [previewState, setPreviewState] = useState<PreviewState | null>(null);
-  const [previewPage, setPreviewPage] = useState(0);
-  const previewController = useRef<AbortController | null>(null);
   const prepared = useMemo(() => prepareRequest(dateRange, filters), [dateRange.from, dateRange.to, filters]);
   const requestKey = JSON.stringify(prepared.valid ? prepared.request : {
     ...filters, store: [...filters.store].sort(), category: [...filters.category].sort(),
@@ -452,22 +491,15 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
   });
   const currentState: DownloadState = state.requestKey === requestKey ? state : { status: "idle" };
   const downloading = currentState.status === "loading";
-  const currentPreview = previewState?.requestKey === requestKey ? previewState : null;
-  const previewing = currentPreview?.status === "loading";
 
   useEffect(() => () => {
     controller.current?.abort();
-    previewController.current?.abort();
   }, []);
 
   useEffect(() => {
     controller.current?.abort();
     controller.current = null;
     setState((previous) => previous.status === "idle" ? previous : { status: "idle" });
-    previewController.current?.abort();
-    previewController.current = null;
-    setPreviewState(null);
-    setPreviewPage(0);
   }, [requestKey]);
 
   useEffect(() => {
@@ -550,38 +582,6 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
     controller.current = null;
     setState({ status: "idle" });
   }
-  async function showReport(event?: FormEvent<HTMLFormElement>) {
-    event?.preventDefault();
-    if (previewing) return;
-    if (!prepared.valid) {
-      setPreviewState({ status: "error", requestKey, message: prepared.error });
-      return;
-    }
-    previewController.current?.abort();
-    const requestController = new AbortController();
-    previewController.current = requestController;
-    setPreviewPage(0);
-    setPreviewState({ status: "loading", requestKey });
-    try {
-      const report = await api.turnoverReport(prepared.request, requestController.signal);
-      if (requestController.signal.aborted || previewController.current !== requestController) return;
-      setPreviewState({ status: "success", requestKey, report });
-    } catch (caught) {
-      if (requestController.signal.aborted || previewController.current !== requestController) return;
-      setPreviewState({
-        status: "error", requestKey,
-        message: caught instanceof Error ? caught.message : "Не удалось загрузить отчёт."
-      });
-    } finally {
-      if (previewController.current === requestController) previewController.current = null;
-    }
-  }
-
-  function cancelPreview() {
-    previewController.current?.abort();
-    previewController.current = null;
-    setPreviewState(null);
-  }
 
   return <section className="reports-section turnover-workspace" aria-labelledby={headingId}>
     <div className="turnover-heading">
@@ -589,7 +589,11 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
       </div>
     </div>
 
-    <form className="turnover-form" noValidate onSubmit={showReport}>
+    <form className="turnover-form" action="/reports/turnover" method="get" target="_blank" rel="noopener" noValidate
+      onSubmit={(event) => { if (!prepared.valid || downloading) event.preventDefault(); }}>
+      {prepared.valid ? Object.entries({ ...prepared.request, to: dateRange.to }).flatMap(([name, value]) =>
+        (Array.isArray(value) ? value : [value]).map((entry, index) =>
+          <input type="hidden" name={name} value={String(entry)} key={`${name}:${index}`} />)) : null}
       <fieldset className="turnover-configuration" disabled={downloading}>
         <legend className="turnover-visually-hidden">Параметры отчёта</legend>
         <fieldset className="turnover-fieldset" aria-describedby={periodHintId}>
@@ -659,9 +663,9 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
         </div> : null}
       </fieldset>
 
-      <div className="turnover-download-actions" aria-busy={downloading || previewing}>
-        <button type="submit" className="turnover-button turnover-primary" disabled={downloading || previewing || !prepared.valid}
-          aria-describedby={!prepared.valid ? periodErrorId : undefined} aria-controls={currentPreview ? previewId : undefined}>Показать отчёт</button>
+      <div className="turnover-download-actions" aria-busy={downloading}>
+        <button type="submit" className="turnover-button turnover-primary" disabled={downloading || !prepared.valid}
+          aria-describedby={!prepared.valid ? periodErrorId : undefined}>Открыть отчёт в новой вкладке</button>
         <button type="button" className="turnover-button" disabled={downloading || !prepared.valid}
           aria-describedby={!prepared.valid ? periodErrorId : undefined} onClick={() => void download()}>
           <Download size={17} aria-hidden="true" />{downloading ? "Формируем Excel…" : "Скачать Excel"}
@@ -678,17 +682,5 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
       </div> : null}
       {currentState.status === "success" ? <p className="turnover-message turnover-success" role="status">{currentState.message}</p> : null}
     </form>
-    {currentPreview ? <div className="turnover-preview" id={previewId} aria-busy={previewing}>
-      {currentPreview.status === "loading" ? <div className="turnover-message">
-        <p role="status">Загружаем отчёт… При смене параметров предыдущий запрос отменится.</p>
-        <button type="button" className="turnover-button" onClick={cancelPreview}>Отменить загрузку</button>
-      </div>
-        : currentPreview.status === "error" ? <div className="turnover-message turnover-error" role="alert">
-          <strong>Не удалось загрузить отчёт.</strong>
-          <button type="button" className="turnover-button" disabled={!prepared.valid} onClick={() => void showReport()}>Повторить</button>
-          <details><summary>Подробности ошибки</summary><p>{currentPreview.message}</p></details>
-        </div>
-          : <TurnoverPreviewTable report={currentPreview.report} page={previewPage} onPageChange={setPreviewPage} />}
-    </div> : null}
   </section>;
 }

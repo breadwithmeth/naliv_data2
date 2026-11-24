@@ -73,45 +73,23 @@ export function turnoverStandardDates(from: string, to: string): string[] {
   return days;
 }
 
-export type TurnoverStandardBasis = "quantity" | "money" | "shared";
-export type TurnoverStandardGroup = {
-  label: string;
-  leaves: { column: TurnoverStandardColumn; basis: TurnoverStandardBasis; label: string }[];
-};
-
-/** One date spans both measures, including its endpoint half-observations. */
-export function turnoverStandardGrid(days: readonly string[], mode: TurnoverMode): TurnoverStandardGroup[] {
-  const bases: readonly ("quantity" | "money")[] = mode === "both" ? ["quantity", "money"] : [mode];
-  const groups: TurnoverStandardGroup[] = [];
-  const addMeasures = (group: TurnoverStandardGroup, column: TurnoverStandardColumn) => {
-    const ratio = column.kind === "coefficient" || column.kind === "turnoverDays";
-    for (const basis of bases) {
-      const measure = ratio ? (basis === "quantity" ? "По количеству" : "По стоимости")
-        : (basis === "quantity" ? "Кол-во" : "₸ по себестоимости");
-      group.leaves.push({ column, basis, label: column.kind === "day" && column.half ? `½ ${measure}` : measure });
-    }
-  };
+export function turnoverStandardColumns(days: readonly string[]): TurnoverStandardColumn[] {
+  const columns: TurnoverStandardColumn[] = [];
   days.forEach((date, index) => {
     const label = `${date.slice(8, 10)}.${date.slice(5, 7)}.`;
-    const group: TurnoverStandardGroup = { label, leaves: [] };
     const day = { kind: "day", date, index, label } as const;
-    if (index === days.length - 1) addMeasures(group, { ...day, half: true });
-    addMeasures(group, { ...day, half: false });
-    if (index === 0) addMeasures(group, { ...day, half: true });
-    groups.push(group);
+    if (index === days.length - 1) columns.push({ ...day, half: true });
+    columns.push({ ...day, half: false });
+    if (index === 0) columns.push({ ...day, half: true });
   });
   for (const [kind, label] of [
     ["weighted", "Сумма остатков за период"], ["average", "Средний товарный запас"],
     ["coefficient", "Коэффициент оборачиваемости"], ["periodDays", "Дней в периоде"],
     ["sales", "Продажи за период"], ["turnoverDays", "Дни оборота"]
   ] as const) {
-    const group: TurnoverStandardGroup = { label, leaves: [] };
-    const column = { kind, label };
-    if (kind === "periodDays") group.leaves.push({ column, basis: "shared", label: "Дни" });
-    else addMeasures(group, column);
-    groups.push(group);
+    columns.push({ kind, label });
   }
-  return groups;
+  return columns;
 }
 
 type StandardMetrics = Pick<TurnoverRow, "daily" | "averageQty" | "averageCost" | "periodSales" |
@@ -119,7 +97,7 @@ type StandardMetrics = Pick<TurnoverRow, "daily" | "averageQty" | "averageCost" 
 
 /** Display the existing sample calculation, never aggregate displayed products. */
 export function turnoverStandardValue(
-  row: StandardMetrics, column: TurnoverStandardColumn, mode: TurnoverStandardBasis, periodDays: number
+  row: StandardMetrics, column: TurnoverStandardColumn, mode: "quantity" | "money", periodDays: number
 ): number | null {
   let value: number | null;
   if (column.kind === "day") {
@@ -144,13 +122,19 @@ export function turnoverStandardValue(
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+export function turnoverUnitDisplayName(unit: string | null, unitKey?: string | null): string {
+  const name = unit?.trim().replace(/\s+\[[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\]$/iu, "").trim();
+  return !name || name === unitKey || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(name)
+    ? "Единица без названия" : name;
+}
+
 /** Number identically named references consistently across the whole report. */
-export function turnoverUnitLabels(totals: readonly TurnoverUnitTotal[]): ReadonlyMap<string, string> {
+export function turnoverUnitLabels(totals: readonly Pick<TurnoverUnitTotal, "unitKey" | "unit">[]): ReadonlyMap<string, string> {
   const groups = new Map<string, string[]>();
   for (const { unit, unitKey } of totals) {
     const suffix = ` [${unitKey}]`;
     const name = (unit?.endsWith(suffix) ? unit.slice(0, -suffix.length) : unit)?.trim();
-    const label = name && name !== unitKey ? name : "Единица без названия";
+    const label = turnoverUnitDisplayName(name ?? null, unitKey);
     const group = groups.get(label);
     if (group) group.push(unitKey); else groups.set(label, [unitKey]);
   }
@@ -158,7 +142,7 @@ export function turnoverUnitLabels(totals: readonly TurnoverUnitTotal[]): Readon
   for (const [name, keys] of groups) {
     keys.sort();
     for (let index = 0; index < keys.length; index++) {
-      labels.set(keys[index]!, keys.length === 1 ? name : `${name} (${index + 1})`);
+      labels.set(keys[index]!, /^шт\.?$/iu.test(name) ? "шт" : keys.length === 1 ? name : `${name} (${index + 1})`);
     }
   }
   return labels;

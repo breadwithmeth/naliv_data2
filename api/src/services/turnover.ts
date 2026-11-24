@@ -11,7 +11,7 @@ import {
 } from "./turnover-stores.js";
 import { evaluateCoverage, getReloadReadiness, type ReloadReadinessState } from "./reload-readiness.js";
 import { isExcludedTurnoverItem } from "./turnover-exclusions.js";
-import { buildTurnoverRootGroups, compareTurnoverPresentationRows } from "./turnover-presentation.js";
+import { buildTurnoverRootGroups, compareTurnoverPresentationRows, turnoverUnitLabels } from "./turnover-presentation.js";
 import type {
   TurnoverDailyRow, TurnoverNorms, TurnoverOption, TurnoverPolicy, TurnoverReport,
   TurnoverOptions, TurnoverRequest, TurnoverRow, TurnoverRowDetail, TurnoverSales, TurnoverTotal, TurnoverTotals, TurnoverWindow
@@ -190,7 +190,7 @@ async function loadStoreDirectory(to?: string): Promise<StoreDirectory> {
 // One statement gives catalog, balances, sales and prices the same PostgreSQL
 // MVCC snapshot. SQL groups sparse facts first; it never builds a SKU×day grid.
 async function loadSources(
-  params: NormalizedTurnoverRequest, searchKeys: string[] | undefined, sourceStoreKeys: string[], certifyIdleStock: boolean
+  params: NormalizedTurnoverRequest, searchKeys: string[] | undefined, sourceStoreKeys: string[], certifyIdleStock: boolean, includeCosts: boolean
 ): Promise<Sources> {
   const balances = table("accumulation_register_tovary_na_skladah_balance");
   const reports = table("document_otchet_o_roznichnyh_prodazhah");
@@ -259,7 +259,6 @@ async function loadSources(
       where (${itemCondition(Prisma.sql`a.sku`)} or ${unknownKey(Prisma.sql`a.sku`)})
         ${params.warehouse ? Prisma.sql`and (${scopeWarehouse(Prisma.sql`a.warehouse`)} or ${unknownKey(Prisma.sql`a.warehouse`)})` : Prisma.empty}
     ) activity), '[]'::jsonb)` : Prisma.sql`'[]'::jsonb`;
-  const includeCosts = params.mode !== "quantity";
   const includeBarcodes = params.profile === "full";
   // Full reports keep SKUs whose only recorded movement is a prior return.
   // Summary files do not need that historic seed and avoid the extra scan.
@@ -271,8 +270,7 @@ async function loadSources(
       where r.date < ${salesFrom}::timestamp and ${itemCondition(Prisma.sql`l.nomenklatura_key`)}
         and ${storeCondition(movementStore)} and ${scopeWarehouse(Prisma.sql`l.sklad_key`)}
       group by 1, 2` : Prisma.empty;
-  // Summary export skips the historical KKM scan; quantity mode needs no cost
-  // history at all. Both CTEs keep their output columns for the single query.
+  // Load accounting prices for financial measures or the standard workbook's sales sheet.
   const costCtes = includeCosts ? Prisma.sql`
     cost_events as (
       select 0 as priority, coalesce(nullif(nullif(c.magazin_key, ''), ${EMPTY_GUID}), ${UNKNOWN}) as store_key,
@@ -819,6 +817,8 @@ async function buildTurnoverReport(
       && tables.every((table) => ledger.tables.includes(table))
       && evaluateCoverage(readiness, key, period).status === "verified";
   });
+  const standardQuantity = params.mode === "quantity" && isStandardTurnoverLayout(params);
+  const includeSalesCosts = params.mode !== "quantity" || standardQuantity;
   let source: Sources;
   let storeIndex!: PhysicalStoreIndex;
   let selectedPhysical!: PhysicalStore[];
@@ -834,7 +834,7 @@ async function buildTurnoverReport(
     // stock recorded under a non-selling duplicate is still counted.
     sourceStoreKeys = selectedPhysical.flatMap((store) => store.sourceKeys);
     const searchKeys = params.search ? await searchItemKeys(params.search) : undefined;
-    source = await loadSources(params, searchKeys, sourceStoreKeys, certifyIdleStock);
+    source = await loadSources(params, searchKeys, sourceStoreKeys, certifyIdleStock, includeSalesCosts);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2010"
       && ["42P01", "42703", "3F000"].includes(String(error.meta?.code))) {
@@ -852,11 +852,11 @@ async function buildTurnoverReport(
     .sort((left, right) => left.name.localeCompare(right.name, "ru") || left.key.localeCompare(right.key));
   const groups = new Map(source.groups.map((group) => [group.key, group.name]));
   const brands = new Map(source.brands.map((brand) => [brand.key, brand.name]));
-  const units = new Map(source.units.map((unit) => [unit.key, unit.name]));
+  const units = turnoverUnitLabels(source.units.filter(({ key, name }) => name.trim() && name.trim() !== key)
+    .map(({ key, name }) => ({ unitKey: key, unit: name })));
   // Only report totals treat duplicate piece references as interchangeable.
   const pieceUnitKeys = new Set<string>();
   for (const [key, name] of units) if (/^шт\.?$/iu.test(name.trim())) pieceUnitKeys.add(key);
-  const repeatedUnitNames = new Set(source.units.filter((unit, index, values) => values.findIndex((other) => other.name === unit.name) !== index).map((unit) => unit.name));
   const snapshots = new Set(source.snapshots);
   const salesDays = new Map<string, Set<string>>();
   for (const [sourceStore, date] of source.salesDays) {
@@ -904,7 +904,6 @@ async function buildTurnoverReport(
   }
   source.costs.length = 0;
   const costAt = (store: string, sku: string, characteristic: string, at: number, inclusive: boolean): number | null => {
-    if (params.mode === "quantity") return null;
     for (let priority = 0; priority < 3; priority++) {
       const history = costIndex.get(`${priority}\u0000${priority === 2 ? UNKNOWN : store}\u0000${sku}\u0000${characteristic}`);
       if (!history) continue;
@@ -934,8 +933,7 @@ async function buildTurnoverReport(
     const brand = cleanKey(item.brand);
     const unitKey = cleanKey(item.unit);
     const unitName = unitKey ? units.get(unitKey) : null;
-    const unit = unitName ? `${unitName}${repeatedUnitNames.has(unitName) ? ` [${unitKey}]` : ""}`
-      : `Единица не указана (SKU ${sku}${unitKey ? `; ключ ${unitKey}` : ""})`;
+    const unit = unitName ?? "Единица не указана";
     let norms = { ...params.norms.defaults };
     for (const ancestor of [...ancestors].reverse()) norms = { ...norms, ...params.norms.categories[ancestor] };
     if (category) norms = { ...norms, ...params.norms.categories[category] };
@@ -991,7 +989,7 @@ async function buildTurnoverReport(
       if (at === undefined) { at = dayNumber(date); dateInstants.set(date, at); }
       const quantity = numberOrNull(rawQuantity);
       const revenue = numberOrNull(rawRevenue);
-      const unitCost = params.mode === "quantity" ? null : quantity === 0 ? 0 : costAt(store, sku, characteristic, at, true);
+      const unitCost = !includeSalesCosts ? null : quantity === 0 ? 0 : costAt(store, sku, characteristic, at, true);
       const amount = quantity === null || unitCost === null ? null : quantity * unitCost;
       const cost = amount !== null && Number.isFinite(amount) ? amount : null;
       const existing = pair.sales.get(date);
@@ -1290,7 +1288,7 @@ async function buildTurnoverReport(
   const warningSet = new Set<string>();
   if (!certifyIdleStock) warningSet.add("Нельзя подтвердить отсутствие продаж, возвратов и закупок: за выбранный период загрузка розничных отчётов, чеков или поступлений не полностью проверена.");
   if (!params.includeIncomplete) {
-    warningSet.add("Итоги рассчитаны по включённым товарам и магазинам. В выборку входят и остатки без продаж и закупок. Нерассчитанные значения не заменены нулями.");
+    if (!standardQuantity) warningSet.add("Итоги рассчитаны по включённым товарам и магазинам. В выборку входят и остатки без продаж и закупок. Нерассчитанные значения не заменены нулями.");
     if (excludedIncompleteRows) warningSet.add(`Исключено строк без полного расчёта: ${excludedIncompleteRows}. Включите строки без полного расчёта, чтобы проверить исходные данные.`);
   }
   if (!atomicRows.length) warningSet.add("Фильтрам не соответствуют наблюдаемые остатки, продажи или открытые заказы; отсутствие строк не доказывает нулевые продажи до начала доступной истории.");
@@ -1302,16 +1300,18 @@ async function buildTurnoverReport(
   if (missingStockDates.length) warningSet.add(`Нет обязательных дневных снимков: ${missingStockDates.length} из ${expectedDates.length}. Средние остатки и зависимые коэффициенты недоступны, снимки не переносятся вперёд.`);
   if (!snapshots.has(params.from)) warningSet.add("Нет снимка точно на начало периода; начальные остатки неизвестны.");
   if (missingPeriodSales) warningSet.add("Не во все дни выбранного периода есть проведённый розничный отчёт магазина либо подтверждение пустого дня по отчётам и чекам; продажи соответствующих строк — н/д, а не ноль.");
-  if (missingWindowSales) warningSet.add("Часть окон 7/14/30 дней не покрыта историей розничных отчётов; сравнение этих окон недоступно.");
+  if (!standardQuantity && missingWindowSales) warningSet.add("Часть окон 7/14/30 дней не покрыта историей розничных отчётов; сравнение этих окон недоступно.");
   if (receiptsWithoutRetailReport) warningSet.add("В части дней есть проведённые чеки, но нет розничного отчёта магазина (возможна незакрытая смена); продажи этих дней неизвестны, не заменены нулём и не смешаны с чеками.");
-  if (missingMoney) warningSet.add("Часть денежных показателей недоступна из-за пропусков снимков или учётных цен. Нулевая, отрицательная или пустая цена не считается бесплатным товаром и не заменяется более старой ценой.");
-  if (!source.brands.length || selectedPairs.some((pair) => !pair.brand)) warningSet.add("Справочник брендов не заполнен или привязки отсутствуют. Бренд по названию товара не угадывается.");
+  if (!standardQuantity && missingMoney) warningSet.add("Часть денежных показателей недоступна из-за пропусков снимков или учётных цен. Нулевая, отрицательная или пустая цена не считается бесплатным товаром и не заменяется более старой ценой.");
+  if (!standardQuantity && (!source.brands.length || selectedPairs.some((pair) => !pair.brand))) warningSet.add("Справочник брендов не заполнен или привязки отсутствуют. Бренд по названию товара не угадывается.");
   if (selectedPairs.some((pair) => pair.unit.startsWith("Единица не указана"))) warningSet.add("У части SKU нет подтверждённой базовой единицы. Такие SKU не суммируются между собой и не участвуют в перемещениях.");
   if (visibleAtomic.length && totals.overall.unit === null) warningSet.add("Общее количество, количественные коэффициенты и дни запаса не рассчитаны: в отборе разные или неизвестные базовые единицы. Денежные суммы не зависят от единиц.");
-  if (params.norms.defaults.highStockCost === null) warningSet.add("Денежный порог высокого запаса по умолчанию не задан; правило замораживания средств применимо только к категориям с явно заданным порогом.");
-  warningSet.add("Себестоимость продаж — оценка количества по учётной цене на начало дня, а не подтверждённый бухгалтерский COGS; розничная выручка не участвует в коэффициенте.");
-  warningSet.add("Исторические статусы заказов не версионируются: учтены текущие незакрытые проведённые заказы, созданные до даты отчёта, за вычетом проведённых к той дате поступлений.");
-  warningSet.add("Штрихкоды получены из проведённых чеков до конца периода; это наблюдаемые значения, не полный справочник карточек товара.");
+  if (!standardQuantity) {
+    if (params.norms.defaults.highStockCost === null) warningSet.add("Денежный порог высокого запаса по умолчанию не задан; правило замораживания средств применимо только к категориям с явно заданным порогом.");
+    warningSet.add("Себестоимость продаж — оценка количества по учётной цене на начало дня, а не подтверждённый бухгалтерский COGS; розничная выручка не участвует в коэффициенте.");
+    warningSet.add("Исторические статусы заказов не версионируются: учтены текущие незакрытые проведённые заказы, созданные до даты отчёта, за вычетом проведённых к той дате поступлений.");
+    warningSet.add("Штрихкоды получены из проведённых чеков до конца периода; это наблюдаемые значения, не полный справочник карточек товара.");
+  }
   const optionSort = (values: TurnoverOption[]) => values.sort((a, b) => a.name.localeCompare(b.name, "ru") || a.key.localeCompare(b.key));
   const categoryOptions = new Map<string, string>(source.items.filter((item) => item.folder).map((item) => [item.key, item.name]));
   for (const group of source.groups) categoryOptions.set(group.key, group.name);
@@ -1366,7 +1366,7 @@ async function buildTurnoverReport(
       "Среднедневные продажи за произвольный период делятся на max(1,N−1). Оперативные окна делятся на настоящие 7/14/30 календарных дней; предыдущее окно той же длины непосредственно предшествует текущему. Процент при нулевой/отрицательной базе не рассчитывается.",
       "Учётная стоимость: исторический активный регистр точного магазина/SKU/характеристики → документ установки этого магазина → явно общий документ без магазина. Цена выбирается отдельно для каждой даты; другие магазины, будущие цены и закупочные оценки не используются. Последняя неположительная/пустая цена означает отсутствие стоимости, а не возврат к более старой цене.",
       "Для дневных продаж применяется последняя цена не позже начала дня; внутридневная более поздняя цена не попадает в ранние продажи. Для закрытия применяется последняя цена строго до следующей полуночи. Количество × цена — сопоставимая оценка по учётной цене, не фактическая стоимость партий. Выручка показана отдельно в исходных суммах 1С, с содержащимся в них НДС.",
-      "Единица — ссылка базовой единицы карточки 1С. Разные ссылки, включая одинаковые подписи, разделены и различимы по суффиксу; неизвестная единица изолирована по SKU. Литры, килограммы и штуки не суммируются.",
+      "Количество группируется по базовой единице 1С, а не по её отображаемому названию. Литры, килограммы и штуки не складываются.",
       "Магазин — физическая точка: ключи catalog_magaziny с одинаковым точным адресом от «г.» объединяются, остатки и продажи юридических лиц суммируются, а себестоимость каждого исходного ключа применяется до объединения. По умолчанию retail-охват включает только физические магазины с проведёнными розничными отчётами; офисы и отделы доступны явно через storeScope=all. Склад по умолчанию — склад выбранного магазина; удалённые и помеченные «не использовать» склады исключены.",
       "excludeZero удаляет строку только тогда, когда все дневные остатки и продажи равны точному нулю за весь период в выбранном режиме. Пропуски, null и нулевая продажа при ненулевом остатке не считаются нулевой строкой.",
       "По умолчанию в отбор входят строки с полным расчётом и товары с положительным конечным остатком без продаж, возвратов и закупок за проверенный период. Закупка — проведённое поступление товара, а не заказ поставщику. Дни оборота при нулевых продажах не определены. includeIncomplete=true дополнительно возвращает прочие строки с недоступными значениями.",
