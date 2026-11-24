@@ -67,6 +67,12 @@ const collapseAll = (dialog: Locator) => dialog.getByRole("button", { name: "С�
 const products = (dialog: Locator) => dialog.locator("tbody .turnover-preview-product");
 const groups = (dialog: Locator) => dialog.locator("tr[data-turnover-boundary=group] button");
 const viewport = (dialog: Locator) => dialog.getByRole("region", { name: "Таблица оборачиваемости" });
+const sticky = (dialog: Locator) => dialog.locator(".turnover-preview-sticky");
+const pinnedGroup = (dialog: Locator) => sticky(dialog).locator(".turnover-group-toggle");
+const overallTotals = (dialog: Locator) => dialog.getByRole("rowgroup", { name: "Итог по всему отбору", exact: true });
+const storeTotals = (dialog: Locator) => dialog.locator('tbody:has(> tr[data-turnover-boundary="subtotal"])');
+const quantityTotals = (scope: Locator) => scope.locator("tr.turnover-quantity-total");
+const financialTotal = (scope: Locator) => scope.locator("tr.turnover-money-total");
 const query = (route: Route) => new URL(route.request().url()).searchParams;
 const frame = (page: Page) => page.evaluate(() => {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -129,6 +135,7 @@ function cellText(cells: Locator): Promise<string[]> {
 
 const cells = (row: Locator) => cellText(row.locator("td"));
 const moneyCells = (row: Locator) => cellText(row.locator("td.turnover-money"));
+const quantityCells = (row: Locator) => cellText(row.locator("td:not([colspan])"));
 
 function names(dialog: Locator): Promise<string[]> {
   return products(dialog).evaluateAll(headers => headers.map(header => {
@@ -234,7 +241,12 @@ test("one category starts closed; original quantities precede the three stored c
   const product = productRow(dialog, 0);
   assert.deepEqual(await cells(product), ["20", "10", "2,5", "3", "25", "1,2", "123,45", "150", "2,75"]);
   assert.deepEqual(await moneyCells(product), ["123,45", "150", "2,75"]);
-  assert.deepEqual(await cells(table.locator("tfoot")), ["20", "10", "2,5", "3", "25", "1,2", "100", "250", "1,2"]);
+  const footer = overallTotals(dialog);
+  assert.equal(await footer.getByRole("row").count(), 2);
+  assert.equal(await quantityTotals(footer).getByRole("rowheader").textContent(), "ИТОГО по всему отбору, шт.");
+  assert.equal(await financialTotal(footer).getByRole("rowheader").textContent(), "ИТОГО по всему отбору, ₸");
+  assert.deepEqual(await quantityCells(quantityTotals(footer)), ["20", "10", "2,5", "3", "25", "1,2"]);
+  assert.deepEqual(await moneyCells(financialTotal(footer)), ["100", "250", "1,2"]);
   assert.doesNotMatch(await dialog.textContent() ?? "", /fd33bbe6|По стоимости|Розничная выручка|SKU|Артикул|sku-0|article-0|Подробные столбцы|Остаток на начало|Остаток на конец|Оборотов за период:|n\/a|Шкала коэффициента|\b400\b/);
   await days.click();
   assert.equal(await dialog.getByRole("button", { name: "Скрыть дни" }).getAttribute("aria-expanded"), "true");
@@ -331,7 +343,9 @@ test("two-day selection keeps both half-endpoints and uses authoritative overall
   await dialog.getByRole("button", { name: "Показать дни (2)" }).waitFor();
   await expandAll(dialog).click();
   assert.deepEqual(await cells(productRow(dialog, 0)), ["150", "777", "4", "2", "25", "0,5", "100", "250", "1,2"]);
-  assert.deepEqual(await cells(dialog.locator("tfoot")), ["100", "50", "7", "2", "350", "0,43", "100", "250", "1,2"]);
+  const footer = overallTotals(dialog);
+  assert.deepEqual(await quantityCells(quantityTotals(footer)), ["100", "50", "7", "2", "350", "0,43"]);
+  assert.deepEqual(await moneyCells(financialTotal(footer)), ["100", "250", "1,2"]);
   assert.doesNotMatch(await dialog.locator("header").allTextContents().then(value => value.join(" ")) ?? "", /350/);
 });
 
@@ -373,9 +387,11 @@ test("incomplete selection hides ineligible quantity rows and withholds totals f
   assert.equal(await dialog.locator('tbody td:not(.turnover-money) [aria-label="Показатель не рассчитан"]').count(), 0);
   assert.deepEqual(await moneyCells(productRow(dialog, 1)), ["—", "250", "1,2"]);
   assert.match(await dialog.textContent() ?? "", /Исключено строк без полного расчёта: 4/);
-  assert.notEqual((await cells(dialog.locator("tfoot")))[2], "2,5");
-  assert.ok(await dialog.locator('tfoot [aria-label="Показатель не рассчитан"]').count() > 0);
-  assert.deepEqual(await moneyCells(dialog.locator("tfoot")), ["—", "—", "—"]);
+  const footer = overallTotals(dialog);
+  assert.equal(await quantityTotals(footer).count(), 0);
+  assert.equal(await financialTotal(footer).locator('[aria-label="Показатель не рассчитан"]').count(), 3);
+  assert.deepEqual(await moneyCells(financialTotal(footer)), ["—", "—", "—"]);
+  assert.match(await dialog.getByRole("status").textContent() ?? "", /Количественный итог недоступен/);
   await closeButton(dialog).click();
   await page.getByText("Дополнительные настройки", { exact: true }).click();
   await page.getByLabel("Включить строки без полного расчёта").check();
@@ -396,41 +412,71 @@ test("missing identifiers and units stay neutral and do not add quantitative col
   Object.assign(data.rows[0], { sku: "", article: null, storeKey: null, storeName: "Stale store name", unit: null,
     rootGroupKey: "unnamed", rootGroupName: "" });
   data.totals.overall.unit = null;
+  data.totals.byStore = [{ storeKey: null, total: data.totals.overall, byUnit: [] }];
   const { dialog } = await view(t, data);
   await expandAll(dialog).click();
   assert.match(await dialog.textContent() ?? "", /Магазин не определён.*Группа без названия/s);
   assert.doesNotMatch(await dialog.textContent() ?? "", /SKU:|Артикул:|n\/a|Stale store name/);
   assert.equal(await dialog.getByRole("columnheader", { name: /^(Магазин|Единица)$/ }).count(), 0);
   assert.equal((await cells(productRow(dialog, 0))).length, 9);
-  assert.equal(await dialog.locator("tfoot th").textContent(), "ИТОГО по всему отбору");
-  assert.equal(await dialog.locator(".turnover-total-unit select").count(), 0);
-  assert.deepEqual(await moneyCells(dialog.locator("tfoot")), ["100", "250", "1,2"]);
-  assert.match(await dialog.textContent() ?? "", /Количественный итог недоступен: разные или неизвестные единицы/);
+  for (const [scope, label] of [
+    [overallTotals(dialog), "ИТОГО по всему отбору, ₸"],
+    [storeTotals(dialog), "ИТОГО по магазину, ₸"]
+  ] as const) {
+    assert.equal(await scope.getByRole("row").count(), 1);
+    assert.equal(await quantityTotals(scope).count(), 0);
+    assert.equal(await financialTotal(scope).getByRole("rowheader").textContent(), label);
+    assert.deepEqual(await moneyCells(financialTotal(scope)), ["100", "250", "1,2"]);
+  }
+  assert.equal(await dialog.getByRole("combobox").count(), 0);
+  assert.match(await dialog.getByRole("status").textContent() ?? "", /Количественный итог недоступен/);
   for (const span of await dialog.locator('th[scope="rowgroup"]').evaluateAll(headers => headers.map(header => (header as HTMLTableCellElement).colSpan))) {
     assert.equal(span, 10);
   }
 });
 
-test("mixed totals switch only their own quantity unit, keeping one authoritative cost total per scope", async t => {
+test("an opted-in homogeneous server unit named N/A² still has scoped quantity totals", async t => {
+  const data = report();
+  Object.assign(data.params, { profile: "summary", includeIncomplete: true });
+  const item = data.rows[0];
+  item.unit = "N/A²";
+  item.daily = item.daily.map(day => ({ ...day, unit: "N/A²", unitKey: "unit-n-a-squared" }));
+  const total = { ...data.totals.overall, unit: item.unit, daily: item.daily };
+  data.totals.overall = total;
+  data.totals.byStore = [{ storeKey: item.storeKey, total, byUnit: [] }];
+  const { dialog } = await view(t, data);
+  for (const [scope, label] of [
+    [overallTotals(dialog), "ИТОГО по всему отбору"],
+    [storeTotals(dialog), "ИТОГО по магазину"]
+  ] as const) {
+    assert.equal(await quantityTotals(scope).getByRole("rowheader").textContent(), `${label}, N/A²`);
+    assert.deepEqual(await quantityCells(quantityTotals(scope)), ["20", "10", "2,5", "3", "25", "1,2"]);
+    assert.equal(await financialTotal(scope).getByRole("rowheader").textContent(), `${label}, ₸`);
+  }
+});
+
+test("every keyed unit has its own quantity total and every scope has one independent financial total", async t => {
   const data = report();
   data.params.profile = "summary";
   const units = [
     { unitKey: "unit:pieces", unit: "шт", averageQty: 10, quantity: 109 },
     { unitKey: "unit-kilograms", unit: "кг", averageQty: 6, quantity: 15 },
+    { unitKey: "unit-kilograms-other", unit: "кг", averageQty: null, quantity: null },
     { unitKey: "unit-litres", unit: "л", averageQty: 4, quantity: -9 },
-    { unitKey: "unit-packs", unit: "упак", averageQty: 0, quantity: 0 }
+    { unitKey: "unit-packs", unit: "упак", averageQty: 0, quantity: 0 },
+    { unitKey: "unit-boxes", unit: "короб", averageQty: 12, quantity: 36 }
   ];
   const base = data.totals.overall;
   setRows(data, [
     ...units.map(({ unit }, index) => ({ ...row(index), unit })),
-    { ...row(4), storeKey: "store-b", storeName: "Магазин Б" }
+    { ...row(units.length), storeKey: "store-b", storeName: "Магазин Б" }
   ]);
   data.totals.byUnit = units.map(({ unitKey, unit, averageQty, quantity }, index) => ({
     ...base, unitKey, unit, averageQty, averageCost: 20 + index,
     daily: base.daily.map(day => ({ ...day, unit, quantity: averageQty })),
     periodSales: { ...base.periodSales, quantity, cost: 900 + index },
-    turnoverQty: quantity < 0 ? null : quantity ? 2.5 : 0,
-    turnoverQtyDays: quantity > 0 ? 1.2 : null, turnoverCostDays: 33 + index
+    turnoverQty: quantity === null || quantity < 0 ? null : quantity ? 2.5 : 0,
+    turnoverQtyDays: quantity !== null && quantity > 0 ? 1.2 : null, turnoverCostDays: 33 + index
   }));
   data.totals.overall = {
     ...base, unit: null, daily: [], openingQty: null, closingQty: null, averageQty: null,
@@ -444,7 +490,7 @@ test("mixed totals switch only their own quantity unit, keeping one authoritativ
       byUnit: data.totals.byUnit.map((unit, index) => ({
         ...unit, averageQty: unit.averageQty === null ? null : unit.averageQty / 2,
         daily: unit.daily.map(day => ({ ...day, quantity: day.quantity === null ? null : day.quantity / 2 })),
-        periodSales: { ...unit.periodSales, quantity: [108, 14, -10, 0][index] }
+        periodSales: { ...unit.periodSales, quantity: [108, 14, null, -10, 0, 35][index] }
       })) },
     { storeKey: "store-b", byUnit: [],
       total: { ...base, averageCost: 0, turnoverCostDays: null,
@@ -452,69 +498,58 @@ test("mixed totals switch only their own quantity unit, keeping one authoritativ
   ];
 
   const { dialog } = await view(t, data);
-  const overall = dialog.locator("tfoot tr");
-  const subtotals = dialog.locator('tbody tr[data-turnover-boundary="subtotal"]');
+  const overall = overallTotals(dialog);
+  const subtotals = storeTotals(dialog);
   const firstStore = subtotals.nth(0);
   const secondStore = subtotals.nth(1);
-  const overallUnit = overall.locator(".turnover-total-unit select");
-  const storeUnit = firstStore.locator(".turnover-total-unit select");
   assert.equal(await products(dialog).count(), 0);
-  assert.equal(await overall.count(), 1);
   assert.equal(await subtotals.count(), 2);
-  assert.equal(await dialog.locator(".turnover-total-unit select").count(), 2);
-  assert.equal(await overall.getByRole("rowheader", { name: /^ИТОГО по всему отбору/ }).count(), 1);
-  for (const subtotal of [firstStore, secondStore]) {
-    assert.equal(await subtotal.getByRole("rowheader", { name: /^ИТОГО по магазину/ }).count(), 1);
-  }
+  assert.equal(await dialog.getByRole("combobox").count(), 1);
+  assert.equal(await dialog.getByRole("combobox", { name: "Перейти к магазину", exact: true }).count(), 1);
   await dialog.getByRole("button", { name: "Показать дни (3)" }).click();
-  for (const select of [overallUnit, storeUnit]) {
-    assert.equal(await select.inputValue(), "unit:pieces");
-    assert.deepEqual(await select.locator("option").evaluateAll(options =>
-      options.map(option => [(option as HTMLOptionElement).value, option.textContent?.trim()])
-    ), units.map(({ unitKey, unit }) => [unitKey, unit]));
-  }
 
-  const expectedOverallMoney = ["1 234,5", "267,5", "4,75"];
-  const expectedStoreMoney = ["976,75", "-5,5", "—"];
-  const initialOverall = ["10", "5", "10", "5", "10", "20", "10", "2,5", "3", "109", "1,2", ...expectedOverallMoney];
-  const initialStore = ["5", "2,5", "5", "2,5", "5", "10", "5", "2,5", "3", "108", "1,2", ...expectedStoreMoney];
-  const untouchedStore = ["8", "4", "10", "6", "12", "20", "10", "2,5", "3", "12", "1,2", "0", "—", "—"];
-  assert.deepEqual(await cells(overall), initialOverall);
-  assert.deepEqual(await cells(firstStore), initialStore);
-  assert.deepEqual(await cells(secondStore), untouchedStore);
+  const expected = [
+    ["шт", ["10", "5", "10", "5", "10", "20", "10", "2,5", "3", "109", "1,2"],
+      ["5", "2,5", "5", "2,5", "5", "10", "5", "2,5", "3", "108", "1,2"]],
+    ["кг (1)", ["6", "3", "6", "3", "6", "12", "6", "2,5", "3", "15", "1,2"],
+      ["3", "1,5", "3", "1,5", "3", "6", "3", "2,5", "3", "14", "1,2"]],
+    ["кг (2)", ["—", "—", "—", "—", "—", "—", "—", "—", "3", "—", "—"],
+      ["—", "—", "—", "—", "—", "—", "—", "—", "3", "—", "—"]],
+    ["л", ["4", "2", "4", "2", "4", "8", "4", "—", "3", "-9", "—"],
+      ["2", "1", "2", "1", "2", "4", "2", "—", "3", "-10", "—"]],
+    ["упак", ["0", "0", "0", "0", "0", "0", "0", "0", "3", "0", "—"],
+      ["0", "0", "0", "0", "0", "0", "0", "0", "3", "0", "—"]],
+    ["короб", ["12", "6", "12", "6", "12", "24", "12", "2,5", "3", "36", "1,2"],
+      ["6", "3", "6", "3", "6", "12", "6", "2,5", "3", "35", "1,2"]]
+  ] as const;
 
-  for (const [key, quantity] of [
-    ["unit-kilograms", ["6", "3", "6", "3", "6", "12", "6", "2,5", "3", "15", "1,2"]],
-    ["unit-litres", ["4", "2", "4", "2", "4", "8", "4", "—", "3", "-9", "—"]],
-    ["unit-packs", ["0", "0", "0", "0", "0", "0", "0", "0", "3", "0", "—"]]
+  for (const [scope, label, money, units] of [
+    [overall, "ИТОГО по всему отбору", ["1 234,5", "267,5", "4,75"],
+      expected.map(([unit, values]) => [unit, values] as const)],
+    [firstStore, "ИТОГО по магазину", ["976,75", "-5,5", "—"],
+      expected.map(([unit, , values]) => [unit, values] as const)],
+    [secondStore, "ИТОГО по магазину", ["0", "—", "—"],
+      [["шт.", ["8", "4", "10", "6", "12", "20", "10", "2,5", "3", "12", "1,2"]]]]
   ] as const) {
-    await overallUnit.selectOption(key);
-    assert.deepEqual(await cells(overall), [...quantity, ...expectedOverallMoney]);
-    assert.deepEqual(await moneyCells(overall), expectedOverallMoney);
-    assert.equal(await storeUnit.inputValue(), "unit:pieces");
-    assert.deepEqual(await cells(firstStore), initialStore);
-    assert.deepEqual(await cells(secondStore), untouchedStore);
+    assert.equal(await scope.getByRole("row").count(), units.length + 1);
+    assert.equal(await quantityTotals(scope).count(), units.length);
+    assert.equal(await financialTotal(scope).count(), 1);
+    for (const [unit, values] of units) {
+      const total = scope.getByRole("rowheader", { name: `${label}, ${unit}`, exact: true }).locator("..");
+      assert.equal(await total.count(), 1);
+      assert.deepEqual(await quantityCells(total), values);
+      assert.deepEqual(await cellText(total.locator('td[colspan="3"]')), [""]);
+      assert.equal(await total.locator('[aria-label="Показатель не рассчитан"]').count(), values.filter(value => value === "—").length);
+    }
+    const financial = financialTotal(scope);
+    assert.equal(await financial.getByRole("rowheader").textContent(), `${label}, ₸`);
+    assert.deepEqual(await moneyCells(financial), money);
+    assert.deepEqual(await cellText(financial.locator('td[colspan="11"]')), [""]);
   }
-  const overallWithPacks = await cells(overall);
-  for (const [key, quantity] of [
-    ["unit-litres", ["2", "1", "2", "1", "2", "4", "2", "—", "3", "-10", "—"]],
-    ["unit-packs", ["0", "0", "0", "0", "0", "0", "0", "0", "3", "0", "—"]],
-    ["unit-kilograms", ["3", "1,5", "3", "1,5", "3", "6", "3", "2,5", "3", "14", "1,2"]]
-  ] as const) {
-    await storeUnit.selectOption(key);
-    assert.deepEqual(await cells(firstStore), [...quantity, ...expectedStoreMoney]);
-    assert.deepEqual(await moneyCells(firstStore), expectedStoreMoney);
-    assert.equal(await overallUnit.inputValue(), "unit-packs");
-    assert.deepEqual(await cells(overall), overallWithPacks);
-    assert.deepEqual(await cells(secondStore), untouchedStore);
-  }
-  assert.deepEqual(await moneyCells(secondStore), ["0", "—", "—"]);
   await expandAll(dialog).click();
   const body = (await dialog.locator("tbody").allTextContents()).join(" ");
-  assert.ok(body.indexOf("ИТОГО по магазину") > body.indexOf("Товар 3"));
-  assert.ok(body.indexOf("ИТОГО по магазину") < body.indexOf("Товар 4"));
-  assert.equal(await storeUnit.inputValue(), "unit-kilograms");
-  assert.equal(await overallUnit.inputValue(), "unit-packs");
+  assert.ok(body.indexOf("ИТОГО по магазину") > body.indexOf("Товар 5"));
+  assert.ok(body.indexOf("ИТОГО по магазину") < body.indexOf("Товар 6"));
   assert.doesNotMatch(await dialog.textContent() ?? "", /unit:pieces|unit-kilograms|\b9 999\b|\b8 888\b/);
 });
 
@@ -589,12 +624,13 @@ test("148 paired rows stay in server order, independently disclose keyed groups,
   assert.equal(await collapseAll(dialog).isEnabled(), false);
   assert.equal(await dialog.locator('tr[data-turnover-boundary="store"]').count(), 2);
   assert.equal(await groups(dialog).count(), 8);
-  assert.equal(await dialog.getByRole("button", { name: /Без группы/ }).count(), 2);
+  assert.equal(await groups(dialog).filter({ hasText: "Без группы" }).count(), 2);
   assert.equal(data.rows[0].rootGroupName, data.rows[30].rootGroupName);
   assert.notEqual(data.rows[0].rootGroupKey, data.rows[30].rootGroupKey);
   assert.equal(data.rows[0].rootGroupKey, data.rows[74].rootGroupKey);
-  const collapsedTotals = await cells(dialog.locator("tbody tr.turnover-overall-total, tfoot"));
-  assert.ok(collapsedTotals.length > 0);
+  assert.equal(await financialTotal(dialog).count(), 3);
+  const totalRows = dialog.locator("tr.turnover-quantity-total, tr.turnover-money-total");
+  const collapsedTotals = await Promise.all((await totalRows.all()).map(cells));
   await groups(dialog).nth(0).click();
   assert.deepEqual(await names(dialog), data.rows.slice(0, 30).map(item => item.name));
   assert.equal(await groups(dialog).nth(1).getAttribute("aria-expanded"), "false");
@@ -608,7 +644,7 @@ test("148 paired rows stay in server order, independently disclose keyed groups,
   assert.equal(await collapseAll(dialog).isEnabled(), true);
   assert.deepEqual(await names(dialog), data.rows.map(item => item.name));
   assert.equal(await dialog.getByRole("navigation", { name: /Страницы отчёта/ }).count(), 0);
-  assert.deepEqual(await cells(dialog.locator("tbody tr.turnover-overall-total, tfoot")), collapsedTotals);
+  assert.deepEqual(await Promise.all((await totalRows.all()).map(cells)), collapsedTotals);
   const scroll = await viewport(dialog).boundingBox();
   assert.ok(scroll);
   for (const index of [0, 147, 100]) {
@@ -648,16 +684,19 @@ test("same-named stores retain independent subtotals and accessible cell headers
   const keys = ["store-a", "store-b"];
   setRows(data, keys.map((storeKey, i) => ({ ...row(i), storeKey, storeName: "Магазин" })));
   data.totals.byStore = keys.map((storeKey, i) => ({
-    storeKey, byUnit: [], total: { ...data.totals.overall, periodSales: { ...data.totals.overall.periodSales, quantity: 12 + i } }
+    storeKey, byUnit: [], total: { ...data.totals.overall,
+      periodSales: { ...data.totals.overall.periodSales, quantity: 12 + i, cost: 100 + i } }
   }));
   const { dialog } = await view(t, data);
-  const sectionSequence = () => dialog.locator("tbody tr").evaluateAll(rows => rows.map(row =>
-    row.getAttribute("data-turnover-boundary") === "subtotal" ? row.querySelectorAll("td")[4].textContent
-      : row.getAttribute("data-turnover-boundary") ?? row.querySelector("th")?.firstChild?.textContent));
-  assert.deepEqual(await sectionSequence(), ["store", "group", "12", "store", "group", "13"]);
+  const sectionSequence = () => dialog.locator("tbody tr").evaluateAll(rows => rows.map(row => {
+    if (row.matches(".turnover-quantity-total")) return row.querySelectorAll("td")[4].textContent;
+    if (row.matches(".turnover-money-total")) return `₸ ${row.querySelectorAll("td.turnover-money")[1].textContent}`;
+    return row.getAttribute("data-turnover-boundary") ?? row.querySelector("th")?.firstChild?.textContent;
+  }));
+  assert.deepEqual(await sectionSequence(), ["store", "group", "12", "₸ 100", "store", "group", "13", "₸ 101"]);
   await groups(dialog).nth(1).click();
   assert.deepEqual(await names(dialog), ["Товар 1"]);
-  assert.deepEqual(await sectionSequence(), ["store", "group", "12", "store", "group", "Товар 1", "13"]);
+  assert.deepEqual(await sectionSequence(), ["store", "group", "12", "₸ 100", "store", "group", "Товар 1", "13", "₸ 101"]);
   const item = data.rows[1];
   const product = productRow(dialog, 0);
   for (const [metric, label] of [
@@ -741,7 +780,7 @@ test("split-view store jump reaches keyed homonymous headings without recalculat
   assert.equal(workbooks.count, 0);
 });
 
-test("sticky headers follow store and subtotal boundaries; the final mixed total is compact and accessible", async t => {
+test("sticky context follows store and subtotal boundaries; the final financial total is reachable", async t => {
   const data = report();
   Object.assign(data.params, { profile: "summary", sort: "name" });
   setRows(data, Array.from({ length: 150 }, (_, index) => ({
@@ -755,48 +794,161 @@ test("sticky headers follow store and subtotal boundaries; the final mixed total
     ...data.totals.overall, unitKey: `unit-${index}`, unit: `Единица ${index}`
   }));
   const { page, dialog } = await view(t, data);
-  assert.equal(await dialog.locator(".turnover-preview-sticky button").count(), 0);
-  const sticky = dialog.locator(".turnover-preview-sticky");
   const head = dialog.locator("thead");
   const scroll = viewport(dialog);
   await expandAll(dialog).click();
   await scrollToRow(dialog, productRow(dialog, 35), 0.3);
-  await sticky.getByText("Магазин А", { exact: true }).waitFor();
-  await sticky.getByText("Первая группа", { exact: true }).waitFor();
+  await sticky(dialog).getByText("Магазин А", { exact: true }).waitFor();
+  await sticky(dialog).getByRole("button", { name: /Первая группа/ }).waitFor();
   const [headBox, scrollBox, storeBox] = await Promise.all([
-    head.boundingBox(), scroll.boundingBox(), sticky.locator(".turnover-preview-store").boundingBox()
+    head.boundingBox(), scroll.boundingBox(), sticky(dialog).locator(".turnover-preview-store").boundingBox()
   ]);
   assert.ok(headBox && scrollBox && storeBox && Math.abs(headBox.y - scrollBox.y) < 3,
     "column headers stay at the top of the scroller");
-  const firstSubtotal = dialog.locator('tr[data-turnover-boundary="subtotal"]').first();
+  const firstSubtotal = storeTotals(dialog).first();
   await scrollToRow(dialog, firstSubtotal, (headBox.height + storeBox.height) / scrollBox.height);
-  await sticky.getByText("Первая группа", { exact: true }).waitFor({ state: "hidden" });
-  assert.equal(await sticky.getByText("Магазин А", { exact: true }).isVisible(), true);
-  await groups(dialog).nth(1).focus();
+  await pinnedGroup(dialog).waitFor({ state: "hidden" });
+  assert.equal(await sticky(dialog).getByText("Магазин А", { exact: true }).isVisible(), true);
   await scrollToRow(dialog, productRow(dialog, 110), 0.3);
-  await sticky.getByText("Магазин Б", { exact: true }).waitFor();
-  await sticky.getByText("Вторая группа", { exact: true }).waitFor();
-  assert.equal(await sticky.getByText("Магазин А", { exact: true }).isVisible(), false);
-  assert.equal(await sticky.getByText("Первая группа", { exact: true }).isVisible(), false);
-  await page.keyboard.press("Enter");
-  await frame(page);
-  const [groupBox, collapseBox] = await Promise.all([groups(dialog).nth(1).boundingBox(), scroll.boundingBox()]);
-  assert.ok(groupBox && collapseBox && groupBox.y >= collapseBox.y && groupBox.y + groupBox.height <= collapseBox.y + collapseBox.height);
-  await expandAll(dialog).click();
-  const footer = dialog.getByRole("rowgroup", { name: "Итог по всему отбору", exact: true });
-  assert.equal(await footer.getByRole("row").count(), 1);
-  assert.equal(await footer.getByRole("rowheader", { name: /^ИТОГО по всему отбору/ }).count(), 1);
-  const unit = footer.getByRole("combobox", { name: /\S/ });
-  assert.equal(await unit.evaluate(element => element.tagName), "SELECT");
-  assert.equal(await unit.inputValue(), "unit-0");
-  assert.equal(await unit.locator("option").count(), 4);
+  await sticky(dialog).getByText("Магазин Б", { exact: true }).waitFor();
+  await sticky(dialog).getByRole("button", { name: /Вторая группа/ }).waitFor();
+  assert.equal(await sticky(dialog).getByText("Магазин А", { exact: true }).isVisible(), false);
+  assert.equal(await sticky(dialog).getByText("Первая группа", { exact: true }).isVisible(), false);
+  const footer = overallTotals(dialog);
+  assert.equal(await quantityTotals(footer).count(), 4);
+  assert.equal(await financialTotal(footer).count(), 1);
   assert.equal(await footer.evaluate(element => element.previousElementSibling?.firstElementChild
     ?.getAttribute("data-turnover-boundary")), "subtotal");
   await scroll.evaluate(element => { element.scrollTop = element.scrollHeight; });
   await frame(page);
-  const [footerBox, pinnedHead] = await Promise.all([footer.boundingBox(), head.boundingBox()]);
-  assert.ok(footerBox && pinnedHead && footerBox.y >= pinnedHead.y + pinnedHead.height
-    && footerBox.y + footerBox.height <= scrollBox.y + scrollBox.height + 1);
+  const [moneyBox, pinnedHead] = await Promise.all([financialTotal(footer).boundingBox(), head.boundingBox()]);
+  assert.ok(moneyBox && pinnedHead && moneyBox.y >= pinnedHead.y + pinnedHead.height
+    && moneyBox.y + moneyBox.height <= scrollBox.y + scrollBox.height + 1);
+});
+
+test("source and pinned categories respond across both scroll axes and return keyboard focus", async t => {
+  const data = report();
+  data.params.profile = "summary";
+  setRows(data, Array.from({ length: 224 }, (_, index) => ({
+    ...row(index), storeKey: index < 40 ? "store-a" : "store-b", storeName: "Магазин-тёзка",
+    rootGroupKey: index < 120 ? "shared-root" : "other-root", rootGroupName: "Категория-тёзка"
+  })));
+  data.totals.byStore = ["store-a", "store-b"].map(storeKey => ({ storeKey, total: data.totals.overall, byUnit: [] }));
+  const { page, dialog } = await view(t, data);
+  const scroll = viewport(dialog);
+  const source = groups(dialog).nth(1);
+  const pinned = pinnedGroup(dialog);
+  const expandedStates = () => groups(dialog).evaluateAll(buttons => buttons.map(button => button.getAttribute("aria-expanded")));
+  await groups(dialog).nth(0).press("Enter");
+  await groups(dialog).nth(2).press("Space");
+  await dialog.getByRole("button", { name: "Показать дни (3)" }).click();
+  await scroll.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+  const [, horizontal] = await scrollPosition(dialog);
+  assert.ok(horizontal > 0);
+  const right = await scroll.evaluate(element =>
+    element.getBoundingClientRect().left + element.clientLeft + element.clientWidth - 16);
+
+  async function blankRightEdge(button: Locator) {
+    const box = await button.boundingBox();
+    assert.ok(box);
+    const point = { x: right, y: box.y + box.height / 2 };
+    assert.ok(await button.evaluate((expected, { x, y }) => {
+      const hit = document.elementFromPoint(x, y);
+      return hit !== null && hit.closest("button") === expected && !hit.closest(".turnover-section-label, .turnover-group-count, svg");
+    }, point), "the visible row's blank right edge hits its actual button");
+    return point;
+  }
+
+  for (const activation of ["pointer", "Enter", "Space"] as const) {
+    await scrollToRow(dialog, source, 0.5);
+    await frame(page);
+    const original = await blankRightEdge(source);
+    await page.mouse.click(original.x, original.y);
+    assert.deepEqual(await expandedStates(), ["true", "true", "true"]);
+    await scrollToRow(dialog, productRow(dialog, 100), 0.5);
+    await pinned.waitFor();
+    await frame(page);
+    const [deepTop, left] = await scrollPosition(dialog);
+    assert.equal(left, horizontal);
+    const [pinnedBox, storeBox, sourceBefore] = await Promise.all([
+      pinned.boundingBox(), sticky(dialog).locator(".turnover-preview-store").boundingBox(), source.boundingBox()
+    ]);
+    assert.ok(pinnedBox && storeBox && sourceBefore && sourceBefore.y + sourceBefore.height < storeBox.y);
+    assert.ok(pinnedBox.y >= storeBox.y + storeBox.height - 1);
+    if (activation === "pointer") {
+      const point = await blankRightEdge(pinned);
+      await page.mouse.click(point.x, point.y);
+    } else {
+      await scroll.focus();
+      await page.keyboard.press("Tab");
+      assert.ok(await pinned.evaluate(button => button === document.activeElement));
+      await page.keyboard.press(activation);
+      assert.ok(await source.evaluate(button => button === document.activeElement));
+    }
+    await frame(page);
+    assert.deepEqual(await expandedStates(), ["true", "false", "true"]);
+    assert.deepEqual(await names(dialog), [...data.rows.slice(0, 40), ...data.rows.slice(120)].map(item => item.name));
+    const sourceAfter = await source.boundingBox();
+    assert.ok(sourceAfter && Math.abs(sourceAfter.y - pinnedBox.y) <= 2,
+      "the original heading replaces its pinned copy immediately below the pinned stack");
+    await blankRightEdge(source);
+    const [anchoredTop, anchoredLeft] = await scrollPosition(dialog);
+    assert.equal(anchoredLeft, horizontal);
+    const maxTop = await scroll.evaluate(element => element.scrollHeight - element.clientHeight);
+    assert.ok(anchoredTop > 0 && anchoredTop + 300 < deepTop && deepTop < maxTop,
+      "collapse anchors the original heading even when the old offset would still be valid");
+
+    if (activation === "pointer") {
+      await page.mouse.move(original.x, original.y);
+      await page.mouse.wheel(0, 160);
+      await page.waitForFunction(top => document.querySelector(".turnover-preview-scroll")!.scrollTop >= top + 100, anchoredTop);
+      const screen = page.viewportSize();
+      assert.ok(screen);
+      // A geometry change must not reapply the collapse anchor after the wheel moved it.
+      await page.setViewportSize({ ...screen, height: screen.height - 40 });
+      await frame(page);
+      const [manualTop, manualLeft] = await scrollPosition(dialog);
+      assert.ok(manualTop >= anchoredTop + 100, "manual scrolling is not pulled back to the collapsed heading");
+      assert.equal(manualLeft, horizontal);
+    }
+  }
+});
+
+test("focus follows a pinned category across a scroll and returns to the viewport when none remains", async t => {
+  const data = report();
+  setRows(data, Array.from({ length: 180 }, (_, i) => ({
+    ...row(i), rootGroupKey: `g${Math.floor(i / 60)}`, rootGroupName: `Раздел ${Math.floor(i / 60)}`
+  })));
+  const { dialog, page } = await view(t, data);
+  await expandAll(dialog).click();
+  const scroll = viewport(dialog), pinned = pinnedGroup(dialog);
+  await scrollToRow(dialog, productRow(dialog, 30), 0.4);
+  await pinned.focus();
+  await scrollToRow(dialog, productRow(dialog, 90), 0.4);
+  await frame(page);
+  assert.match(await pinned.innerText(), /Раздел 1/);
+  assert.ok(await pinned.evaluate(el => el === document.activeElement));
+  await scroll.evaluate(el => { el.scrollTop = 0; });
+  await pinned.waitFor({ state: "hidden" });
+  assert.ok(await scroll.evaluate(el => el === document.activeElement));
+
+  // Enter activates the still-focused original even after scrolling away from it.
+  const source = groups(dialog).nth(1);
+  await source.focus();
+  await scrollToRow(dialog, productRow(dialog, 10), 0.5);
+  await page.keyboard.press("Enter");
+  await frame(page);
+  assert.equal(await source.getAttribute("aria-expanded"), "false");
+  const [button, region, head] = await Promise.all([source.boundingBox(), scroll.boundingBox(), dialog.locator("thead").boundingBox()]);
+  assert.ok(button && region && head && button.y >= head.y + head.height - 2 && button.y + button.height <= region.y + region.height + 1);
+
+  // A scroll with no wheel/pointer/key event (e.g. browser Find) also releases that anchor.
+  await scrollToRow(dialog, productRow(dialog, 100), 0.4);
+  await frame(page);
+  const top = (await scrollPosition(dialog))[0];
+  await page.setViewportSize({ width: 1365, height: 720 });
+  await frame(page);
+  assert.ok(Math.abs((await scrollPosition(dialog))[0] - top) < 3);
 });
 
 test("375 px mobile dialog scrolls both axes independently from the dashboard and wraps category names", async t => {
@@ -873,11 +1025,13 @@ test("5,000 unique SKUs × 31 days have contiguous data in a bounded DOM from st
   await dialog.getByRole("button", { name: "Показать дни (31)" }).click();
   assert.equal(await dialog.locator("thead .turnover-preview-date").count(), 33);
   const blocks = dialog.locator("tbody[data-turnover-block]");
-  const footer = dialog.locator("tfoot");
-  const total = await cells(footer);
-  assert.equal(total.at(-5), "125 030");
-  assert.equal(total.at(-6), "31");
-  assert.deepEqual(await moneyCells(footer), ["100", "280 123,25", "1,2"]);
+  const footer = overallTotals(dialog);
+  const quantity = quantityTotals(footer);
+  const money = financialTotal(footer);
+  const total = await quantityCells(quantity);
+  const financial = await moneyCells(money);
+  assert.deepEqual(total.slice(-3, -1), ["31", "125 030"]);
+  assert.deepEqual(financial, ["100", "280 123,25", "1,2"]);
   const counted = new Set<string>();
   for (const block of await blocks.all()) {
     const blockStart = Number(await block.getAttribute("data-turnover-block"));
@@ -922,7 +1076,8 @@ test("5,000 unique SKUs × 31 days have contiguous data in a bounded DOM from st
   const firstProduct = blocks.first().locator(".turnover-preview-product").first();
   await firstProduct.waitFor({ state: "attached" });
   assert.deepEqual(await cells(firstProduct.locator("..")), ["750", "20", "2,5", "31", "25", "1,2", "200", "250", "4,15"]);
-  assert.deepEqual(await cells(footer), total.slice(-9));
+  assert.deepEqual(await quantityCells(quantity), total.slice(-6));
+  assert.deepEqual(await moneyCells(money), financial);
   assert.equal(previews.count, 1);
 });
 

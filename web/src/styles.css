@@ -3046,8 +3046,7 @@ select:focus {
   gap: 4px 12px;
 }
 
-.turnover-store-jump,
-.turnover-total-unit select {
+.turnover-store-jump {
   max-width: 100%;
   min-width: 0;
   border: 1px solid #aebed1;
@@ -3056,28 +3055,10 @@ select:focus {
   color: #233e5e;
   font: inherit;
   cursor: pointer;
-}
-
-.turnover-store-jump {
   width: 20ch;
   height: 38px;
   margin-inline-end: auto;
   padding-inline: 8px;
-}
-
-.turnover-total-unit {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 2px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.turnover-total-unit select {
-  min-height: 26px;
-  padding: 2px 3px;
-  text-overflow: ellipsis;
 }
 
 .turnover-preview-controls {
@@ -3262,20 +3243,31 @@ select:focus {
 }
 
 .turnover-group-toggle {
-  position: sticky;
-  left: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 100cqi;
-  min-height: var(--turnover-group-height);
-  padding: 4px 8px;
+  display: block;
+  width: 100%;
+  padding: 0;
   border: 0;
   background: transparent;
   color: inherit;
   font: inherit;
   text-align: start;
   cursor: pointer;
+}
+
+.turnover-toggle-content {
+  position: sticky;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: 100cqi;
+  min-height: var(--turnover-group-height);
+  padding: 4px 8px;
+}
+
+.turnover-preview-sticky .turnover-group-toggle {
+  pointer-events: auto;
 }
 
 .turnover-group-toggle:hover {
@@ -3287,12 +3279,12 @@ select:focus {
   outline-offset: -2px;
 }
 
-.turnover-group-toggle > svg,
+.turnover-toggle-content > svg,
 .turnover-group-count {
   flex: none;
 }
 
-.turnover-group-toggle[aria-expanded="true"] > svg {
+.turnover-group-toggle[aria-expanded="true"] .turnover-toggle-content > svg {
   transform: rotate(90deg);
 }
 
@@ -3307,12 +3299,6 @@ select:focus {
   color: var(--turnover-muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-}
-
-.turnover-preview-sticky .turnover-preview-group .turnover-section-label {
-  min-height: var(--turnover-group-height);
-  padding-inline-start: 32px;
-  align-content: center;
 }
 
 .turnover-preview-unit {
@@ -3368,6 +3354,7 @@ select:focus {
   left: 0;
   z-index: 1;
   background: inherit;
+  overflow-wrap: anywhere;
 }
 
 .turnover-preview-table tfoot .turnover-overall-total {
@@ -3375,7 +3362,7 @@ select:focus {
   background: #d9e7f4;
 }
 
-.turnover-by-store tfoot .turnover-overall-total > * {
+.turnover-by-store tfoot > .turnover-overall-total:first-child > * {
   border-top: 12px solid var(--turnover-paper);
   box-shadow: inset 0 2px #627f9f;
 }

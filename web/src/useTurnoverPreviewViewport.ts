@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { TurnoverPreview } from "./api";
 
-type ContextBoundary = { kind: string; top: number; height: number; label: string };
-type StickyContext = { store?: string; group?: string };
+type ContextBoundary = { kind: string; top: number; height: number; label: string; groupStart?: number };
+type StickyContext = { store?: string; groupStart?: number };
 type BlockMeasurements = {
   report: TurnoverPreview; showDays: boolean; width: number; heights: ReadonlyMap<number, number>;
 };
@@ -26,38 +26,65 @@ export function useTurnoverPreviewViewport({ open, report, expanded, showDays, v
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const table = useRef<HTMLTableElement>(null);
-  const afterCollapse = useRef<HTMLElement | "start" | null>(null);
   const [context, setContext] = useState<StickyContext>({});
   const lastContext = useRef(context);
   const [visibleBlocks, setVisibleBlocks] = useState<ReadonlySet<number>>(() => new Set());
   const [measurements, setMeasurements] = useState<BlockMeasurements>();
-  const jumpHeading = useRef<HTMLElement | null>(null);
-  function alignJump() {
-    const scroll = viewport.current, heading = jumpHeading.current;
+  // Keep the activated heading at the same visual offset while virtual blocks settle.
+  // Manual scrolling owns the viewport again from the next wheel, touch or key gesture.
+  const anchor = useRef<{ heading: HTMLElement; belowHead: number } | null>(null);
+  const alignedScrollTop = useRef(0);
+  function alignAnchor() {
+    const scroll = viewport.current, target = anchor.current;
+    if (!target) return;
+    const { heading, belowHead } = target;
     if (!scroll || !heading || !scroll.contains(heading)) return;
     const offset = heading.getBoundingClientRect().top - scroll.getBoundingClientRect().top
-      - scroll.clientTop - (table.current?.tHead?.getBoundingClientRect().height ?? 0);
+      - scroll.clientTop - (table.current?.tHead?.getBoundingClientRect().height ?? 0) - belowHead;
     if (Math.abs(offset) > 1) scroll.scrollTop += offset;
+    alignedScrollTop.current = scroll.scrollTop;
   }
   function jumpToStore(id: string) {
-    jumpHeading.current = document.getElementById(id);
-    alignJump();
+    const heading = document.getElementById(id);
+    if (heading) anchor.current = { heading, belowHead: 0 };
+    alignAnchor();
   }
-  function releaseJump() { jumpHeading.current = null; }
+  function anchorCategory(source: HTMLButtonElement, trigger: HTMLButtonElement) {
+    const scroll = viewport.current;
+    if (!scroll) return;
+    const headHeight = table.current?.tHead?.getBoundingClientRect().height ?? 0;
+    const top = scroll.getBoundingClientRect().top + scroll.clientTop + headHeight;
+    const storeHeight = scroll.querySelector(".turnover-preview-sticky .turnover-preview-store")?.getBoundingClientRect().height ?? 0;
+    const rect = trigger.getBoundingClientRect();
+    const belowHead = Math.max(storeHeight, Math.min(rect.top - top, scroll.clientHeight - headHeight - rect.height));
+    anchor.current = { heading: source, belowHead };
+    if (source !== trigger) source.focus({ preventScroll: true });
+  }
+  function releaseAnchor() { anchor.current = null; }
+  function scrollToStart() {
+    releaseAnchor();
+    if (viewport.current) viewport.current.scrollTop = 0;
+  }
 
   useLayoutEffect(() => {
     viewport.current?.scrollTo(0, 0);
-    afterCollapse.current = null;
+    releaseAnchor();
     setVisibleBlocks((previous) => previous.size ? new Set() : previous);
   }, [report]);
 
-  useLayoutEffect(() => setMeasurements(undefined), [report, showDays]);
+  useLayoutEffect(() => {
+    releaseAnchor();
+    setMeasurements(undefined);
+  }, [report, showDays]);
 
   useLayoutEffect(() => {
     const scroll = viewport.current;
     const grid = table.current;
     const head = grid?.tHead;
-    if (!open || !scroll || !grid || !head) return;
+    if (!open || !scroll || !grid || !head) {
+      releaseAnchor();
+      return;
+    }
 
     const markers = grid.querySelectorAll<HTMLElement>("[data-turnover-boundary]");
     const blocks = new Map<Element, number>();
@@ -107,8 +134,7 @@ export function useTurnoverPreviewViewport({ open, report, expanded, showDays, v
       if (!scroll.clientWidth) return;
       if (needsMeasure) {
         needsMeasure = false;
-        // Replacing estimated blocks above the target can move a store after the jump.
-        if (jumpHeading.current) alignJump();
+        if (anchor.current) alignAnchor();
         const origin = scroll.getBoundingClientRect().top + scroll.clientTop - scroll.scrollTop;
         const height = head.getBoundingClientRect().height;
         if (height !== headHeight) {
@@ -118,35 +144,32 @@ export function useTurnoverPreviewViewport({ open, report, expanded, showDays, v
         all = Array.from(markers, (marker) => {
           const rect = marker.getBoundingClientRect();
           return { kind: marker.dataset.turnoverBoundary!, top: rect.top - origin, height: rect.height,
-            label: marker.querySelector(".turnover-section-label")?.textContent ?? "" };
+            groupStart: marker.dataset.groupStart === undefined ? undefined : Number(marker.dataset.groupStart),
+            label: marker.dataset.turnoverBoundary === "store" ? marker.textContent ?? "" : "" };
         });
         stores = all.filter(({ kind }) => kind === "store" || kind === "overall");
         watchBlocks(scroll.clientHeight);
       }
-      const target = afterCollapse.current;
-      afterCollapse.current = null;
-      if (target === "start") {
-        scroll.scrollTop = 0;
-      } else if (target?.isConnected) {
-        const rect = target.getBoundingClientRect();
-        const top = scroll.getBoundingClientRect().top + scroll.clientTop;
-        const store = contextAt(stores, scroll.scrollTop + headHeight, "store");
-        const topEdge = top + headHeight + (store?.height ?? 0);
-        const bottomEdge = top + scroll.clientHeight;
-        if (rect.top < topEdge) scroll.scrollTop += rect.top - topEdge;
-        else if (rect.bottom > bottomEdge) scroll.scrollTop += Math.min(rect.top - topEdge, rect.bottom - bottomEdge);
-      }
       const edge = scroll.scrollTop + headHeight;
       const store = contextAt(stores, edge, "store");
       const group = contextAt(all, edge + (store?.height ?? 0), "group");
-      if (store?.label !== lastContext.current.store || group?.label !== lastContext.current.group) {
-        lastContext.current = { store: store?.label, group: group?.label };
+      if (store?.label !== lastContext.current.store || group?.groupStart !== lastContext.current.groupStart) {
+        if (group?.groupStart === undefined && document.activeElement?.closest(".turnover-preview-sticky")) {
+          scroll.focus({ preventScroll: true });
+        }
+        lastContext.current = { store: store?.label, groupStart: group?.groupStart };
         setContext(lastContext.current);
       }
     };
 
     function schedule() {
       frame ??= requestAnimationFrame(update);
+    }
+
+    function onScroll() {
+      // Browser Find and assistive navigation can scroll without a preceding input event.
+      if (anchor.current && scroll!.scrollTop !== alignedScrollTop.current) releaseAnchor();
+      schedule();
     }
 
     const resize = new ResizeObserver((entries) => {
@@ -175,20 +198,20 @@ export function useTurnoverPreviewViewport({ open, report, expanded, showDays, v
     resize.observe(head);
     for (const marker of markers) resize.observe(marker);
     for (const block of blocks.keys()) resize.observe(block);
-    scroll.addEventListener("scroll", schedule, { passive: true });
-    schedule(); // The parent may call showModal() after this layout effect.
+    scroll.addEventListener("scroll", onScroll, { passive: true });
+    if (anchor.current) update(); // Compensate for removed/inserted rows before the first paint.
+    else schedule(); // The parent may call showModal() after this layout effect.
     return () => {
-      releaseJump();
       resize.disconnect();
       intersections?.disconnect();
       intersections = undefined;
-      scroll.removeEventListener("scroll", schedule);
+      scroll.removeEventListener("scroll", onScroll);
       if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [open, report, expanded, showDays, virtualized]);
 
   return {
-    viewport, table, context, afterCollapse, visibleBlocks, jumpToStore, releaseJump,
+    viewport, table, context, visibleBlocks, jumpToStore, anchorCategory, releaseAnchor, scrollToStart,
     blockHeights: measurements?.report === report && measurements.showDays === showDays ? measurements.heights : undefined
   };
 }
