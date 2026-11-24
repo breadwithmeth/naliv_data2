@@ -140,7 +140,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
   // client captures DATABASE_URL on first module evaluation.
   const { prisma } = await import("../src/prisma.js");
   const { config } = await import("../src/config.js");
-  const { getTurnoverOptions, getTurnoverReport, getTurnoverRow, turnoverQuerySchema } = await import("../src/services/turnover.js");
+  const { getTurnoverOptions, getTurnoverPreview, getTurnoverReport, getTurnoverRow, turnoverQuerySchema } = await import("../src/services/turnover.js");
   const originalQuery = prisma.$queryRaw;
   const originalUnsafeQuery = prisma.$queryRawUnsafe;
   const originalSchema = config.PGSCHEMA;
@@ -242,6 +242,36 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       assert.equal(report.totals.overall.periodSales.revenue, 300);
       assert.deepEqual(report.totals.byUnit.map((total) => [total.unit, total.closingQty]), [["л", 7], ["шт", 21]]);
       assert.deepEqual(report.totals.overall.daily, []);
+      await t.test("standard preview values stock before the closing midnight and signed sales as of the opening midnight", async () => {
+        const selection = { ...params, sku: "i1", profile: "summary" as const, sort: "name" as const, mode: "quantity" as const, includeIncomplete: false };
+        const preview = await getTurnoverPreview(selection);
+        const row = preview.rows[0]!;
+        assert.deepEqual(row.daily.map(day => [day.stockCost, day.salesCost]), [[120, 20], [160, 30], [320, -40]]);
+        assert.equal(row.averageCost, 190);
+        assert.equal(row.periodSales.cost, 10);
+        assert.equal(row.periodSales.revenue, 300);
+        assert.equal(row.turnoverCostDays, 57);
+        const detail = await getTurnoverRow({ ...selection, auditGroup: row.key });
+        assert.equal(detail.row.averageCost, row.averageCost);
+        assert.equal(detail.row.turnoverCostDays, row.turnoverCostDays);
+        assert.deepEqual(detail.row.daily, row.daily);
+        assert.ok(!preview.warnings.some(warning => warning.startsWith("Часть денежных показателей недоступна")));
+        await tx.$executeRawUnsafe("savepoint preview_missing_price");
+        try {
+          await tx.$executeRawUnsafe(`insert into information_register_sebestoimost_nomenklatury_record_type values
+            ('2026-08-03',true,'s1','i1','',0,4)`);
+          const incomplete = await getTurnoverPreview(selection);
+          assert.equal(incomplete.rows[0]!.key, row.key, "an invalid latest price does not remove a physical row");
+          assert.deepEqual(incomplete.rows[0]!.daily.map(day => [day.stockCost, day.salesCost]), [[120, 20], [160, 30], [null, null]]);
+          assert.equal(incomplete.totals.byStore[0]!.total.averageQty, 11);
+          assert.equal(incomplete.totals.byStore[0]!.total.averageCost, null);
+          assert.equal(incomplete.totals.overall.periodSales.cost, null);
+          assert.ok(incomplete.warnings.some(warning => warning.startsWith("Часть денежных показателей недоступна")));
+        } finally {
+          await tx.$executeRawUnsafe("rollback to savepoint preview_missing_price");
+          await tx.$executeRawUnsafe("release savepoint preview_missing_price");
+        }
+      });
       const itemDetail = await getTurnoverRow({ ...params, auditGroup: item.key });
       assert.equal(itemDetail.row.key, item.key);
       assert.equal(itemDetail.row.periodSales.quantity, 3);
@@ -833,6 +863,21 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           assert.equal(row.averageQty, 33);
           assert.equal(row.turnoverQty, 9 / 33);
           assert.equal(row.turnoverQtyDays, 11);
+          await tx.$executeRawUnsafe(`insert into information_register_sebestoimost_nomenklatury_record_type values
+            ('2026-07-01',true,'d1','i1','',10,1), ('2026-08-02 12:00',true,'d1','i1','',20,2)`);
+          await tx.$executeRawUnsafe(`insert into document_ustanovka_sebestoimosti values
+            ('cost-d2','2026-07-01','d2',false,true), ('cost-d2-next','2026-08-03','d2',false,true),
+            ('cost-global','2026-08-03',null,false,true)`);
+          await tx.$executeRawUnsafe(`insert into document_ustanovka_sebestoimosti_tovary values
+            ('cost-d2',1,'i1','',30), ('cost-d2-next',1,'i1','',40), ('cost-global',1,'i1','',1)`);
+          const preview = await getTurnoverPreview({ from: params.from, to: params.to, store: [physical.key], profile: "sample", mode: "quantity" });
+          assert.deepEqual(preview.rows.map(row => row.sku), ["i1"]);
+          const valued = preview.rows[0]!;
+          assert.deepEqual(valued.daily.map(day => day.stockCost), [840, 640, 1600],
+            "the legal entity with stock only must contribute at its own cost, not the seller's price");
+          assert.equal(valued.averageCost, 930);
+          assert.equal(valued.periodSales.cost, 120);
+          assert.equal(valued.turnoverCostDays, 23.25);
           const retailOnly = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", search: "Office Only", includeIncomplete: true });
           assert.equal(retailOnly.rows.length, 0);
           const withOffice = await getTurnoverReport({ from: params.from, to: params.to, profile: "sample", search: "Office Only", storeScope: "all", includeIncomplete: true });

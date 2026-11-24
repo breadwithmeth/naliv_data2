@@ -7,7 +7,7 @@ import {
   completeTurnoverReport, hasKnownTurnoverUnit, includeTurnoverRow, turnoverCoefficientBand
 } from "../../api/src/services/turnover-domain";
 import {
-  TURNOVER_IDLE_LABEL, turnoverStandardColumns, turnoverStandardDates, turnoverStandardTotalRows, turnoverStandardValue,
+  TURNOVER_IDLE_LABEL, turnoverStandardColumns, turnoverStandardDates, turnoverStandardValue,
   turnoverUnitDisplayName, turnoverUnitLabels
 } from "../../api/src/services/turnover-presentation";
 import type { TurnoverStandardColumn } from "../../api/src/services/turnover-presentation";
@@ -22,7 +22,13 @@ type StandardMetrics = Pick<TurnoverPreviewRow,
   "daily" | "averageQty" | "averageCost" | "periodSales" | "idleStock" |
   "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays"
 >;
-type GridColumn = { column: TurnoverStandardColumn; label: string; key: string; id: string };
+const COST_COLUMNS = [
+  { kind: "average", label: "Средний запас, ₸", title: "Средняя стоимость товарного запаса за период" },
+  { kind: "sales", label: "Себестоимость продаж, ₸", title: "Проданное количество по учётным ценам, не розничная выручка" },
+  { kind: "turnoverDays", label: "Дни оборота по себестоимости", title: "Длительность периода × средняя стоимость запаса / себестоимость продаж" }
+] as const;
+const FIXED_COLUMNS = turnoverStandardColumns([]).length + COST_COLUMNS.length;
+type GridColumn = { column: TurnoverStandardColumn; basis: "money" | "quantity"; label: string; key: string; id: string; title?: string };
 type CategoryRange = { key: string; label: string; start: number; end: number; countLabel: string };
 type StoreSection = { key: string | null; label: string; categories: CategoryRange[] };
 
@@ -69,18 +75,19 @@ function CoefficientCell({ value, headers }: { value: number | null; headers?: s
   </td>;
 }
 
-function StandardMetricCells({ metrics, columns, periodDays, rowHeaders }: {
-  metrics: StandardMetrics; columns: readonly GridColumn[]; periodDays: number; rowHeaders?: string;
+function StandardMetricCells({ metrics, costMetrics = metrics, columns, periodDays, rowHeaders }: {
+  metrics: StandardMetrics; costMetrics?: StandardMetrics; columns: readonly GridColumn[]; periodDays: number; rowHeaders?: string;
 }) {
-  return <>{columns.map(({ column, key, id }) => {
+  return <>{columns.map(({ column, basis, key, id }) => {
     const headers = rowHeaders && `${rowHeaders} ${id}`;
-    const value = turnoverStandardValue(metrics, column, "quantity", periodDays);
-    if (column.kind === "turnoverDays" && value === null && metrics.idleStock) {
+    const isMoney = basis === "money";
+    const value = turnoverStandardValue(isMoney ? costMetrics : metrics, column, basis, periodDays);
+    if (!isMoney && column.kind === "turnoverDays" && value === null && metrics.idleStock) {
       return <td key={key} headers={headers} className="turnover-idle-label" title="Есть остаток на конец периода, продаж и закупок не было">{TURNOVER_IDLE_LABEL}</td>;
     }
     return column.kind === "coefficient"
       ? <CoefficientCell key={key} value={value} headers={headers} />
-      : <td key={key} headers={headers} className={`turnover-numeric${column.kind === "day" ? " turnover-preview-day" : ""}`}><PreviewNumber value={value} /></td>;
+      : <td key={key} headers={headers} className={`turnover-numeric${isMoney ? " turnover-money" : column.kind === "day" ? " turnover-preview-day" : ""}`}><PreviewNumber value={value} /></td>;
   })}</>;
 }
 
@@ -102,15 +109,24 @@ const ProductRows = memo(function ProductRows({ rows, start, end, columns, perio
   return <>{products}</>;
 });
 
-const TotalRows = memo(function TotalRows({ label, total, byUnit, columns, periodDays, unitLabels, subtotal }: {
+const TotalRow = memo(function TotalRow({ label, store, total, byUnit, columns, periodDays, unitLabels, subtotal }: {
   label: string; total: TurnoverPreview["totals"]["overall"]; byUnit: TurnoverPreview["totals"]["byUnit"];
+  store?: string;
   columns: readonly GridColumn[]; periodDays: number; unitLabels: ReadonlyMap<string, string>; subtotal?: boolean;
 }) {
-  return <>{turnoverStandardTotalRows(label, total, byUnit, "quantity", unitLabels).map(({ key, label, row }, index) =>
-    <tr key={key ?? label} className="turnover-overall-total" data-turnover-boundary={subtotal && index === 0 ? "subtotal" : undefined}>
-      <th scope="row">{label}</th>
-      <StandardMetricCells metrics={row} columns={columns} periodDays={periodDays} />
-    </tr>)}</>;
+  const [unitKey, setUnitKey] = useState<string>();
+  const selected = total.unit === null ? byUnit.find(unit => unit.unitKey === unitKey) ?? byUnit[0] : undefined;
+  const unitName = (unit: (typeof byUnit)[number]) => unitLabels.get(unit.unitKey) ?? turnoverUnitDisplayName(unit.unit, unit.unitKey);
+  return <tr className="turnover-overall-total" data-turnover-boundary={subtotal ? "subtotal" : undefined}>
+    <th scope="row">{label}
+      {selected && byUnit.length > 1 ? <label className="turnover-total-unit">Количество:
+        <select aria-label={`${label}${store ? ` (${store})` : ""}: единица количества`} value={selected.unitKey} onChange={event => setUnitKey(event.target.value)}>
+          {byUnit.map(unit => <option key={unit.unitKey} value={unit.unitKey}>{unitName(unit)}</option>)}
+        </select>
+      </label> : selected || hasKnownTurnoverUnit(total.unit) ? <span className="turnover-preview-unit">{selected ? unitName(selected) : turnoverUnitDisplayName(total.unit)}</span> : null}
+    </th>
+    <StandardMetricCells metrics={selected ?? total} costMetrics={total} columns={columns} periodDays={periodDays} />
+  </tr>;
 });
 
 function previewNotices(report: TurnoverPreview) {
@@ -130,10 +146,10 @@ function previewNotices(report: TurnoverPreview) {
     ...(report.coverage.missingStockDates.length ? [
       `Нет дневных снимков остатков: ${formatNumber(report.coverage.missingStockDates.length)} из ${formatNumber(report.coverage.expectedDays)}.`
     ] : []),
-    ...(hasUnlabelledQuantityTotal ? ["Общий итог недоступен: разные или неизвестные единицы."] : [])
+    ...(hasUnlabelledQuantityTotal ? ["Количественный итог недоступен: разные или неизвестные единицы."] : [])
   ];
-  // The analytical endpoint also describes monetary data, orders and comparisons absent from this view.
-  const warnings = report.warnings.filter((warning) => /^(Нельзя подтвердить отсутствие|Фильтрам не соответствуют|Нет снимка точно|Не во все дни выбранного периода|В части дней есть проведённые чеки|У части SKU нет подтверждённой|Итоги исходной выборки не показаны)/.test(warning));
+  // Keep warnings about visible figures; the analytical endpoint also describes orders and comparisons.
+  const warnings = report.warnings.filter((warning) => /^(Нельзя подтвердить отсутствие|Фильтрам не соответствуют|Нет снимка точно|Не во все дни выбранного периода|В части дней есть проведённые чеки|У части SKU нет подтверждённой|Часть денежных показателей недоступна|Итоги исходной выборки не показаны)/.test(warning));
   const empty = excludedIncompleteRows > 0 && !includeIncomplete
     ? "Все строки по выбранным условиям исключены: нет полного расчёта. Закройте отчёт и измените параметры, чтобы включить такие строки."
     : "По выбранным условиям товаров нет. Закройте отчёт и измените параметры.";
@@ -147,11 +163,17 @@ export function TurnoverPreviewTable({ report: source, open = true }: { report: 
   const { expanded, showDays } = view;
   const tableId = useId();
   const days = useMemo(() => turnoverStandardDates(report.params.from, report.params.to), [report.params.from, report.params.to]);
-  const columns = useMemo(() => turnoverStandardColumns(showDays ? days : []).map((column, i) => ({
-    column, id: `${tableId}-c${i}`,
-    label: column.kind === "day" && column.half ? `${column.label} ½` : column.label,
-    key: column.kind === "day" ? `${column.date}:${column.half}` : column.kind
-  })), [showDays, days, tableId]);
+  const columns = useMemo<GridColumn[]>(() => [
+    ...turnoverStandardColumns(showDays ? days : []).map((column, i) => ({
+      column, basis: "quantity" as const, id: `${tableId}-c${i}`,
+      label: column.kind === "day" && column.half ? `${column.label} ½` : column.label,
+      key: column.kind === "day" ? `${column.date}:${column.half}` : column.kind
+    })),
+    ...COST_COLUMNS.map(column => ({
+      column, basis: "money" as const, id: `${tableId}-cost-${column.kind}`, key: `cost-${column.kind}`,
+      label: column.label, title: column.title
+    }))
+  ], [showDays, days, tableId]);
   const columnCount = columns.length + 1;
   const splitStores = report.params.profile !== "sample";
   const index = useMemo(() => categoryIndex(report.rows, splitStores), [report.rows, splitStores]);
@@ -166,9 +188,10 @@ export function TurnoverPreviewTable({ report: source, open = true }: { report: 
     return count;
   }, [index, expanded]);
   const virtualized = openedRows * columnCount > VIRTUAL_CELL_LIMIT;
-  const { viewport, table, context, afterCollapse, visibleBlocks, blockHeights } = useTurnoverPreviewViewport({
+  const { viewport, table, context, afterCollapse, visibleBlocks, blockHeights, jumpToStore, releaseJump } = useTurnoverPreviewViewport({
     open, report, expanded, showDays, virtualized
   });
+
 
   function toggleCategory(category: CategoryRange, button: HTMLButtonElement) {
     const next = new Set(expanded);
@@ -207,7 +230,17 @@ export function TurnoverPreviewTable({ report: source, open = true }: { report: 
 
   return <section className="turnover-preview-results" aria-label="Результаты отчёта">
     <header className="turnover-preview-toolbar">
-      <p className="turnover-note">{splitStores ? "По магазинам" : "Вся сеть"} · строк: {formatNumber(report.rows.length)}</p>
+      <p className="turnover-note">{splitStores ? "По магазинам" : "Вся сеть"} · строк: {formatNumber(report.rows.length)}
+        {report.totals.byUnit.length > 0 && " · Суммы в ₸ — по всем единицам"}</p>
+      {splitStores && index.stores.length > 1 && <select className="turnover-store-jump" aria-label="Перейти к магазину"
+        aria-controls={tableId} defaultValue="" onChange={event => jumpToStore(event.target.value)}
+        onBlur={event => { event.currentTarget.value = ""; }}>
+        <option disabled value="">Перейти к магазину</option>
+        {index.stores.map(({ label, categories }, i) => {
+          const id = `${tableId}-s${categories[0].start}`;
+          return <option key={id} value={id}>{i + 1}. {label}</option>;
+        })}
+      </select>}
       <div className="turnover-preview-controls">
         <button type="button" className="turnover-button" disabled={expanded.size === index.categoryCount} onClick={expandAll}>Раскрыть всё</button>
         <button type="button" className="turnover-button" disabled={expanded.size === 0} onClick={collapseAll}>Свернуть всё</button>
@@ -224,24 +257,25 @@ export function TurnoverPreviewTable({ report: source, open = true }: { report: 
         <ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
       </details> : null}
     </div> : null}
-    <div ref={viewport} className="turnover-preview-scroll" role="region" aria-label="Таблица оборачиваемости" tabIndex={0}>
+    <div ref={viewport} className="turnover-preview-scroll" role="region" aria-label="Таблица оборачиваемости" tabIndex={0}
+      onWheelCapture={releaseJump} onPointerDownCapture={releaseJump} onKeyDownCapture={releaseJump}>
       <div className="turnover-preview-sticky" aria-hidden="true">
         {context.store ? <div className="turnover-preview-store"><span className="turnover-section-label">{context.store}</span></div> : null}
         {context.group ? <div className="turnover-preview-group"><span className="turnover-section-label">{context.group}</span></div> : null}
       </div>
-      <table ref={table} id={tableId} className="turnover-preview-table"
-        style={{ "--turnover-day-column-count": columns.length - 6 } as CSSProperties}>
-        <caption className="turnover-visually-hidden">Оборачиваемость: количество в единицах товара</caption>
+      <table ref={table} id={tableId} className={`turnover-preview-table${splitStores ? " turnover-by-store" : ""}`}
+        style={{ "--turnover-metric-count": FIXED_COLUMNS, "--turnover-day-column-count": columns.length - FIXED_COLUMNS } as CSSProperties}>
+        <caption className="turnover-visually-hidden">Оборачиваемость: количество в единицах товара и стоимость в тенге</caption>
         <colgroup>
           <col className="turnover-preview-product-column" />
           {columns.map(({ key, column }) => <col key={key} className={column.kind === "day" ? "turnover-preview-day-column" : "turnover-preview-metric-column"} />)}
         </colgroup>
         <thead><tr>
           <th scope="col">Номенклатура</th>
-          {columns.map(({ key, label, column, id }) => <th key={key} id={id} scope="col"
-            className={column.kind === "day" ? "turnover-preview-date" : undefined}>{label}</th>)}
+          {columns.map(({ key, label, column, id, basis, title }) => <th key={key} id={id} scope="col" title={title}
+            className={basis === "money" ? "turnover-money" : column.kind === "day" ? "turnover-preview-date" : undefined}>{label}</th>)}
         </tr></thead>
-        {index.stores.map(({ key, label, categories }) => {
+        {index.stores.map(({ key, label, categories }, ordinal) => {
           const subtotal = splitStores ? storeTotals.get(key) : undefined;
           const storeId = `${tableId}-s${categories[0].start}`;
           return <Fragment key={key === null ? "null" : `store:${key}`}>
@@ -263,13 +297,13 @@ export function TurnoverPreviewTable({ report: source, open = true }: { report: 
                 {isExpanded ? renderProducts(category, splitStores ? `${storeId} ${groupId}` : groupId) : null}
               </Fragment>;
             })}
-            {subtotal ? <tbody><TotalRows label="ИТОГО по магазину" total={subtotal.total} byUnit={subtotal.byUnit}
+            {subtotal ? <tbody><TotalRow label="ИТОГО по магазину" store={`${ordinal + 1}. ${label}`} total={subtotal.total} byUnit={subtotal.byUnit}
               columns={columns} periodDays={days.length} unitLabels={unitLabels} subtotal /></tbody> : null}
           </Fragment>;
         })}
         {!report.rows.length ? <tbody><tr><td colSpan={columnCount} className="turnover-preview-empty"><span>{empty}</span></td></tr></tbody> : null}
         {report.rows.length ? <tfoot aria-label="Итог по всему отбору" data-turnover-boundary="overall">
-          <TotalRows label="ИТОГО" total={report.totals.overall} byUnit={report.totals.byUnit}
+          <TotalRow label="ИТОГО по всему отбору" total={report.totals.overall} byUnit={report.totals.byUnit}
             columns={columns} periodDays={days.length} unitLabels={unitLabels} />
         </tfoot> : null}
       </table>

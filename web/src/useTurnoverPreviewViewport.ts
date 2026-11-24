@@ -31,6 +31,19 @@ export function useTurnoverPreviewViewport({ open, report, expanded, showDays, v
   const lastContext = useRef(context);
   const [visibleBlocks, setVisibleBlocks] = useState<ReadonlySet<number>>(() => new Set());
   const [measurements, setMeasurements] = useState<BlockMeasurements>();
+  const jumpHeading = useRef<HTMLElement | null>(null);
+  function alignJump() {
+    const scroll = viewport.current, heading = jumpHeading.current;
+    if (!scroll || !heading || !scroll.contains(heading)) return;
+    const offset = heading.getBoundingClientRect().top - scroll.getBoundingClientRect().top
+      - scroll.clientTop - (table.current?.tHead?.getBoundingClientRect().height ?? 0);
+    if (Math.abs(offset) > 1) scroll.scrollTop += offset;
+  }
+  function jumpToStore(id: string) {
+    jumpHeading.current = document.getElementById(id);
+    alignJump();
+  }
+  function releaseJump() { jumpHeading.current = null; }
 
   useLayoutEffect(() => {
     viewport.current?.scrollTo(0, 0);
@@ -94,6 +107,8 @@ export function useTurnoverPreviewViewport({ open, report, expanded, showDays, v
       if (!scroll.clientWidth) return;
       if (needsMeasure) {
         needsMeasure = false;
+        // Replacing estimated blocks above the target can move a store after the jump.
+        if (jumpHeading.current) alignJump();
         const origin = scroll.getBoundingClientRect().top + scroll.clientTop - scroll.scrollTop;
         const height = head.getBoundingClientRect().height;
         if (height !== headHeight) {
@@ -163,6 +178,7 @@ export function useTurnoverPreviewViewport({ open, report, expanded, showDays, v
     scroll.addEventListener("scroll", schedule, { passive: true });
     schedule(); // The parent may call showModal() after this layout effect.
     return () => {
+      releaseJump();
       resize.disconnect();
       intersections?.disconnect();
       intersections = undefined;
@@ -172,7 +188,7 @@ export function useTurnoverPreviewViewport({ open, report, expanded, showDays, v
   }, [open, report, expanded, showDays, virtualized]);
 
   return {
-    viewport, table, context, afterCollapse, visibleBlocks,
+    viewport, table, context, afterCollapse, visibleBlocks, jumpToStore, releaseJump,
     blockHeights: measurements?.report === report && measurements.showDays === showDays ? measurements.heights : undefined
   };
 }

@@ -3,7 +3,7 @@ import { Writable } from "node:stream";
 import { loadCachedText, sendCachedJson } from "../lib/cached-json.js";
 import { asyncHandler } from "../lib/http.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { getTurnoverOptions, getTurnoverReport, getTurnoverRow, turnoverQuerySchema } from "../services/turnover.js";
+import { getTurnoverOptions, getTurnoverPreview, getTurnoverReport, getTurnoverRow, turnoverQuerySchema } from "../services/turnover.js";
 import { writeTurnoverWorkbook } from "../services/turnover-workbook.js";
 
 export const turnoverRouter = Router();
@@ -11,24 +11,7 @@ turnoverRouter.use(requireAuth, requireRole("admin"));
 
 turnoverRouter.get("/turnover", asyncHandler(async (req, res) => {
   const query = turnoverQuerySchema.parse(req.query);
-  await sendCachedJson(req, res, ["getTurnoverPreview", query], async () => {
-    const report = await getTurnoverReport(query);
-    return {
-      ...report,
-      rows: report.rows.map(row => ({
-        key: row.key, name: row.name, sku: row.sku, article: row.article,
-        storeKey: row.storeKey, storeName: row.storeName, categoryName: row.categoryName, unit: row.unit,
-        rootGroupKey: row.rootGroupKey, rootGroupName: row.rootGroupName,
-        noSalesHistory: row.noSalesHistory, idleStock: row.idleStock, openingQty: row.openingQty, closingQty: row.closingQty,
-        averageQty: row.averageQty, openingCost: row.openingCost, closingCost: row.closingCost,
-        averageCost: row.averageCost, periodSales: row.periodSales, turnoverQty: row.turnoverQty,
-        turnoverQtyDays: row.turnoverQtyDays, turnoverCost: row.turnoverCost,
-        turnoverCostDays: row.turnoverCostDays, stockDays: row.stockDays, risks: row.risks,
-        daily: row.daily,
-        primaryAction: row.recommendations[0]?.action ?? null
-      }))
-    };
-  }, { kind: "all" });
+  await sendCachedJson(req, res, ["getTurnoverPreview", query], () => getTurnoverPreview(query), { kind: "all" });
 }));
 
 turnoverRouter.get("/turnover/options", asyncHandler(async (req, res) => {

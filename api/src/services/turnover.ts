@@ -13,7 +13,7 @@ import { evaluateCoverage, getReloadReadiness, type ReloadReadinessState } from 
 import { isExcludedTurnoverItem } from "./turnover-exclusions.js";
 import { buildTurnoverRootGroups, compareTurnoverPresentationRows, turnoverUnitLabels } from "./turnover-presentation.js";
 import type {
-  TurnoverDailyRow, TurnoverNorms, TurnoverOption, TurnoverPolicy, TurnoverReport,
+  TurnoverDailyRow, TurnoverNorms, TurnoverOption, TurnoverPolicy, TurnoverPreview, TurnoverReport,
   TurnoverOptions, TurnoverRequest, TurnoverRow, TurnoverRowDetail, TurnoverSales, TurnoverTotal, TurnoverTotals, TurnoverWindow
 } from "./turnover-types.js";
 
@@ -800,14 +800,37 @@ function resolveTurnoverPeriod(
 }
 
 export async function getTurnoverReport(request: TurnoverRequest, reloadReader = getReloadReadiness): Promise<TurnoverReport> {
+  return loadTurnoverReport(request, reloadReader);
+}
+
+export async function getTurnoverPreview(request: TurnoverRequest, reloadReader = getReloadReadiness): Promise<TurnoverPreview> {
+  const report = await loadTurnoverReport(request, reloadReader, true);
+  return {
+    ...report,
+    rows: report.rows.map(row => ({
+      key: row.key, name: row.name, sku: row.sku, article: row.article,
+      storeKey: row.storeKey, storeName: row.storeName, categoryName: row.categoryName, unit: row.unit,
+      rootGroupKey: row.rootGroupKey, rootGroupName: row.rootGroupName,
+      noSalesHistory: row.noSalesHistory, idleStock: row.idleStock, openingQty: row.openingQty, closingQty: row.closingQty,
+      averageQty: row.averageQty, openingCost: row.openingCost, closingCost: row.closingCost,
+      averageCost: row.averageCost, periodSales: row.periodSales, turnoverQty: row.turnoverQty,
+      turnoverQtyDays: row.turnoverQtyDays, turnoverCost: row.turnoverCost,
+      turnoverCostDays: row.turnoverCostDays, stockDays: row.stockDays, risks: row.risks,
+      daily: row.daily,
+      primaryAction: row.recommendations[0]?.action ?? null
+    }))
+  };
+}
+
+async function loadTurnoverReport(request: TurnoverRequest, reloadReader: typeof getReloadReadiness, preview = false): Promise<TurnoverReport> {
   const query = turnoverQuerySchema.parse(request);
   const readiness = await reloadReader();
   const { params, requestedTo } = resolveTurnoverPeriod(query, readiness);
-  return buildTurnoverReport(params, requestedTo, readiness);
+  return buildTurnoverReport(params, requestedTo, readiness, preview);
 }
 
 async function buildTurnoverReport(
-  params: NormalizedTurnoverRequest, requestedTo: string | null, readiness: ReloadReadinessState
+  params: NormalizedTurnoverRequest, requestedTo: string | null, readiness: ReloadReadinessState, preview = false
 ): Promise<TurnoverReport> {
   const sourceTo = params.to > params.comparisonTo ? params.to : params.comparisonTo;
   const period = { from: new Date(params.from), to: new Date(params.to) };
@@ -818,6 +841,10 @@ async function buildTurnoverReport(
       && evaluateCoverage(readiness, key, period).status === "verified";
   });
   const standardQuantity = params.mode === "quantity" && isStandardTurnoverLayout(params);
+  // The web preview adds valuation to the quantity population. Standard
+  // quantity workbooks only need sales cost for their existing sales sheet.
+  const includeStockCosts = params.mode !== "quantity";
+  const includePreviewStockCosts = preview && standardQuantity;
   const includeSalesCosts = params.mode !== "quantity" || standardQuantity;
   let source: Sources;
   let storeIndex!: PhysicalStoreIndex;
@@ -966,15 +993,22 @@ async function buildTurnoverReport(
     if (!seedStores.length) getPair(UNKNOWN, params.sku);
   }
   const dateInstants = new Map<string, number>();
+  const valuedAmount = (store: string, sku: string, characteristic: string, date: string, quantity: number | null, inclusive: boolean) => {
+    if (quantity === null || quantity === 0) return quantity;
+    let at = dateInstants.get(date);
+    if (at === undefined) { at = dayNumber(date); dateInstants.set(date, at); }
+    const unitCost = costAt(store, sku, characteristic, at, inclusive);
+    if (unitCost === null) return null;
+    const amount = quantity * unitCost;
+    return Number.isFinite(amount) ? amount : null;
+  };
   for (const [store, sku, characteristic, facts] of source.stock) {
     const pair = getPair(store, sku);
     for (const [date, rawQuantity] of facts) {
-      let at = dateInstants.get(date);
-      if (at === undefined) { at = dayNumber(date); dateInstants.set(date, at); }
       const quantity = numberOrNull(rawQuantity);
-      const unitCost = params.mode === "quantity" ? null : quantity === 0 ? 0 : costAt(store, sku, characteristic, at, false);
-      const amount = quantity === null || unitCost === null ? null : quantity * unitCost;
-      const cost = amount !== null && Number.isFinite(amount) ? amount : null;
+      // The preview only uses earlier stock snapshots for physical availability.
+      const cost = includeStockCosts || (includePreviewStockCosts && date >= params.from)
+        ? valuedAmount(store, sku, characteristic, date, quantity, false) : null;
       const existing = pair.stock.get(date);
       pair.stock.set(date, existing ? { quantity: sumNullable([existing.quantity, quantity]), cost: sumNullable([existing.cost, cost]) } : { quantity, cost });
     }
@@ -985,13 +1019,9 @@ async function buildTurnoverReport(
     let days = salesDays.get(store);
     if (!days) { days = new Set(); salesDays.set(store, days); }
     for (const [date, rawQuantity, rawRevenue, positive] of facts) {
-      let at = dateInstants.get(date);
-      if (at === undefined) { at = dayNumber(date); dateInstants.set(date, at); }
       const quantity = numberOrNull(rawQuantity);
       const revenue = numberOrNull(rawRevenue);
-      const unitCost = !includeSalesCosts ? null : quantity === 0 ? 0 : costAt(store, sku, characteristic, at, true);
-      const amount = quantity === null || unitCost === null ? null : quantity * unitCost;
-      const cost = amount !== null && Number.isFinite(amount) ? amount : null;
+      const cost = includeSalesCosts ? valuedAmount(store, sku, characteristic, date, quantity, true) : null;
       const existing = pair.sales.get(date);
       pair.sales.set(date, existing ? { quantity: sumNullable([existing.quantity, quantity]), cost: sumNullable([existing.cost, cost]),
         revenue: sumNullable([existing.revenue, revenue]), positive: existing.positive || positive } : { quantity, cost, revenue, positive });
@@ -1033,7 +1063,7 @@ async function buildTurnoverReport(
     return days;
   };
   const stockAt = (pair: Pair, date: string): StockValue => snapshots.has(date)
-    ? pair.stock.get(date) ?? { quantity: 0, cost: params.mode === "quantity" ? null : 0 }
+    ? pair.stock.get(date) ?? { quantity: 0, cost: includeStockCosts || includePreviewStockCosts ? 0 : null }
     : { quantity: null, cost: null };
   const salesAt = (pair: Pair, date: string): DailyFact => {
     if (!salesDays.get(pair.store)?.has(date)) {
@@ -1188,7 +1218,7 @@ async function buildTurnoverReport(
     if (params.excludeZero && !row.idleStock && !(networkIdle && row.closingQty !== 0) && isZeroTurnoverRow(row, params.mode)) return;
     missingPeriodSales ||= row.periodSales.quantity === null;
     missingWindowSales ||= row.windows.some(window => window.sales.quantity === null || window.previousSales.quantity === null);
-    missingMoney ||= row.periodSales.cost === null || row.averageCost === null;
+    if (!standardQuantity) missingMoney ||= row.periodSales.cost === null || row.averageCost === null;
     if (!params.includeIncomplete && !eligible) {
       if (params.risk === "all" || row.risks.includes(params.risk)) excludedIncompleteRows++;
       return;
@@ -1282,6 +1312,7 @@ async function buildTurnoverReport(
     return a.name.localeCompare(b.name, "ru") || a.key.localeCompare(b.key);
   });
   const totals = buildTurnoverTotals(visibleAtomic, pairByKey, reportDaily, pieceUnitKeys, params);
+  if (includePreviewStockCosts) missingMoney = visibleAtomic.some(row => row.averageCost === null || row.periodSales.cost === null);
   const expectedDates = calendar(params.from, params.to);
   const missingStockDates = expectedDates.filter((date) => !snapshots.has(shiftDate(date, 1)));
   const observedDays = expectedDates.length - missingStockDates.length;
@@ -1302,7 +1333,7 @@ async function buildTurnoverReport(
   if (missingPeriodSales) warningSet.add("Не во все дни выбранного периода есть проведённый розничный отчёт магазина либо подтверждение пустого дня по отчётам и чекам; продажи соответствующих строк — н/д, а не ноль.");
   if (!standardQuantity && missingWindowSales) warningSet.add("Часть окон 7/14/30 дней не покрыта историей розничных отчётов; сравнение этих окон недоступно.");
   if (receiptsWithoutRetailReport) warningSet.add("В части дней есть проведённые чеки, но нет розничного отчёта магазина (возможна незакрытая смена); продажи этих дней неизвестны, не заменены нулём и не смешаны с чеками.");
-  if (!standardQuantity && missingMoney) warningSet.add("Часть денежных показателей недоступна из-за пропусков снимков или учётных цен. Нулевая, отрицательная или пустая цена не считается бесплатным товаром и не заменяется более старой ценой.");
+  if (missingMoney) warningSet.add("Часть денежных показателей недоступна из-за пропусков снимков или учётных цен. Нулевая, отрицательная или пустая цена не считается бесплатным товаром и не заменяется более старой ценой.");
   if (!standardQuantity && (!source.brands.length || selectedPairs.some((pair) => !pair.brand))) warningSet.add("Справочник брендов не заполнен или привязки отсутствуют. Бренд по названию товара не угадывается.");
   if (selectedPairs.some((pair) => pair.unit.startsWith("Единица не указана"))) warningSet.add("У части SKU нет подтверждённой базовой единицы. Такие SKU не суммируются между собой и не участвуют в перемещениях.");
   if (visibleAtomic.length && totals.overall.unit === null) warningSet.add("Общее количество, количественные коэффициенты и дни запаса не рассчитаны: в отборе разные или неизвестные базовые единицы. Денежные суммы не зависят от единиц.");
@@ -1455,7 +1486,7 @@ export async function getTurnoverRow(request: TurnoverRequest, reloadReader = ge
     // seeds unobserved shops, so consolidated details retain the original scope.
     if (params.profile !== "sample") scoped = { ...params, sku };
   }
-  const report = await buildTurnoverReport(scoped, requestedTo, readiness);
+  const report = await buildTurnoverReport(scoped, requestedTo, readiness, true);
   const row = report.rows.find(candidate => candidate.key === auditGroup);
   if (!row) throw Object.assign(new Error("Строка не найдена. Сформируйте отчёт заново."), { statusCode: 404 });
   return { row, generatedAt: report.generatedAt };

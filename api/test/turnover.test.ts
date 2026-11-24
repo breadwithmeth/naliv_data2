@@ -122,7 +122,7 @@ test("calculation completeness is mode-aware, ignores optional identities and ac
   assert.equal(isCompleteTurnoverDailyRow({ ...daily, salesCost: null }, "money"), false);
 });
 
-test("default turnover population is filtered before daily, grouping and totals, with a distinct normalized opt-in cache identity", async () => {
+test("default turnover population is filtered before daily, grouping and totals, with a distinct normalized opt-in cache identity", async (t) => {
   process.env.DATABASE_URL ??= "postgresql://test:test@127.0.0.1:1/test";
   process.env.APP_ADMIN_EMAIL ??= "admin@test.local";
   process.env.APP_ADMIN_PASSWORD ??= "admin-test-password";
@@ -132,7 +132,7 @@ test("default turnover population is filtered before daily, grouping and totals,
   // This test exercises the module-loading boundary: configuration must exist
   // before Prisma/config singletons are loaded, and all SQL is replaced below.
   const { prisma } = await import("../src/prisma.js");
-  const { getTurnoverReport, turnoverQuerySchema } = await import("../src/services/turnover.js");
+  const { getTurnoverPreview, getTurnoverReport, turnoverQuerySchema } = await import("../src/services/turnover.js");
   const request = { from: "2026-11-01", to: "2026-11-04", mode: "both" as const };
   assert.equal(turnoverQuerySchema.parse(request).sort, "turnover");
   assert.equal(turnoverQuerySchema.parse({ ...request, sort: "name" }).sort, "name");
@@ -149,6 +149,7 @@ test("default turnover population is filtered before daily, grouping and totals,
   let unknownUnit = false;
   let mixedUnits = false;
   let duplicateLitres = false;
+  let alternatePrice: number | null = null;
   let pieceLabel = "шт";
   let firstItemName = "complete";
   const source = () => ({
@@ -176,6 +177,7 @@ test("default turnover population is filtered before daily, grouping and totals,
       ? [{ key: "s", name: "Donor" }, { key: "r", name: "Receiver" }]
       : stage === 0 ? [{ key: "s", name: "Shop" }] : [{ key: "s" }];
     const data = source();
+    if (alternatePrice !== null) data.costs.push([0, "s", "missing-cost", "", "2026-10-01T00:00:00", alternatePrice]);
     if (transferScenario) {
       const history = Array.from({ length: 60 }, (_, index) =>
         new Date(Date.parse("2026-09-05T00:00:00Z") + index * 86_400_000).toISOString().slice(0, 10));
@@ -239,6 +241,56 @@ test("default turnover population is filtered before daily, grouping and totals,
     assert.equal(mixed.totals.overall.periodSales.quantity, null);
     assert.equal(mixed.excludedIncompleteRows, 2);
     assert.deepEqual(mixed.totals.byUnit.map(total => [total.unit, total.periodSales.quantity]).sort(), [["л", 6], ["шт", 6]]);
+    await t.test("standard quantity previews value SKU and mixed-unit totals without changing the physical population", async () => {
+      const previewRequest = { ...request, mode: "quantity" as const, sort: "name" as const };
+      alternatePrice = 25;
+      try {
+        for (const profile of ["sample", "summary"] as const) {
+          const selection = { ...previewRequest, profile };
+          const preview = await getTurnoverPreview(selection, reloadReader);
+          const workbook = await getTurnoverReport(selection, reloadReader);
+          assert.equal(preview.params.mode, "quantity");
+          assert.deepEqual(preview.rows.map(row => [row.key, row.averageQty, row.turnoverQtyDays]),
+            workbook.rows.map(row => [row.key, row.averageQty, row.turnoverQtyDays]));
+          assert.deepEqual(preview.rows.map(row => row.sku), ["complete", "missing-cost"]);
+          const item = preview.rows[0]!;
+          assert.deepEqual(item.daily.map(day => day.stockCost), [100, 100, 100]);
+          assert.equal(item.averageCost, 100);
+          assert.equal(item.periodSales.cost, 60);
+          assert.equal(item.turnoverCostDays, 5);
+          assert.equal(workbook.rows[0]!.averageCost, null);
+          assert.equal(workbook.rows[0]!.periodSales.cost, 60);
+          const scopes = [preview.totals.overall];
+          if (profile === "summary") scopes.push(preview.totals.byStore.find(({ storeKey }) => storeKey === "key:s")!.total);
+          for (const total of scopes) {
+            assert.equal(total.unit, null);
+            assert.equal(total.averageQty, null);
+            assert.equal(total.periodSales.quantity, null);
+            assert.equal(total.averageCost, 350);
+            assert.equal(total.periodSales.cost, 210);
+            assert.equal(total.periodSales.revenue, 180);
+            assert.equal(total.turnoverCostDays, 5);
+          }
+        }
+        const returns = (await getTurnoverPreview({
+          ...previewRequest, profile: "sample", includeIncomplete: true
+        }, reloadReader)).rows.find(row => row.sku === "returns")!;
+        assert.equal(returns.periodSales.cost, -30);
+        assert.equal(returns.turnoverCostDays, null);
+        const analyticalPreview = await getTurnoverPreview({ ...request, mode: "quantity" }, reloadReader);
+        assert.equal(analyticalPreview.rows[0]!.averageCost, null);
+      } finally {
+        alternatePrice = null;
+      }
+      const incomplete = await getTurnoverPreview({ ...previewRequest, profile: "summary" }, reloadReader);
+      assert.deepEqual(incomplete.rows.map(row => row.sku), ["complete", "missing-cost"]);
+      assert.equal(incomplete.rows[1]!.averageQty, 10);
+      assert.equal(incomplete.rows[1]!.averageCost, null);
+      assert.equal(incomplete.totals.overall.averageCost, null);
+      assert.equal(incomplete.totals.overall.periodSales.cost, null);
+      assert.equal(incomplete.totals.overall.turnoverCostDays, null);
+      assert.ok(incomplete.warnings.some(warning => /денежных показателей недоступна/.test(warning)));
+    });
     duplicateLitres = true;
     pieceLabel = "   ";
     const disambiguated = await getTurnoverReport({ ...request, profile: "sample" }, reloadReader);
