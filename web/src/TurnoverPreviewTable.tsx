@@ -15,6 +15,8 @@ import { useTurnoverPreviewViewport } from "./useTurnoverPreviewViewport";
 
 const COEFFICIENT_LABELS = { red: "Плохо", orange: "Средне", green: "Хорошо" } as const;
 const METRIC_FORMAT = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 });
+const STOCK_FORMAT = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 20 });
+const IDLE_STOCK_NOTE = "Есть остаток на конец периода; за период не зарегистрированы продажи, возвраты покупателей и поступления от поставщиков.";
 const VIRTUAL_CELL_LIMIT = 20_000;
 const PRODUCT_BLOCK_SIZE = 32;
 const EMPTY_EXPANSION: ReadonlySet<string> = new Set();
@@ -46,9 +48,14 @@ function categoryIndex(rows: readonly TurnoverPreviewRow[], splitStores: boolean
       stores.push(store);
     }
     const groupKey = first.rootGroupKey;
-    let end = start + 1;
-    while (end < rows.length && (!splitStores || rows[end].storeKey === storeKey) && rows[end].rootGroupKey === groupKey) end++;
-    const category = { key: JSON.stringify([storeKey, groupKey]), start, end, countLabel: formatNumber(end - start),
+    let end = start;
+    let idleCount = 0;
+    do {
+      if (rows[end].idleStock) idleCount++;
+      end++;
+    } while (end < rows.length && (!splitStores || rows[end].storeKey === storeKey) && rows[end].rootGroupKey === groupKey);
+    const countLabel = formatNumber(end - start) + (idleCount ? ` · без движения: ${formatNumber(idleCount)}` : "");
+    const category = { key: JSON.stringify([storeKey, groupKey]), start, end, countLabel,
       label: groupKey === null ? "Без группы" : first.rootGroupName || "Группа без названия" };
     store.categories.push(category);
     byStart.set(start, category);
@@ -89,7 +96,7 @@ function StandardMetricCells({ metrics, columns, periodDays, rowHeaders, only }:
     const isMoney = basis === "money";
     const value = turnoverStandardValue(metrics, column, basis, periodDays);
     if (!isMoney && column.kind === "turnoverDays" && value === null && metrics.idleStock) {
-      cells.push(<td key={key} headers={headers} className="turnover-idle-label" title="Есть остаток на конец периода, продаж и закупок не было">{TURNOVER_IDLE_LABEL}</td>);
+      cells.push(<td key={key} headers={headers} className="turnover-idle-label" title={IDLE_STOCK_NOTE}>{TURNOVER_IDLE_LABEL}</td>);
     } else {
       cells.push(column.kind === "coefficient"
         ? <CoefficientCell key={key} value={value} headers={headers} />
@@ -111,9 +118,13 @@ const ProductRows = memo(function ProductRows({ rows, start, end, columns, perio
   for (let index = start; index < end; index++) {
     const row = rows[index];
     const rowId = `${tableId}-r${index}`;
+    const unit = hasKnownTurnoverUnit(row.unit) ? turnoverUnitDisplayName(row.unit) : "";
     products.push(<tr key={row.key}>
       <th id={rowId} headers={sectionHeaders} scope="row" className="turnover-preview-product">{row.name}
-        {hasKnownTurnoverUnit(row.unit) ? <span className="turnover-preview-unit">{turnoverUnitDisplayName(row.unit)}</span> : null}
+        {unit && <span className="turnover-preview-unit">{unit}</span>}
+        {row.idleStock && <span className="turnover-stock-note" title={IDLE_STOCK_NOTE}>
+          {TURNOVER_IDLE_LABEL}{row.closingQty !== null && ` · остаток ${STOCK_FORMAT.format(row.closingQty)}${unit ? ` ${unit}` : ""}`}
+        </span>}
       </th>
       <StandardMetricCells metrics={row} columns={columns} periodDays={periodDays} rowHeaders={`${sectionHeaders} ${rowId}`} />
     </tr>);

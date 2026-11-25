@@ -267,7 +267,11 @@ test("default quantity selection keeps confirmed idle stock and active rows with
   for (const day of active.daily) day.stockCost = null;
   setRows(data, [idle, active]);
   const { dialog } = await view(t, data);
+  assert.match(await groups(dialog).innerText(), /без движения: 1/i);
   await expandAll(dialog).click();
+  const item = products(dialog).nth(0);
+  assert.match(await item.innerText(), /Без движения · остаток 12 шт/);
+  assert.doesNotMatch(await products(dialog).nth(1).innerText(), /Без движения/);
   assert.deepEqual(await cells(productRow(dialog, 0)), ["20", "10", "0", "3", "0", "Без движения", "100", "0", "—"]);
   assert.deepEqual(await cells(productRow(dialog, 1)), ["20", "10", "2,5", "3", "25", "1,2", "—", "250", "—"]);
   assert.doesNotMatch(await productRow(dialog, 1).textContent() ?? "", /Без движения/);

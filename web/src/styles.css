@@ -3308,6 +3308,13 @@ select:focus {
   font-size: 12px;
 }
 
+.turnover-stock-note {
+  display: block;
+  color: #34576b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .turnover-idle-label {
   white-space: nowrap;
 }
