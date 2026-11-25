@@ -85,6 +85,142 @@ function namedRow(sheet: ExcelJS.Worksheet, label: string): ExcelJS.Row {
   return found;
 }
 
+const stockCostFromEntryText = /по оприходованию/iu;
+
+function hasStockCostFromEntryText(value: ExcelJS.CellValue) {
+  return typeof value === "string" && stockCostFromEntryText.test(value);
+}
+
+function withStockCostFromEntry(report: TurnoverReport) {
+  const daily = row.daily.map((day, index) => index === 0 ? { ...day, stockCostFromEntry: true } : { ...day });
+  report.rows = [
+    { ...row, stockCostFromEntry: true, daily },
+    { ...row, key: "ordinary", name: "Обычная оценка", stockCostFromEntry: false }
+  ];
+  report.daily = daily;
+  const total = { ...report.totals.overall, stockCostFromEntry: true, daily };
+  report.totals.overall = total;
+  report.totals.byUnit = [{ ...total, unitKey: "litre" }];
+  report.totals.byStore = [{ storeKey: "store", total, byUnit: report.totals.byUnit }];
+  return report;
+}
+
+test("standard financial exports identify capitalization for stock rows and dates without changing money formulas", async () => {
+  for (const profile of ["sample", "summary"] as const) {
+    const report = withStockCostFromEntry(fixture("money"));
+    Object.assign(report.params, { profile, sort: "name" });
+    report.rows.push(
+      { ...row, key: "initial-only", name: "Только начальный остаток", openingCostFromEntry: true },
+      { ...row, key: "day-only", name: "Только дневной остаток", averageCost: null, turnoverCost: null, turnoverCostDays: null,
+        daily: row.daily.map((day, index) => index === 0 ? { ...day, stockCost: null }
+          : index === 1 ? { ...day, stockCostFromEntry: true } : day) }
+    );
+    report.params.includeIncomplete = true;
+    const workbook = await load(report);
+    assert.equal(workbook.worksheets.length, 2);
+    const [main, salesSheet] = workbook.worksheets;
+    const shift = profile === "summary" ? 1 : 0;
+    for (const label of [row.name, "ИТОГО", ...(profile === "summary" ? ["ИТОГО по магазину"] : [])]) {
+      const affected = namedRow(main, label);
+      const provenance = (affected.values as ExcelJS.CellValue[]).find(hasStockCostFromEntryText);
+      assert.ok(provenance, label);
+      assert.match(String(provenance), /сумма остатков.*средний запас/iu);
+      assert.match(String(provenance), /2026-09-28/);
+      assert.doesNotMatch(String(provenance), /2026-09-(29|30)/);
+      assert.equal(affected.getCell(4 + shift).value, 100);
+      assert.equal(affected.getCell(5 + shift).result, 50);
+      assert.equal(affected.getCell(10 + shift).result, 150);
+      assert.equal(affected.getCell(13 + shift).result, 120);
+    }
+    const ordinary = namedRow(main, "Обычная оценка");
+    assert.ok(!(ordinary.values as ExcelJS.CellValue[]).some(hasStockCostFromEntryText));
+    assert.ok(!(namedRow(main, "Только начальный остаток").values as ExcelJS.CellValue[]).some(hasStockCostFromEntryText));
+    const dayOnly = (namedRow(main, "Только дневной остаток").values as ExcelJS.CellValue[]).find(hasStockCostFromEntryText);
+    assert.match(String(dayOnly), /2026-09-29/);
+    assert.doesNotMatch(String(dayOnly), /сумма остатков|средний запас/iu);
+    assert.ok(!sheetValues(salesSheet).some(hasStockCostFromEntryText));
+    assert.equal(namedRow(salesSheet, row.name).getCell(5 + shift).value, 120);
+  }
+});
+
+test("analytical stock and daily tables identify capitalization without labeling sales", async () => {
+  const report = withStockCostFromEntry(fixture("both"));
+  report.rows[0]!.openingCostFromEntry = true;
+  report.totals.overall = { ...report.totals.overall, stockCostFromEntry: false, closingCostFromEntry: true };
+  const workbook = await load(report);
+  const main = workbook.getWorksheet("Оборачиваемость")!;
+  assert.equal(main.getCell("G5").value, row.name);
+  assert.equal(main.getCell("T5").value, 120);
+  const productSource = (main.getRow(5).values as ExcelJS.CellValue[]).find(hasStockCostFromEntryText);
+  assert.match(String(productSource), /начальный остаток.*средний запас/iu);
+  assert.doesNotMatch(String(productSource), /конечный остаток/iu);
+  const unitSource = (main.getRow(7).values as ExcelJS.CellValue[]).find(hasStockCostFromEntryText);
+  assert.match(String(unitSource), /средний запас/iu);
+  assert.doesNotMatch(String(unitSource), /начальный остаток|конечный остаток/iu);
+  const overallSource = (main.getRow(8).values as ExcelJS.CellValue[]).find(hasStockCostFromEntryText);
+  assert.match(String(overallSource), /конечный остаток/iu);
+  assert.doesNotMatch(String(overallSource), /начальный остаток|средний запас/iu);
+  assert.ok(!(main.getRow(6).values as ExcelJS.CellValue[]).some(hasStockCostFromEntryText));
+  const audit = workbook.getWorksheet("Ежедневные остатки")!;
+  assert.equal(audit.getCell("I5").value, 100);
+  assert.equal(audit.getCell("K5").value, 20);
+  assert.ok((audit.getRow(5).values as ExcelJS.CellValue[]).some(hasStockCostFromEntryText));
+  for (const index of [6, 7, 8, 9, 10]) assert.ok(!(audit.getRow(index).values as ExcelJS.CellValue[]).some(hasStockCostFromEntryText));
+  for (const sheet of workbook.worksheets) {
+    if (sheet !== main && sheet !== audit) assert.ok(!sheetValues(sheet).some(hasStockCostFromEntryText), sheet.name);
+  }
+});
+
+test("analytical day exports preserve individual dates and authoritative stock totals with capitalization", async () => {
+  const report = withStockCostFromEntry(fixture("money"));
+  report.totals.overall = { ...report.totals.overall, stockCostFromEntry: false, openingCostFromEntry: true };
+  report.params.groupBy = "day";
+  report.rows = report.rows.map(item => ({ ...item, daily: [] }));
+  const workbook = await load(report);
+  const main = workbook.getWorksheet("Оборачиваемость")!;
+  assert.equal(main.getCell("A5").value, "2026-09-28");
+  assert.equal(main.getCell("D5").value, 100);
+  assert.equal(main.getCell("E5").value, 20);
+  for (const index of [5, 8, 9]) assert.ok((main.getRow(index).values as ExcelJS.CellValue[]).some(hasStockCostFromEntryText));
+  const overallSource = (main.getRow(9).values as ExcelJS.CellValue[]).find(hasStockCostFromEntryText);
+  assert.match(String(overallSource), /начальный остаток/iu);
+  assert.doesNotMatch(String(overallSource), /средний запас|конечный остаток/iu);
+  for (const index of [6, 7]) assert.ok(!(main.getRow(index).values as ExcelJS.CellValue[]).some(hasStockCostFromEntryText));
+  const audit = workbook.getWorksheet("Ежедневные остатки")!;
+  assert.ok((audit.getRow(5).values as ExcelJS.CellValue[]).some(hasStockCostFromEntryText));
+  assert.ok(!(audit.getRow(6).values as ExcelJS.CellValue[]).some(hasStockCostFromEntryText));
+});
+
+test("capitalization provenance remains blank for unavailable monetary stock", async () => {
+  const report = withStockCostFromEntry(fixture("money"));
+  Object.assign(report.params, { groupBy: "day", includeIncomplete: true });
+  report.daily = report.daily.map((day, index) => index === 1
+    ? { ...day, stockCost: null, stockCostFromEntry: true }
+    : day);
+  Object.assign(report.totals.overall, { openingCostFromEntry: true, closingCostFromEntry: true,
+    openingCost: null, closingCost: null, averageCost: null });
+  const main = (await load(report)).getWorksheet("Оборачиваемость")!;
+  assert.match(String(main.getCell("I5").value), stockCostFromEntryText);
+  assert.equal(main.getCell("D6").value, "n/a");
+  assert.equal(main.getCell("I6").value, null);
+  assert.match(String(main.getCell("I8").value), stockCostFromEntryText, "authoritative unit total retains its source");
+  assert.equal(main.getCell("I9").value, null, "unavailable overall stock is not sourced in the file");
+});
+
+test("exports without monetary stock do not show capitalization or change their dimensions", async () => {
+  for (const [profile, mode] of [["sample", "both"], ["sample", "quantity"], ["full", "quantity"]] as const) {
+    const [ordinary, affected] = await Promise.all([fixture(mode), withStockCostFromEntry(fixture(mode))].map(report => {
+      report.params.profile = profile;
+      return load(report);
+    }));
+    assert.deepEqual(affected.worksheets.map(sheet => [sheet.name, sheet.columnCount]),
+      ordinary.worksheets.map(sheet => [sheet.name, sheet.columnCount]));
+    for (const sheet of affected.worksheets) {
+      assert.ok(!sheetValues(sheet).some(hasStockCostFromEntryText));
+    }
+  }
+});
+
 test("standard outline hides one chronological quantity group at 2, 3 and 366 days with one collapse marker", async () => {
   for (const dayCount of [2, 3, 366]) {
     const report = fixture("both");

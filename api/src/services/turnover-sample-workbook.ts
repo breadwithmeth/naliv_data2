@@ -50,6 +50,7 @@ type RowInput = { row: TurnoverRow | TurnoverTotal; quantity: boolean; money: bo
 type CalculationLayout = {
   columns: readonly TurnoverStandardColumn[]; refs: FormulaColumns; basis: Basis; periodDays: number;
   salesReference: string; unavailable: "n/a" | null;
+  stockCostSource: boolean;
 };
 type StreamingSheet = ExcelJS.Worksheet & { commit(): void };
 type StreamingWorkbook = ExcelJS.stream.xlsx.WorkbookWriter & { zip: EventEmitter & { abort(): void }; stream: Writable };
@@ -104,6 +105,10 @@ function mainCellValues(
 ): ExcelJS.CellValue[] {
   const { row, context: values } = entry;
   const { columns, refs, basis, periodDays, unavailable, salesReference } = layout;
+  const showProvenance = layout.stockCostSource && entry.money;
+  let entryDates: string[] | undefined;
+  let hasSourcedAverage = false;
+  let hasSourcedWeightedStock = false;
   const missing = unavailable ? '"n/a"' : '""';
   for (const column of columns) {
     if (column.kind === "periodDays") {
@@ -121,6 +126,9 @@ function mainCellValues(
     const value = column.kind === "weighted" && !alignedDaily ? null : turnoverStandardValue(row, column, basis, periodDays);
     let formula: string | undefined;
     if (column.kind === "day") {
+      if (showProvenance && !column.half && numeric(value) && row.daily[column.index]?.stockCostFromEntry) {
+        (entryDates ??= []).push(column.date);
+      }
       if (column.half && alignedDaily) {
         const full = `${column.index === 0 ? refs.fullFirst : refs.fullLast}${rowNumber}`;
         values.push({ formula: `IF(ISNUMBER(${full}),${full}/2,"")`, result: value ?? "" });
@@ -166,7 +174,18 @@ function mainCellValues(
         break;
       }
     }
+    if (showProvenance && row.stockCostFromEntry && numeric(value)) {
+      if (column.kind === "average") hasSourcedAverage = true;
+      if (column.kind === "weighted") hasSourcedWeightedStock = true;
+    }
     values.push(formula ? { formula, result: value ?? unavailable ?? "" } : value ?? unavailable);
+  }
+  if (entryDates || hasSourcedAverage || hasSourcedWeightedStock) {
+    const metrics = [];
+    if (hasSourcedWeightedStock) metrics.push("сумма остатков");
+    if (hasSourcedAverage) metrics.push("средний запас");
+    if (entryDates) metrics.push(`дневные остатки: ${entryDates.length === periodDays ? "все даты" : entryDates.join(", ")}`);
+    values.push(`В т. ч. по оприходованию · ${metrics.join("; ")}`);
   }
   return values;
 }
@@ -235,9 +254,17 @@ async function createSheets(workbook: StreamingWorkbook, report: TurnoverReport,
     coefficient: columnLetter(metric("coefficient")), periodDays: columnLetter(metric("periodDays")), sales: columnLetter(metric("sales"))
   };
   const money = basis === "money";
+  const hasVisibleStockSource = (row: TurnoverTotal) =>
+    (row.stockCostFromEntry && numeric(row.averageCost)) ||
+    row.daily.some(day => day.stockCostFromEntry && numeric(day.stockCost));
+  const stockCostSource = money && (
+    hasVisibleStockSource(report.totals.overall) ||
+    (splitStores && report.totals.byStore.some(({ total }) => hasVisibleStockSource(total))) ||
+    report.rows.some(hasVisibleStockSource)
+  );
   const unavailable = report.params.includeIncomplete ? "n/a" : null;
   const salesReference = `'${SALES_SHEET}'!${columnLetter(identity.length + (money ? 2 : 1))}`;
-  const calculation: CalculationLayout = { columns, refs, basis, periodDays: days.length, salesReference, unavailable };
+  const calculation: CalculationLayout = { columns, refs, basis, periodDays: days.length, salesReference, unavailable, stockCostSource };
   const views: ExcelJS.AddWorksheetOptions["views"] = [{ state: "frozen", xSplit: itemColumn, ySplit: 1 }];
   const main = workbook.addWorksheet(money ? MAIN_MONEY : MAIN_UNITS, {
     views, properties: { outlineLevelCol: 1, outlineProperties: { summaryBelow: true, summaryRight: true } }
@@ -251,6 +278,7 @@ async function createSheets(workbook: StreamingWorkbook, report: TurnoverReport,
     // ExcelJS coalesces adjacent equal-width/style columns without comparing `collapsed`.
     return { width: firstDay + index === firstSummary ? 24 : 19, style: { numFmt } };
   })];
+  if (stockCostSource) main.getColumn(identity.length + columns.length + 1).width = 38;
   // Excel needs a single collapse flag on the visible summary column to the right of the hidden detail.
   // Override only these instances; ExcelJS derives the flag from outlineLevel on the detail columns.
   const detail = { get: () => false };
@@ -263,7 +291,9 @@ async function createSheets(workbook: StreamingWorkbook, report: TurnoverReport,
   if (money) setFullPageSetup(sales);
   else sales.pageSetup.margins = MARGINS;
   const { poorStart, mediumStart, goodStart } = TURNOVER_COEFFICIENT_THRESHOLDS;
-  const mainHeader = addHeader(main, [...identity, ...columns.map(column => calculationHeader(column, basis))]);
+  const mainLabels = [...identity, ...columns.map(column => calculationHeader(column, basis))];
+  if (stockCostSource) mainLabels.push("Оценка запасов");
+  const mainHeader = addHeader(main, mainLabels);
   mainHeader.getCell(refs.coefficient).note = `Коэффициент: Плохо [${poorStart}; ${mediumStart}) · Средне [${mediumStart}; ${goodStart}) · Хорошо ≥ ${goodStart}`;
   mainHeader.commit();
   addHeader(sales, [...identity, "Кол-во", "Продажи за период по себестоимости, ₸"]).commit();
@@ -320,7 +350,7 @@ async function createSheets(workbook: StreamingWorkbook, report: TurnoverReport,
       if (workbook.stream.writableNeedDrain) await once(workbook.stream, "drain", { signal });
     }
   }
-  if (money) main.autoFilter = `A1:${columnLetter(identity.length + columns.length)}${beforeOverall}`;
+  if (money) main.autoFilter = `A1:${columnLetter(identity.length + columns.length + Number(stockCostSource))}${beforeOverall}`;
   if (firstCoefficientRow !== undefined) {
     formatTurnoverCoefficientRange(main, refs.coefficient, firstCoefficientRow, lastCoefficientRow);
   }

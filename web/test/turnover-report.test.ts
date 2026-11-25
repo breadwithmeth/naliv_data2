@@ -277,6 +277,20 @@ test("default quantity selection keeps confirmed idle stock and active rows with
   assert.doesNotMatch(await productRow(dialog, 1).textContent() ?? "", /Без движения/);
 });
 
+test("inventory-entry provenance is visible on the estimated stock and its monetary total, never on sales", async t => {
+  const data = report();
+  const stock = { ...row(0), averageCost: 4411, stockCostFromEntry: true };
+  setRows(data, [stock, row(1)]);
+  Object.assign(data.totals.overall, { averageCost: 4511, stockCostFromEntry: true });
+  const { dialog } = await view(t, data);
+  await expandAll(dialog).click();
+  const financial = productRow(dialog, 0).locator("td.turnover-money");
+  assert.match(await financial.nth(0).innerText(), /4\s411\s+по оприходованию/i);
+  assert.doesNotMatch(await financial.nth(1).innerText(), /оприходованию/i);
+  assert.doesNotMatch(await productRow(dialog, 1).innerText(), /оприходованию/i);
+  assert.match(await dialog.locator("tfoot .turnover-money-total").innerText(), /4\s511\s+по оприходованию/i);
+});
+
 test("known zero and signed returns stay numeric; missing quantity and cost use accessible dashes", async t => {
   const data = report();
   data.params.includeIncomplete = true;

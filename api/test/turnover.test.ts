@@ -165,6 +165,7 @@ test("default turnover population is filtered before daily, grouping and totals,
     sales: ["complete", "missing-cost", "zero-sales", "returns"].map(sku => ["s", sku, "", dates.map(date =>
       [date, sku === "zero-sales" ? 0 : sku === "returns" ? -1 : 2, sku === "zero-sales" ? 0 : sku === "returns" ? -15 : 30, sku !== "returns" && sku !== "zero-sales"])]),
     costs: ["complete", "zero-sales", "returns"].map(sku => [0, "s", sku, "", "2026-10-01T00:00:00", 10]),
+    stockEntryEvidence: [],
     orders: [], receipts: [], idleStockActivity: [], lastSales: [], firstStock: [], salesDays: dates.map(date => ["s", date]),
     receiptDays: [], barcodes: [], bounds: { firstStock: dates[0], lastStock: "2026-11-04", firstSales: dates[0], lastSales: dates[2] }
   });

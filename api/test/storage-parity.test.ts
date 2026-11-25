@@ -125,6 +125,61 @@ test("readiness permits only the authenticated return-price extension while phys
   assert.throws(() => validateReadinessIdentity({ ...identity, layout: { ...identity.layout, contractSha256: "0".repeat(64) } }, binding, "challenge", ledger), /upgrade|transition|binding/i);
 });
 
+test("stock-entry identity requires the known chained edge, independently bound worker and exact manifest identity", () => {
+  const original = "a6f5f51899a2d2c14508b0203eb3cf0f3a0368f506fb9a0449ad100933a81871";
+  const predecessor = "64f140bdcfbb1d5944677d96f9842804199ca8931ffb6fd2b34ea41016c85c54";
+  const effective = "43c6ce8d697b88bb8782ac39cfa777cacefa95267c8af95c1d49501d228d8e54";
+  const worker = "d".repeat(64), previousWorker = "e".repeat(64);
+  const binding = { ...reloadPlan, contractSha256: original, planSha256: "c".repeat(64) };
+  const identity = { proofVersion: 1, challenge: "challenge", targetDatabase: binding.targetDatabase, sourceSchema: binding.sourceSchema, layout: { layoutVersion: 1, migrationId: binding.migrationId, contractSha256: effective, planSha256: binding.planSha256, compactionActive: false } };
+  const proof = { sourceSha256: "f".repeat(64), targetSha256: "c".repeat(64) };
+  const returnPriceUpgrade = {
+    version: 1, fromContractSha256: original, toContractSha256: predecessor,
+    table: "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary", column: "tsena",
+    workerSourceSha256: previousWorker, rangeStart: "2026-06-01", rangeEndExclusive: "2026-06-04",
+    cycleId: "00000000-0000-4000-8000-000000000003", canaryDay: "2026-06-03",
+    canaryPasses: [proof, proof], state: "verified", appliedAt: "2026-06-05T00:00:00Z", verifiedAt: "2026-06-05T01:00:00Z"
+  };
+  const stockEntryCostUpgrade = {
+    version: 1, fromContractSha256: predecessor, toContractSha256: effective, table: "document_oprihodovanie_tovarov_tovary",
+    columns: { nomenklatura_key: "text", harakteristika_key: "text", kolichestvo: "numeric", tsena: "numeric" },
+    previousWorkerSourceSha256: previousWorker, workerSourceSha256: worker, appliedAt: "2026-06-05T02:00:00Z"
+  };
+  const stockEntryCostBackfill = {
+    version: 1, verifiedAt: "2026-06-06T00:00:00Z", throughId: 9, documents: 2, lines: 3, orphanLines: 7,
+    nullCounts: { nomenklatura_key: 0, harakteristika_key: 3, kolichestvo: 0, tsena: 1 }, valuesSha256: "a".repeat(64)
+  };
+  const manifest = { manifestVersion: 1, reloadId: binding.migrationId, targetDatabase: binding.targetDatabase, sourceSchema: binding.sourceSchema, planSha256: binding.planSha256, returnPriceUpgrade, stockEntryCostUpgrade, stockEntryCostBackfill };
+  const ledger = { planSha256: binding.planSha256, contractSha256: original, indexManifestSha256: binding.indexManifestSha256, sourceSha256: previousWorker, manifest, returnPriceUpgrade, stockEntryCostUpgrade, stockEntryCostBackfill };
+  assert.equal(validateReadinessIdentity(identity, binding, "challenge", ledger).layout?.contractSha256, effective);
+  assert.equal(validateReadinessIdentity(identity, binding, "challenge", { ...ledger, manifest: { ...manifest, stockEntryCostBackfill: undefined }, stockEntryCostBackfill: undefined }).layout?.contractSha256, effective);
+  const sku = "1469aa80-276b-4a76-90d6-72319e47cc92";
+  const receiptProof = { from: binding.from, toExclusive: binding.toExclusive, sourceSha256: "a".repeat(64), targetSha256: "a".repeat(64), verifiedAt: "2026-06-07T00:00:00Z" };
+  const stockEntryReceiptProofs = { [sku]: receiptProof };
+  const receiptManifest = { ...manifest, stockEntryReceiptProofs };
+  const receiptLedger = { ...ledger, manifest: receiptManifest, stockEntryReceiptProofs };
+  assert.equal(validateReadinessIdentity(identity, binding, "challenge", receiptLedger).layout?.contractSha256, effective);
+  assert.throws(() => validateReadinessIdentity(identity, binding, "challenge", { ...receiptLedger, stockEntryReceiptProofs: undefined }), /binding/i);
+  const invalidReceiptProofs = { [sku]: { ...receiptProof, targetSha256: "b".repeat(64) } };
+  assert.throws(() => validateReadinessIdentity(identity, binding, "challenge", {
+    ...receiptLedger, manifest: { ...receiptManifest, stockEntryReceiptProofs: invalidReceiptProofs }, stockEntryReceiptProofs: invalidReceiptProofs
+  }), /binding|proof/i);
+  for (const patch of [
+    { sourceSha256: worker },
+    { stockEntryCostUpgrade: { ...stockEntryCostUpgrade, workerSourceSha256: "0".repeat(64) } },
+    { stockEntryCostBackfill: { ...stockEntryCostBackfill, valuesSha256: "0".repeat(64) } },
+    { manifest: { ...manifest, stockEntryCostBackfill: { ...stockEntryCostBackfill, verifiedAt: "2026-06-05T01:30:00Z" } } },
+    { manifest: { ...manifest, stockEntryCostUpgrade: undefined } },
+    { manifest: { ...manifest, targetDatabase: { ...manifest.targetDatabase, oid: 1 } } },
+    { manifest: { ...manifest, returnPriceUpgrade: { ...returnPriceUpgrade, state: "backfilling", verifiedAt: null } } }
+  ]) assert.throws(() => validateReadinessIdentity(identity, binding, "challenge", { ...ledger, ...patch }), /upgrade|transition|binding/i);
+  assert.throws(() => validateReadinessIdentity(identity, { ...binding, contractSha256: predecessor }, "challenge", { ...ledger, contractSha256: predecessor }), /upgrade|transition|binding/i);
+  const nativeBinding = { ...binding, contractSha256: effective };
+  assert.throws(() => validateReadinessIdentity(identity, nativeBinding, "challenge", { ...ledger, contractSha256: effective }), /upgrade|transition|binding/i);
+  const nativeLedger = { ...ledger, contractSha256: effective, manifest: { ...manifest, stockEntryCostUpgrade: undefined, stockEntryCostBackfill: undefined, returnPriceUpgrade: undefined }, returnPriceUpgrade: undefined, stockEntryCostUpgrade: undefined, stockEntryCostBackfill: undefined };
+  assert.equal(validateReadinessIdentity(identity, nativeBinding, "challenge", nativeLedger).layout?.contractSha256, effective);
+});
+
 test("readiness exercises actual audit groups across eight turnover variants and every business export", () => {
   const selection = { from: "2026-06-01", to: "2026-06-02", sku: "sku001", storeKey: "shop", activityKey: "activity", rowKeys: {} as Record<string, string> };
   for (const mode of ["quantity", "money"]) for (const profile of ["summary", "full"]) for (const store of ["all", "shop"]) selection.rowKeys[`${mode}|${profile}|${store}`] = `actual ${mode} ${profile} ${store}`;

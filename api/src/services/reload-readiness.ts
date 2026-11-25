@@ -2,9 +2,15 @@ import { createHash } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { config } from "../config.js";
+import { businessToday } from "../lib/business-day.js";
 import { prisma } from "../prisma.js";
-import { RETURN_PRICE_EFFECTIVE_CONTRACT_SHA256, RETURN_PRICE_SOURCE_ENTITY, RETURN_PRICE_TABLE, returnPriceUpgradeSchema, validReturnPriceUpgrade } from "./return-price-upgrade.js";
+import { RETURN_PRICE_EFFECTIVE_CONTRACT_SHA256, RETURN_PRICE_SOURCE_ENTITY, RETURN_PRICE_TABLE, returnPriceUpgradeSchema } from "./return-price-upgrade.js";
+import {
+  STOCK_ENTRY_COLUMNS, STOCK_ENTRY_EFFECTIVE_CONTRACT_SHA256, STOCK_ENTRY_PARENT, STOCK_ENTRY_SOURCE_ENTITY, STOCK_ENTRY_TABLE,
+  parseStockEntryReceiptProofs, reloadContractBinding, type StockEntryHistoricalReceiptCoverage
+} from "./stock-entry-upgrade.js";
 export { validReturnPriceUpgrade } from "./return-price-upgrade.js";
+export { businessToday } from "../lib/business-day.js";
 
 type Executor = Pick<Prisma.TransactionClient, "$queryRaw" | "$queryRawUnsafe">;
 /** Mirrors naliv_data1 analytics_reload.PAUSE_AT_BYTES (writer capacity pause). */
@@ -29,9 +35,17 @@ type Source = z.infer<typeof sourceSchema>;
 type Descriptor = z.infer<typeof descriptorSchema>;
 type Job = { reload_id: string; job_key: string; cycle_id: string; phase: string; source_entity: string; range_start: string | Date | null; range_end_exclusive: string | Date | null; status: string; required: boolean; source_rows: bigint | number | null; written_rows: bigint | number | null; business_sha256: string | null; verified_at: Date | string | null; source_sha256: string | null; verified_manifest: unknown };
 type Plan = { reload_id: string; table_schema: string; plan_sha256: string; contract_sha256: string; index_manifest_sha256: string; source_sha256: string; from_date: string | Date; to_exclusive: string | Date; canary_status: string; status: string; manifest: unknown; revision: bigint | number; updated_at: Date };
-type Identity = { database_name: string; database_oid: bigint | number; schema_name: string; schema_oid: bigint | number; database_bytes: bigint | number; has_layout: boolean; has_plans: boolean; has_jobs: boolean; tables: string[] };
+type Identity = { database_name: string; database_oid: bigint | number; schema_name: string; schema_oid: bigint | number; database_bytes: bigint | number; has_layout: boolean; has_plans: boolean; has_jobs: boolean; tables: string[]; stock_entry_columns: boolean };
 type Layout = { table_schema: string; layout_version: number; contract_sha256: string; plan_sha256: string; migration_id: string; ddl_frozen: boolean };
-export type ReloadReadinessState = ReloadReadiness & { readonly binding: string; readonly coverageSources: Array<{ source: Source; intervals: Array<{ from: string; to: string }> }>; readonly returnPriceIntervals: Array<{ from: string; to: string }> };
+export type ReloadReadinessState = ReloadReadiness & {
+  readonly binding: string;
+  readonly coverageSources: Array<{ source: Source; intervals: Array<{ from: string; to: string }> }>;
+  readonly returnPriceIntervals: Array<{ from: string; to: string }>;
+  readonly stockEntryCostAvailable?: boolean;
+  readonly stockEntryCostBackfillVerified?: boolean;
+  readonly stockEntryCostCoverage?: { from: string; toExclusive: string };
+  readonly stockEntryHistoricalReceiptCoverage?: StockEntryHistoricalReceiptCoverage;
+};
 const fallbackTables = ["document_ustanovka_tsen_nomenklatury_tovary", "document_otchet_o_roznichnyh_prodazhah_tovary", "document_chek_kkm", "document_chek_kkm_tovary", "accumulation_register_tovary_na_skladah_balance"];
 const normalizeDay = (value: Date | string | null) => value instanceof Date ? value.toISOString().slice(0, 10) : value;
 const nextDay = (value: string) => new Date(Date.parse(value) + 86_400_000).toISOString().slice(0, 10);
@@ -40,8 +54,16 @@ function canonicalJson(value: unknown): string {
   if (value && typeof value === "object") return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
   return JSON.stringify(value);
 }
-function state(value: ReloadReadiness, binding: string, coverageSources: ReloadReadinessState["coverageSources"] = [], returnPriceIntervals: ReloadReadinessState["returnPriceIntervals"] = []): ReloadReadinessState {
-  return Object.defineProperties(value, { binding: { value: binding }, coverageSources: { value: coverageSources }, returnPriceIntervals: { value: returnPriceIntervals } }) as ReloadReadinessState;
+function state(value: ReloadReadiness, binding: string, coverageSources: ReloadReadinessState["coverageSources"] = [], returnPriceIntervals: ReloadReadinessState["returnPriceIntervals"] = [], stockEntry?: {
+  verified: boolean; coverage?: ReloadReadinessState["stockEntryCostCoverage"]; historicalReceiptCoverage?: StockEntryHistoricalReceiptCoverage;
+}): ReloadReadinessState {
+  return Object.defineProperties(value, {
+    binding: { value: binding }, coverageSources: { value: coverageSources }, returnPriceIntervals: { value: returnPriceIntervals },
+    stockEntryCostAvailable: { value: stockEntry?.verified ?? false },
+    stockEntryCostBackfillVerified: { value: stockEntry?.verified ?? false },
+    stockEntryCostCoverage: { value: stockEntry?.coverage },
+    stockEntryHistoricalReceiptCoverage: { value: stockEntry?.historicalReceiptCoverage }
+  }) as ReloadReadinessState;
 }
 /** Only application-owned schema identifiers reach this read-only seam. No fact scans. */
 export async function readReloadReadiness(executor: Executor = prisma, metadataSchema = "ops"): Promise<ReloadReadinessState> {
@@ -53,7 +75,13 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
     [identity] = await executor.$queryRawUnsafe<Identity[]>(`select current_database() as database_name, d.oid::bigint as database_oid,
       n.nspname as schema_name, n.oid::bigint as schema_oid, pg_database_size(current_database()) as database_bytes,
       to_regclass($1) is not null as has_layout, to_regclass($2) is not null as has_plans, to_regclass($3) is not null as has_jobs,
-      array(select c.relname::text from pg_class c where c.relnamespace = n.oid and c.relkind in ('r','p')) as tables
+      array(select c.relname::text from pg_class c where c.relnamespace = n.oid and c.relkind in ('r','p')) as tables,
+      (select count(*) = 4 from pg_class c join pg_attribute a on a.attrelid = c.oid
+        where c.relnamespace = n.oid and c.relname = '${STOCK_ENTRY_TABLE}' and c.relkind = 'r'
+          and a.attnum > 0 and not a.attisdropped and not a.attnotnull and not a.atthasdef
+          and a.attidentity = '' and a.attgenerated = '' and
+          ((a.attname in ('nomenklatura_key', 'harakteristika_key') and format_type(a.atttypid, a.atttypmod) = 'text') or
+           (a.attname in ('kolichestvo', 'tsena') and format_type(a.atttypid, a.atttypmod) = 'numeric'))) as stock_entry_columns
       from pg_database d left join pg_namespace n on n.oid = to_regnamespace($4) where d.datname = current_database()`, `${metadataSchema}.analytics_storage_layout`, `${metadataSchema}.analytics_reload_plans`, `${metadataSchema}.analytics_reload_jobs`, config.PGSCHEMA);
     if (!identity) return state(current, "blocked:identity");
     current.databaseBytes = Number(identity.database_bytes);
@@ -74,8 +102,13 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
     current.from = normalizeDay(plan.from_date); current.toExclusive = normalizeDay(plan.to_exclusive);
     const manifest = manifestSchema.parse(plan.manifest);
     const upgrade = manifest.returnPriceUpgrade;
-    const contractBound = upgrade === undefined ? plan.contract_sha256 === layout.contract_sha256 : validReturnPriceUpgrade(plan.manifest, plan.contract_sha256, layout.contract_sha256);
+    const stockEntryLayout = layout.contract_sha256 === STOCK_ENTRY_EFFECTIVE_CONTRACT_SHA256;
+    const contractBound = reloadContractBinding(plan.manifest, plan.contract_sha256, layout.contract_sha256, plan.source_sha256);
+    const stockEntryTransition = contractBound === "stock-entry-prepared" || contractBound === "stock-entry-verified";
     if (!contractBound || plan.plan_sha256 !== layout.plan_sha256 || plan.table_schema !== identity.schema_name || layout.table_schema !== identity.schema_name || layout.migration_id !== plan.reload_id || manifest.reloadId !== plan.reload_id || manifest.planSha256 !== plan.plan_sha256 || manifest.targetDatabase.name !== identity.database_name || manifest.targetDatabase.oid !== Number(identity.database_oid) || manifest.sourceSchema.name !== identity.schema_name || manifest.sourceSchema.oid !== Number(identity.schema_oid) || manifest.from !== current.from || manifest.toExclusive !== current.toExclusive || manifest.from >= manifest.toExclusive || !sha.safeParse(plan.source_sha256).success || !sha.safeParse(plan.index_manifest_sha256).success || !["pending", "running", "verified"].includes(plan.canary_status) || !Number.isSafeInteger(Number(plan.revision)) || Number(plan.revision) < 0 || (upgrade?.canaryPasses.length === 2 && plan.source_sha256 !== upgrade.workerSourceSha256)) return state(current, `blocked:${binding}`);
+    if (stockEntryTransition && (!identity.stock_entry_columns || plan.status !== "ready" || plan.canary_status !== "verified")) return state(current, `blocked:${binding}`);
+    const receiptProofs = parseStockEntryReceiptProofs(plan.manifest, contractBound, manifest.from);
+    if (receiptProofs === null) return state(current, `blocked:${binding}`);
     const recovery = manifest.recoveryJobs;
     if (manifest.sources.some(source => source.required && !recovery.some(job => job.source === source.key && job.required))) throw new Error("Required source has no recovery jobs");
     // Hash the writer's complete descriptors: schema parsing strips fields the API does not use.
@@ -114,6 +147,14 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
           const job = byKey.get(descriptor.jobKey), evidence = evidenceByKey.get(descriptor.jobKey);
           if (descriptor.source !== "retail" || descriptor.sourceEntity !== RETURN_PRICE_SOURCE_ENTITY || descriptor.phase !== "deep_reread" || descriptor.parentTable !== "document_otchet_o_roznichnyh_prodazhah" || descriptor.balancePeriod !== null || descriptor.rangeStart === null || descriptor.rangeStart < upgrade.rangeStart || descriptor.rangeStart >= upgrade.rangeEndExclusive || descriptor.rangeEndExclusive !== nextDay(descriptor.rangeStart) || days.has(descriptor.rangeStart)) throw new Error("Invalid return price day");
           if (upgrade.state === "verified" && (job?.status !== "verified" || !Object.hasOwn(evidence?.tables[RETURN_PRICE_TABLE]?.nullCounts ?? {}, "tsena"))) throw new Error("Unverified return price day");
+          if (stockEntryTransition && evidence) {
+            const price = evidence.tables[RETURN_PRICE_TABLE];
+            if (!Object.hasOwn(price?.resourceTotals ?? {}, "tsena") ||
+                createHash("sha256").update(canonicalJson(evidence.tables)).digest("hex") !== job?.business_sha256 ||
+                Object.values(evidence.tables).some(table => Object.values(table.nullCounts).some(count => count > table.rows))) {
+              throw new Error("Invalid predecessor return price proof");
+            }
+          }
           days.add(descriptor.rangeStart);
         }
         if (upgrade.canaryPasses.length === 2) {
@@ -129,7 +170,7 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
     const required = recovery.filter(descriptor => descriptor.required);
     current.totalJobs = required.length; current.completedJobs = required.filter(descriptor => byKey.get(descriptor.jobKey)?.status === "verified").length;
     const coverageSources = manifest.sources.map(source => ({ source, intervals: jobs.filter(job => job.source_entity === source.entity && job.status === "verified" && job.range_start && job.range_end_exclusive).map(job => ({ from: normalizeDay(job.range_start)!, to: normalizeDay(job.range_end_exclusive)! })).sort((a, b) => a.from.localeCompare(b.from)) }));
-    const returnPriceIntervals = layout.contract_sha256 === RETURN_PRICE_EFFECTIVE_CONTRACT_SHA256 && sources.get("retail")?.kind === "dated"
+    const returnPriceIntervals = (layout.contract_sha256 === RETURN_PRICE_EFFECTIVE_CONTRACT_SHA256 || stockEntryLayout) && sources.get("retail")?.kind === "dated"
       ? jobs.filter(job => job.source_entity === RETURN_PRICE_SOURCE_ENTITY && job.status === "verified" && job.range_start && job.range_end_exclusive && descriptors.get(job.job_key)?.source === "retail" && Object.hasOwn(evidenceByKey.get(job.job_key)?.tables[RETURN_PRICE_TABLE]?.nullCounts ?? {}, "tsena"))
         .map(job => ({ from: normalizeDay(job.range_start)!, to: normalizeDay(job.range_end_exclusive)! })).sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to))
       : [];
@@ -150,7 +191,56 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
     const failed = required.some(job => ["failed", "unavailable"].includes(byKey.get(job.jobKey)!.status));
     const missingRequired = manifest.sources.some(source => source.required && source.tables.some(table => !identity!.tables.includes(table)));
     current.status = plan.status === "blocked" || failed || missingRequired ? "blocked" : plan.status === "paused_capacity" || required.some(job => byKey.get(job.jobKey)!.status === "paused_capacity") ? "paused_capacity" : plan.status !== "ready" || plan.canary_status !== "verified" || current.completedJobs !== current.totalJobs ? "reloading" : "ready";
-    return state(current, `${binding}:${current.status}`, coverageSources, returnPriceIntervals);
+    let stockEntryCoverage: ReloadReadinessState["stockEntryCostCoverage"];
+    if (stockEntryLayout && contractBound === "native" && identity.stock_entry_columns && current.status === "ready") {
+      const source = sources.get(STOCK_ENTRY_PARENT);
+      // Native compact plans certify the immutable dated replay and then only its
+      // contiguous, verified routine continuation, never data before the source floor.
+      if (source?.entity === STOCK_ENTRY_SOURCE_ENTITY && source.kind === "dated" && !source.unavailable &&
+          source.floor && source.tables.length === 2 && source.tables.includes(STOCK_ENTRY_TABLE)) {
+        const replay = recovery.filter(job => job.source === STOCK_ENTRY_PARENT).sort((a, b) =>
+          (a.rangeStart ?? "").localeCompare(b.rangeStart ?? ""));
+        let cursor = source.floor;
+        const hasStockEntryEvidence = (descriptor: Descriptor) => {
+          const job = byKey.get(descriptor.jobKey), evidence = evidenceByKey.get(descriptor.jobKey);
+          const lines = evidence?.tables[STOCK_ENTRY_TABLE];
+          return descriptor.phase === "incremental" && descriptor.parentTable === STOCK_ENTRY_PARENT && descriptor.balancePeriod === null &&
+            job?.status === "verified" && evidence && lines &&
+            STOCK_ENTRY_COLUMNS.every(column => Object.hasOwn(lines.nullCounts, column) && lines.nullCounts[column]! <= lines.rows) &&
+            Object.hasOwn(lines.resourceTotals, "kolichestvo") && Object.hasOwn(lines.resourceTotals, "tsena") &&
+            createHash("sha256").update(canonicalJson(evidence.tables)).digest("hex") === job.business_sha256;
+        };
+        if (replay.length > 0 && replay.every(descriptor => {
+          if (descriptor.cycleId !== plan.reload_id || descriptor.rangeStart !== cursor ||
+              descriptor.rangeEndExclusive !== nextDay(cursor) || !hasStockEntryEvidence(descriptor)) return false;
+          cursor = descriptor.rangeEndExclusive;
+          return true;
+        }) && cursor === manifest.toExclusive) {
+          const continuation = expected.filter(descriptor =>
+            descriptor.cycleId !== plan.reload_id && descriptor.source === STOCK_ENTRY_PARENT &&
+            descriptor.rangeStart !== null && descriptor.rangeStart >= manifest.toExclusive)
+            .sort((a, b) => a.rangeStart!.localeCompare(b.rangeStart!));
+          for (const descriptor of continuation) {
+            const { cycleId, phase, sourceEntity, rangeStart, rangeEndExclusive, balancePeriod } = descriptor;
+            if (rangeStart! > cursor) break;
+            if (rangeStart !== cursor || rangeEndExclusive !== nextDay(cursor)) continue;
+            const { window } = manifest.routineCycles[cycleId]!;
+            if (rangeStart < window.from || rangeEndExclusive > window.toExclusive) continue;
+            const jobKey = createHash("sha256").update(canonicalJson({
+              reloadId: plan.reload_id, cycleId, phase, sourceEntity, rangeStart, rangeEndExclusive, balancePeriod
+            })).digest("hex");
+            if (descriptor.jobKey === jobKey && hasStockEntryEvidence(descriptor)) cursor = rangeEndExclusive;
+          }
+          stockEntryCoverage = { from: source.floor, toExclusive: cursor };
+        }
+      }
+    }
+    const stockEntryVerified = current.status === "ready" && (contractBound === "stock-entry-verified" || stockEntryCoverage !== undefined);
+    const receiptBinding = receiptProofs ? `:stock-entry-receipts:${receiptProofs.sha256}` : "";
+    return state(current, `${binding}:${current.status}${receiptBinding}`, coverageSources, returnPriceIntervals, {
+      verified: stockEntryVerified, coverage: stockEntryCoverage,
+      historicalReceiptCoverage: stockEntryVerified ? receiptProofs?.coverage : undefined
+    });
   } catch {
     return state({ ...current, status: "blocked" }, "blocked:unreadable");
   }
@@ -165,9 +255,6 @@ export function createReloadReadinessReader(load: () => Promise<ReloadReadinessS
   };
 }
 export const getReloadReadiness = createReloadReadinessReader();
-export function businessToday(now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Qyzylorda", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
-}
 export function evaluateCoverage(readiness: ReloadReadinessState, kind: "receipts" | "retail" | "document_postuplenie_tovarov", window: { from: Date; to: Date }, today = businessToday()): ReloadCoverage {
   if (!Number.isFinite(window.from.getTime()) || !Number.isFinite(window.to.getTime()) || window.from >= window.to) throw Object.assign(new Error("Некорректный период отчёта"), { statusCode: 400 });
   const from = window.from.toISOString().slice(0, 10), to = window.to.toISOString().slice(0, 10);

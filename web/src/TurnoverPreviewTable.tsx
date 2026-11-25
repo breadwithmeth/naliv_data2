@@ -21,7 +21,7 @@ const VIRTUAL_CELL_LIMIT = 20_000;
 const PRODUCT_BLOCK_SIZE = 32;
 const EMPTY_EXPANSION: ReadonlySet<string> = new Set();
 type StandardMetrics = Pick<TurnoverPreviewRow,
-  "daily" | "averageQty" | "averageCost" | "periodSales" | "idleStock" |
+  "daily" | "averageQty" | "averageCost" | "periodSales" | "idleStock" | "stockCostFromEntry" |
   "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays"
 >;
 const COST_COLUMNS = [
@@ -100,7 +100,11 @@ function StandardMetricCells({ metrics, columns, periodDays, rowHeaders, only }:
     } else {
       cells.push(column.kind === "coefficient"
         ? <CoefficientCell key={key} value={value} headers={headers} />
-        : <td key={key} headers={headers} className={`turnover-numeric${isMoney ? " turnover-money" : column.kind === "day" ? " turnover-preview-day" : ""}`}><PreviewNumber value={value} /></td>);
+        : <td key={key} headers={headers} className={`turnover-numeric${isMoney ? " turnover-money" : column.kind === "day" ? " turnover-preview-day" : ""}`}>
+          <PreviewNumber value={value} />
+          {isMoney && column.kind === "average" && value !== null && metrics.stockCostFromEntry &&
+            <span className="turnover-stock-note" title="В стоимости запаса учтена цена проведённого оприходования. Она не используется для оценки продаж.">по оприходованию</span>}
+        </td>);
     }
   }
   return <>

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
@@ -44,6 +46,35 @@ test("explicit contract path takes precedence over an unavailable runtime mount"
   });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), manifest);
+});
+
+test("old and stock-entry contracts package the same index manifest without weakening the marker gate", () => {
+  const currentPath = fileURLToPath(new URL("../../../naliv_data1/analytics_storage_contract.json", import.meta.url));
+  const current = JSON.parse(readFileSync(currentPath, "utf8"));
+  const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value,
+    (_key, item) => item && !Array.isArray(item) && typeof item === "object"
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : item)).digest("hex");
+  const old = structuredClone(current);
+  const table = "document_oprihodovanie_tovarov_tovary";
+  old.tables[table].columns = old.tables[table].columns.filter((column: string) => !["nomenklatura_key", "harakteristika_key", "kolichestvo", "tsena"].includes(column));
+  const currentHash = digest(current), oldHash = digest(old);
+  assert.equal(currentHash, "43c6ce8d697b88bb8782ac39cfa777cacefa95267c8af95c1d49501d228d8e54");
+  assert.equal(oldHash, "64f140bdcfbb1d5944677d96f9842804199ca8931ffb6fd2b34ea41016c85c54");
+
+  const dir = mkdtempSync(join(tmpdir(), "stock-entry-contract-"));
+  try {
+    const oldPath = join(dir, "predecessor.json");
+    writeFileSync(oldPath, JSON.stringify(old));
+    assert.deepEqual(getIndexManifest(oldPath), getIndexManifest(currentPath));
+    const oldMarker = { layoutVersion: 1, contractSha256: oldHash, ddlFrozen: false };
+    const currentMarker = { ...oldMarker, contractSha256: currentHash };
+    assert.doesNotThrow(() => assertCompactLayout(oldMarker, oldHash));
+    assert.doesNotThrow(() => assertCompactLayout(currentMarker, currentHash));
+    assert.throws(() => assertCompactLayout(oldMarker, currentHash), /migration required/i);
+    assert.throws(() => assertCompactLayout(currentMarker, oldHash), /migration required/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // Dropping a contract identity from manifest would permit alias retirement without coverage.

@@ -20,6 +20,28 @@ const money = '#,##0.00;[Red](#,##0.00);0.00';
 const percent = '0.0%;[Red](0.0%);0.0%';
 const changeNames = { new: "Продажи появились", "no-base": "Нет базы для сравнения", missing: "Нет данных", comparable: "Нет данных" };
 const riskNames = { "no-sales": "Нет продаж", overstock: "Излишек", deficit: "Риск дефицита", stagnant: "Без движения" };
+const stockCostSourceLabel = "Оценка запасов";
+const stockCostFromEntry = "В т. ч. по оприходованию";
+
+function periodStockCostSource(row: TurnoverTotal): string | null {
+  const opening = row.openingCostFromEntry && Number.isFinite(row.openingCost);
+  const closing = row.closingCostFromEntry && Number.isFinite(row.closingCost);
+  const average = row.stockCostFromEntry && Number.isFinite(row.averageCost);
+  if (!opening && !closing && !average) return null;
+  const metrics: string[] = [];
+  if (opening) metrics.push("начальный остаток");
+  if (closing) metrics.push("конечный остаток");
+  if (average) metrics.push("средний запас");
+  return `${stockCostFromEntry} · ${metrics.join(", ")}`;
+}
+
+function hasDailyStockCostFromEntry(day: TurnoverDailyRow) {
+  return day.stockCostFromEntry && Number.isFinite(day.stockCost);
+}
+
+function totalsHaveStockCostFromEntry({ totals }: TurnoverReport) {
+  return periodStockCostSource(totals.overall) !== null || totals.byUnit.some(periodStockCostSource);
+}
 
 function changeValue(change: TurnoverChange, includeIncomplete: boolean): Value {
   return change.pct === null ? includeIncomplete ? changeNames[change.status] : null : change.pct / 100;
@@ -90,6 +112,12 @@ function reportColumns(report: TurnoverReport): Column<TurnoverRow>[] {
     { label: "Стоимость без движения ≥60 дней, ₸", block: "Замороженные средства · накопительные группы", value: r => r.stagnantCost.d60, footer: t => t.stagnantCost.d60, format: money },
     { label: "Стоимость без движения ≥90 дней, ₸", block: "Замороженные средства · накопительные группы", value: r => r.stagnantCost.d90, footer: t => t.stagnantCost.d90, format: money }
   );
+  if (report.params.mode !== "quantity" && (totalsHaveStockCostFromEntry(report) || report.rows.some(periodStockCostSource))) {
+    columns.push({
+      label: stockCostSourceLabel, block: "Источник стоимости", width: 48, optional: true,
+      value: periodStockCostSource, footer: periodStockCostSource
+    });
+  }
   return columns;
 }
 
@@ -187,7 +215,9 @@ function table<T>(workbook: StreamingWorkbook, name: string, columns: Column<T>[
       const row = sheet.addRow(columns.map(column => {
         if (!column.footer) return null;
         const value = column.footer(total, label);
-        return value === null || (typeof value === "number" && !Number.isFinite(value)) ? includeIncomplete ? "n/a" : null : value;
+        return value === null || (typeof value === "number" && !Number.isFinite(value))
+          ? includeIncomplete && !column.optional ? "n/a" : null
+          : value;
       }));
       row.eachCell({ includeEmpty: true }, cell => {
         cell.font = { name: "Calibri", size: 11, bold: true };
@@ -205,7 +235,7 @@ function table<T>(workbook: StreamingWorkbook, name: string, columns: Column<T>[
   };
 }
 
-function dailyColumns(report: TurnoverReport, includePeriodTotals = false): Column<TurnoverDailyRow>[] {
+function dailyColumns(report: TurnoverReport, daysHaveStockCostFromEntry: boolean, includePeriodTotals = false): Column<TurnoverDailyRow>[] {
   const columns: Column<TurnoverDailyRow>[] = [
     { label: "Дата", block: "Ежедневно", value: r => r.date, footer: (_total, label) => label, width: 16 },
     { label: "Единица учёта 1С", block: "Ежедневно", value: r => r.unit, footer: t => t.unit },
@@ -227,6 +257,13 @@ function dailyColumns(report: TurnoverReport, includePeriodTotals = false): Colu
       { label: "Стоимость начального остатка периода, ₸", block: "Итоги периода · не сумма дней", value: () => null, footerOnly: true, footer: t => t.openingCost, format: money },
       { label: "Средняя стоимость запаса периода, ₸", block: "Итоги периода · не сумма дней", value: () => null, footerOnly: true, footer: t => t.averageCost, format: money }
     );
+  }
+  if (report.params.mode !== "quantity" && (daysHaveStockCostFromEntry || (includePeriodTotals && totalsHaveStockCostFromEntry(report)))) {
+    columns.push({
+      label: stockCostSourceLabel, block: "Остаток · качество данных", width: includePeriodTotals ? 48 : 29, optional: true,
+      value: day => hasDailyStockCostFromEntry(day) ? stockCostFromEntry : null,
+      footer: periodStockCostSource
+    });
   }
   return columns;
 }
@@ -252,7 +289,8 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
       ? "n/a — данных нет или расчёт невозможен; 0 — известный ноль."
       : `Включены строки с полным расчётом и остатки без продаж и закупок. Исключено строк без полного расчёта: ${report.excludedIncompleteRows ?? 0}. Пустые показатели не равны нулю.`} Стоимость по себестоимости, выручка отдельно.`;
     if (report.params.groupBy === "day") {
-      const main = table(workbook, "Оборачиваемость", dailyColumns(report, true), "Оборачиваемость запасов · по дням", note + " В ИТОГО дневной остаток означает конечный запас; начальный и средний запас периода приведены отдельно.", canceled.signal, includeIncomplete);
+      const daysHaveStockCostFromEntry = report.params.mode !== "quantity" && report.daily.some(hasDailyStockCostFromEntry);
+      const main = table(workbook, "Оборачиваемость", dailyColumns(report, daysHaveStockCostFromEntry, true), "Оборачиваемость запасов · по дням", note + " В ИТОГО дневной остаток означает конечный запас; начальный и средний запас периода приведены отдельно.", canceled.signal, includeIncomplete);
       for (const row of report.daily) {
         if (!main.add(row)) { await main.nextPart(); main.add(row); }
         if (++written % 1024 === 0) await checkpoint();
@@ -303,16 +341,20 @@ async function writeAnalyticalTurnoverWorkbook(report: TurnoverReport, output: W
     }
     await demand.finish();
 
+    const skuAudit = report.rows.some(row => row.daily.length > 0);
+    const auditHasStockCostFromEntry = report.params.mode !== "quantity" && (skuAudit
+      ? report.rows.some(row => row.daily.some(hasDailyStockCostFromEntry))
+      : report.daily.some(hasDailyStockCostFromEntry));
     type DailyAudit = { row: TurnoverRow | null; day: TurnoverDailyRow };
     const audit: Column<DailyAudit>[] = [
       { label: "Магазин", block: "Товар", value: r => r.row?.storeName ?? "Вся отфильтрованная выборка", width: 32 },
       { label: "Склад", block: "Товар", value: r => r.row?.warehouseName ?? "По применённым фильтрам", width: 24 },
       { label: "Наименование", block: "Товар", value: r => r.row?.name ?? "Итого в одной единице учёта", width: 42 },
       { label: "SKU", block: "Товар", value: r => r.row?.sku ?? null, optional: true, width: 38 },
-      ...dailyColumns(report).map(column => ({ ...column, value: (r: DailyAudit) => column.value(r.day) }))
+      ...dailyColumns(report, auditHasStockCostFromEntry).map(column => ({ ...column, value: (r: DailyAudit) => column.value(r.day) }))
     ];
     const daily = table(workbook, "Ежедневные остатки", audit, "Ежедневные остатки · аудит среднего запаса", "Широкая выборка: итоги по единице учёта; для аудита SKU выберите конкретный товар. Вес краёв ½; среднее = взвешенная сумма / (N − 1). Один день — единственный остаток. Пропуск снимка не ноль. " + note, canceled.signal, includeIncomplete);
-    if (report.rows.some(row => row.daily.length > 0)) {
+    if (skuAudit) {
       for (const row of report.rows) for (const day of row.daily) {
         const value = { row, day };
         if (!daily.add(value)) { await daily.nextPart(); daily.add(value); }

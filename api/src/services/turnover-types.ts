@@ -68,6 +68,8 @@ export type TurnoverDailyRow = {
   unitKey?: string;
   quantity: number | null;
   stockCost: number | null;
+  /** This closing snapshot includes stock valued from a capitalization document. */
+  stockCostFromEntry?: boolean;
   salesQty: number | null;
   salesCost: number | null;
   revenue: number | null;
@@ -96,6 +98,10 @@ export type TurnoverRow = {
   openingCost: number | null;
   closingCost: number | null;
   averageCost: number | null;
+  /** The available weighted average includes an estimated positive daily closing. */
+  stockCostFromEntry?: boolean;
+  openingCostFromEntry?: boolean;
+  closingCostFromEntry?: boolean;
   periodSales: TurnoverSales;
   comparisonSales: TurnoverSales;
   quantityChange: TurnoverChange;
@@ -126,7 +132,8 @@ export type TurnoverRow = {
   daily: TurnoverDailyRow[];
 };
 export type TurnoverTotalMetrics = Pick<TurnoverRow,
-  "openingQty" | "closingQty" | "averageQty" | "openingCost" | "closingCost" | "averageCost" |
+  "openingQty" | "closingQty" | "averageQty" | "openingCost" | "closingCost" | "averageCost" | "stockCostFromEntry" |
+  "openingCostFromEntry" | "closingCostFromEntry" |
   "periodSales" | "comparisonSales" | "quantityChange" | "costChange" |
   "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays" |
   "stockDays" | "excessQty" | "deficitQty" | "recommendedOrderQty" | "openOrderQty" | "stagnantCost"
@@ -168,6 +175,7 @@ export type TurnoverReport = {
     stagnantCount: number;
     skuCount: number;
     stockCost: number | null;
+    stockCostFromEntry?: boolean;
     noSalesCount: number;
     overstockCount: number;
     deficitCount: number;
@@ -203,7 +211,8 @@ export type TurnoverReport = {
 export type TurnoverPreviewRow = Pick<TurnoverRow,
   "key" | "name" | "sku" | "article" | "storeKey" | "storeName" | "categoryName" | "rootGroupKey" | "rootGroupName" | "unit" |
   "noSalesHistory" | "idleStock" | "openingQty" | "closingQty" | "averageQty" |
-  "openingCost" | "closingCost" | "averageCost" | "periodSales" |
+  "openingCost" | "closingCost" | "averageCost" | "stockCostFromEntry" | "periodSales" |
+  "openingCostFromEntry" | "closingCostFromEntry" |
   "turnoverQty" | "turnoverQtyDays" | "turnoverCost" | "turnoverCostDays" |
   "stockDays" | "risks" | "daily"
 > & { primaryAction: string | null };

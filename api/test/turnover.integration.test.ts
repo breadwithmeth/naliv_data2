@@ -163,6 +163,8 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
         "information_register_sebestoimost_nomenklatury_record_type (period timestamp, active boolean, magazin_key text, nomenklatura_key text, harakteristika_key text, tsena numeric, line_number bigint)",
         "document_ustanovka_sebestoimosti (ref_key text, date timestamp, magazin_key text, deletion_mark boolean, posted boolean)",
         "document_ustanovka_sebestoimosti_tovary (\"_parent_ref_key\" text, \"_parent_line_index\" bigint, nomenklatura_key text, harakteristika_key text, tsena numeric)",
+        "document_oprihodovanie_tovarov (ref_key text, date timestamp, magazin_key text, deletion_mark boolean, posted boolean)",
+        "document_oprihodovanie_tovarov_tovary (\"_parent_ref_key\" text, nomenklatura_key text, harakteristika_key text, kolichestvo numeric, tsena numeric, ref_key text)",
         "document_zakaz_postavschiku (ref_key text, date timestamp, magazin_key text, sklad_key text, deletion_mark boolean, posted boolean, zakryt boolean, data_postupleniya timestamp)",
         "document_zakaz_postavschiku_tovary (\"_parent_ref_key\" text, nomenklatura_key text, kolichestvo numeric)",
         "document_postuplenie_tovarov (ref_key text, date timestamp, deletion_mark boolean, posted boolean, zakaz_postavschiku_key text, magazin_key text, sklad_key text)",
@@ -302,6 +304,265 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       assert.equal(byDay.summary.totalRowCount, report.summary.totalRowCount);
       assert.equal(byDay.summary.noSalesCount, report.summary.noSalesCount);
       assert.deepEqual(byDay.totals, report.totals);
+      await t.test("capitalization supports only contiguous stock of the same raw store, SKU and characteristic", async () => {
+        await tx.$executeRawUnsafe("savepoint stock_entry");
+        try {
+          // Use the retained line identities on the proof path. Earlier positional
+          // inserts and other scenarios keep the smaller fixture shapes.
+          for (const table of ["document_otchet_o_roznichnyh_prodazhah_tovary",
+            "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary",
+            "document_postuplenie_tovarov_tovary", "document_chek_kkm_tovary"]) {
+            await tx.$executeRawUnsafe(`alter table ${table} add column ref_key text`);
+          }
+          await tx.$executeRawUnsafe("alter table document_chek_kkm add column vid_operatsii text");
+          await tx.$executeRawUnsafe("alter table document_chek_kkm_tovary add column kolichestvo numeric");
+          await tx.$executeRawUnsafe(`update catalog_magaziny set description = 'Shop, г. Тест, 1' where ref_key = 's1'`);
+          await tx.$executeRawUnsafe(`insert into catalog_magaziny values ('s1-alias','Other legal entity, г. Тест, 1')`);
+          await tx.$executeRawUnsafe(`insert into catalog_sklady values
+            ('w1-extra','Other warehouse','s1'), ('w1-alias','Other legal entity warehouse','s1-alias')`);
+          await tx.$executeRawUnsafe(`insert into catalog_nomenklatura
+            select sku, sku, 'folder', false, null, null, null, null, case when sku = 'entry-good' then 'u3' else 'u1' end
+            from unnest(array['entry-good','entry-official','entry-invalid-official','entry-ambiguous','entry-invalid',
+              'entry-other-characteristic','entry-other-raw-store','entry-oversized','entry-unlinked','entry-growth',
+              'entry-net-zero','entry-signed','entry-reset','entry-no-reset','entry-gap','entry-only',
+              'entry-same-day-conflict','entry-generic-official','entry-supplier','entry-return',
+              'entry-negative-sale','entry-sold','entry-anchor-sold','entry-cash-unlinked','entry-cash-return',
+              'entry-cash-incomplete','entry-null-characteristic','entry-null-balance','entry-null-inflow']) as items(sku)`);
+          await tx.$executeRawUnsafe(`insert into document_oprihodovanie_tovarov values
+            ('first','2026-08-01 12:00','s1',false,true),
+            ('second','2026-08-02 00:00','s1',false,true),
+            ('third','2026-08-03 12:00','s1',false,true),
+            ('cutoff','2026-08-04 00:00','s1',false,true),
+            ('deleted','2026-08-03 12:00','s1',true,true),
+            ('unposted','2026-08-03 12:00','s1',false,false),
+            ('alias','2026-08-01 12:00','s1-alias',false,true)`);
+          await tx.$executeRawUnsafe(`insert into document_oprihodovanie_tovarov_tovary
+            ("_parent_ref_key", nomenklatura_key, harakteristika_key, kolichestvo, tsena) values
+            ('first','entry-good','v',5,12), ('first','entry-good','v',2,12.00),
+            ('second','entry-good','v',2,12), ('cutoff','entry-good','v',10,900),
+            ('deleted','entry-good','v',3,90), ('unposted','entry-good','v',3,99),
+            ('first','entry-official','v',4,12), ('first','entry-invalid-official','v',4,12),
+            ('first','entry-ambiguous','v',5,12), ('second','entry-ambiguous','v',1,13),
+            ('first','entry-invalid','v',5,12), ('second','entry-invalid','v',1,0),
+            ('first','entry-other-characteristic','wrong',5,12),
+            ('alias','entry-other-raw-store','v',5,12),
+            ('first','entry-oversized','v',5,12), ('first','entry-unlinked','v',5,12),
+            ('first','entry-growth','v',5,12), ('first','entry-net-zero','v',5,12),
+            ('third','entry-net-zero','v',2,13), ('first','entry-signed','v',5,12),
+            ('first','entry-reset','v',5,12), ('third','entry-reset','v',2,13),
+            ('first','entry-no-reset','v',5,12), ('first','entry-gap','v',5,12),
+            ('first','entry-only','v',5,12), ('first','entry-generic-official','v',4,12),
+            ('first','entry-supplier','v',5,12), ('first','entry-return','v',5,12), ('first','entry-negative-sale','v',5,12),
+            ('first','entry-same-day-conflict','v',2,12), ('first','entry-same-day-conflict','v',3,13),
+            ('first','entry-sold','v',5,12), ('first','entry-anchor-sold','v',5,12),
+            ('first','entry-cash-unlinked','v',5,12), ('first','entry-cash-return','v',5,12), ('first','entry-cash-incomplete','v',5,12),
+            ('first','entry-null-characteristic',null,5,12), ('first','entry-null-balance','',5,12),
+            ('first','entry-null-inflow','v',5,12)`);
+          await tx.$executeRawUnsafe(`update document_oprihodovanie_tovarov_tovary
+            set ref_key = "_parent_ref_key", "_parent_ref_key" = null where nomenklatura_key = 'entry-good'`);
+          await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance
+            select snapshot.day::timestamp, 'w1', sku, 'v', qty
+            from (values
+              ('entry-good',null,7,9,8), ('entry-official',null,4,4,4), ('entry-invalid-official',null,4,4,4),
+              ('entry-ambiguous',null,5,6,5), ('entry-invalid',null,5,5,4),
+              ('entry-other-characteristic',null,5,5,5), ('entry-other-raw-store',null,5,5,5),
+              ('entry-oversized',null,6,4,4), ('entry-unlinked',3,5,4,4), ('entry-growth',null,5,6,4),
+              ('entry-net-zero',null,5,1,2), ('entry-signed',null,6,6,6),
+              ('entry-reset',null,5,null,2), ('entry-no-reset',null,5,null,2), ('entry-gap',null,5,5,5),
+              ('entry-same-day-conflict',null,5,5,5), ('entry-generic-official',null,4,4,4),
+              ('entry-supplier',null,5,5,4), ('entry-return',null,5,5,4), ('entry-negative-sale',null,5,5,4),
+              ('entry-sold',null,5,5,4), ('entry-anchor-sold',null,3,3,2),
+              ('entry-cash-incomplete',null,5,1,1),
+              ('entry-cash-unlinked',null,5,5,4), ('entry-cash-return',null,5,5,4), ('entry-null-inflow',null,5,5,4)
+            ) s(sku,d1,d2,d3,d4)
+            cross join lateral (values ('2026-08-01',d1), ('2026-08-02',d2), ('2026-08-03',d3), ('2026-08-04',d4)) snapshot(day,qty)
+            where qty is not null`);
+          await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance values
+            ('2026-08-03','w1-extra','entry-net-zero','v',-1),
+            ('2026-08-02','w1-extra','entry-signed','v',-1), ('2026-08-03','w1-extra','entry-signed','v',-1),
+            ('2026-08-04','w1-extra','entry-signed','v',-1),
+            ('2026-08-06','w1','entry-gap','v',4),
+            ('2026-08-04','w2','entry-good','v',3),
+            ('2026-08-02','w1','entry-null-characteristic','00000000-0000-0000-0000-000000000000',5),
+            ('2026-08-02','w1','entry-null-balance',null,5)`);
+          await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov
+            (ref_key,date,deletion_mark,posted,magazin_key,sklad_key) values
+            ('supplier-entry','2026-08-02 10:00',false,true,'s1-alias','w1')`);
+          await tx.$executeRawUnsafe(`insert into document_postuplenie_tovarov_tovary
+            (ref_key,nomenklatura_key,kolichestvo) values ('supplier-entry','entry-supplier',1)`);
+          await tx.$executeRawUnsafe(`insert into information_register_sebestoimost_nomenklatury_record_type values
+            ('2026-07-01',true,'s2','entry-good','v',10,1),
+            ('2026-07-01',true,'s1','entry-official','v',30,1),
+            ('2026-07-01',true,'s1','entry-invalid-official','v',30,1),
+            ('2026-08-02 12:00',true,'s1','entry-invalid-official','v',0,2)`);
+          await tx.$executeRawUnsafe(`insert into document_ustanovka_sebestoimosti values
+            ('global-entry-official','2026-08-02 00:00',null,false,true)`);
+          await tx.$executeRawUnsafe(`insert into document_ustanovka_sebestoimosti_tovary values
+            ('global-entry-official',1,'entry-generic-official','v',40)`);
+          await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary
+            ("_parent_ref_key",nomenklatura_key,harakteristika_key,sklad_key,kolichestvo,summa) values
+            ('rr-s1-2026-08-03','entry-good','v','w1',1,10),
+            ('rr-s1-2026-08-02','entry-return','v','w1',2,20),
+            ('rr-s1-2026-08-02','entry-negative-sale','v','w1',-1,-10),
+            ('rr-s1-2026-08-03','entry-official','v','w1',1,20),
+            ('rr-s1-2026-08-01','entry-anchor-sold','v','w1',2,20),
+            ('rr-s1-2026-08-02','entry-cash-incomplete','v','w1',4,40)`);
+          await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary
+            (ref_key,nomenklatura_key,harakteristika_key,sklad_key,kolichestvo,summa)
+            values ('rr-s1-2026-08-02','entry-sold','v','w1',5,50)`);
+          await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary
+            ("_parent_ref_key",nomenklatura_key,harakteristika_key,sklad_key,kolichestvo,summa)
+            values ('rr-s1-2026-08-02','entry-return','v','w1',1,10)`);
+          await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary
+            (ref_key,nomenklatura_key,harakteristika_key,sklad_key,kolichestvo,summa)
+            values ('rr-s1-2026-08-02','entry-null-inflow',null,'w1',1,10)`);
+          await tx.$executeRawUnsafe(`insert into document_chek_kkm values
+            ('mapped-sale','2026-08-03 12:00',false,true,'s1','rr-s1-2026-08-03','Продажа'),
+            ('unmapped-sale','2026-08-02 12:00',false,true,'s1',null,'Продажа'),
+            ('mapped-return','2026-08-02 12:00',false,true,'s1','rr-s1-2026-08-02','Возврат'),
+            ('partial-shift-a','2026-08-02 12:00',false,true,'s1','rr-s1-2026-08-02','Продажа'),
+            ('partial-shift-b','2026-08-02 13:00',false,true,'s1','rr-s1-2026-08-02','Продажа')`);
+          await tx.$executeRawUnsafe(`insert into document_chek_kkm_tovary (ref_key,nomenklatura_key,kolichestvo) values
+            ('mapped-sale','entry-good',1), ('unmapped-sale','entry-cash-unlinked',1), ('mapped-return','entry-cash-return',1),
+            ('partial-shift-a','entry-cash-incomplete',3), ('partial-shift-b','entry-cash-incomplete',2)`);
+
+          const readStockEntry = async () => ({
+            status: "ready" as const, from: null, toExclusive: null, totalJobs: 0, completedJobs: 0,
+            sources: [], databaseBytes: 0, pauseAtBytes: 12_000_000_000, binding: "fixture:stock-entry",
+            returnPriceIntervals: [], stockEntryCostAvailable: true, stockEntryCostBackfillVerified: true,
+            coverageSources: [
+              { key: "stock", entity: "AccumulationRegister_ТоварыНаСкладах", kind: "balance" as const,
+                tables: ["accumulation_register_tovary_na_skladah_balance"] },
+              { key: "retail", entity: "Document_ОтчетОРозничныхПродажах", kind: "dated" as const,
+                tables: ["document_otchet_o_roznichnyh_prodazhah","document_otchet_o_roznichnyh_prodazhah_tovary",
+                  "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary"] },
+              { key: "receipts", entity: "Document_ЧекККМ", kind: "dated" as const,
+                tables: ["document_chek_kkm","document_chek_kkm_tovary"] },
+              { key: "document_postuplenie_tovarov", entity: "Document_ПоступлениеТоваров", kind: "dated" as const,
+                tables: ["document_postuplenie_tovarov","document_postuplenie_tovarov_tovary"] }
+            ].map(source => ({ source: { ...source, floor: "2026-08-01", required: true },
+              intervals: [{ from: "2026-08-01", to: "2026-08-07" }] }))
+          });
+          const selection = { ...params, search: "entry-", profile: "summary" as const, sort: "name" as const };
+          const split = await getTurnoverReport(selection, readStockEntry);
+          const row = (sku: string) => split.rows.find((row) => row.sku === `entry-${sku}`)!;
+          const points = (sku: string) => row(sku).daily.map(day => [day.quantity, day.stockCost, day.stockCostFromEntry ?? false]);
+          assert.deepEqual(points("good"), [[7,84,true],[9,108,true],[8,96,true]]);
+          assert.equal(row("good").closingCost, 96);
+          assert.equal(row("good").averageCost, 99);
+          assert.equal(row("good").periodSales.quantity, 1);
+          assert.equal(row("good").periodSales.revenue, 10);
+          assert.equal(row("good").periodSales.cost, null, "the entry price must never price a sale");
+          assert.equal(row("good").stockCostFromEntry, true);
+          assert.deepEqual(points("anchor-sold"), [[3,36,true],[3,36,true],[2,24,true]]);
+          assert.deepEqual(points("cash-incomplete"), [[5,60,true],[1,null,false],[1,null,false]]);
+          for (const sku of ["supplier", "return", "negative-sale", "sold", "cash-unlinked", "cash-return", "null-inflow"]) {
+            assert.deepEqual(points(sku), [[5,60,true],[5,null,false],[4,null,false]], sku);
+          }
+          assert.equal(row("return").periodSales.quantity, 1);
+          assert.equal(row("return").periodSales.revenue, 10);
+          assert.equal(row("return").periodSales.cost, null, "the entry must not price net sales on a return day");
+          assert.equal(row("negative-sale").periodSales.quantity, -1);
+          assert.equal(row("negative-sale").periodSales.cost, null);
+          assert.deepEqual(points("official"), [[4,120,false],[4,120,false],[4,120,false]]);
+          assert.equal(row("official").periodSales.cost, 30);
+          assert.deepEqual(points("invalid-official"), [[4,120,false],[4,null,false],[4,null,false]]);
+          assert.deepEqual(points("ambiguous"), [[5,60,true],[6,null,false],[5,null,false]]);
+          assert.deepEqual(points("invalid"), [[5,60,true],[5,null,false],[4,null,false]]);
+          assert.deepEqual(points("generic-official"), [[4,48,true],[4,160,false],[4,160,false]]);
+          assert.deepEqual(points("growth"), [[5,60,true],[6,null,false],[4,null,false]]);
+          assert.deepEqual(points("net-zero"), [[5,60,true],[0,0,false],[2,null,false]]);
+          assert.deepEqual(points("reset"), [[5,60,true],[0,0,false],[2,26,true]]);
+          assert.deepEqual(points("no-reset"), [[5,60,true],[0,0,false],[2,null,false]]);
+          assert.deepEqual(points("null-characteristic"), [[5,null,false],[0,0,false],[0,0,false]]);
+          assert.deepEqual(points("null-balance"), [[5,null,false],[0,0,false],[0,0,false]]);
+          for (const sku of ["other-characteristic","other-raw-store","oversized","unlinked","signed","same-day-conflict"]) {
+            assert.equal(row(sku).closingCost, null, sku);
+            assert.equal(row(sku).stockCostFromEntry, undefined, sku);
+          }
+          assert.equal(split.rows.some(row => row.sku === "entry-only"), false, "entry documents must not populate the report");
+          assert.equal(split.totals.overall.stockCostFromEntry, undefined, "no flag on an unavailable average");
+          assert.equal(split.totals.byUnit.find(total => total.unit === "л")!.stockCostFromEntry, true);
+          assert.equal(split.totals.byStore[0]!.total.stockCostFromEntry, undefined);
+          assert.equal(split.summary.stockCostFromEntry, undefined, "no flag on an unavailable closing sum");
+          const good = { ...params, sku: "entry-good" };
+          const sample = await getTurnoverReport({ ...good, store: ["s1", "s2"], profile: "sample", mode: "money" }, readStockEntry);
+          assert.equal(sample.rows[0]!.closingQty, 11);
+          assert.equal(sample.rows[0]!.closingCost, 126);
+          assert.equal(sample.summary.stockCostFromEntry, true);
+          assert.equal(sample.rows[0]!.stockCostFromEntry, true);
+          assert.equal(sample.totals.overall.daily.at(-1)!.stockCostFromEntry, true);
+          const preview = await getTurnoverPreview({ ...good, profile: "sample", mode: "quantity" }, readStockEntry);
+          assert.equal(preview.rows[0]!.stockCostFromEntry, true);
+          assert.equal(preview.totals.overall.stockCostFromEntry, true);
+          const quantityWorkbook = await getTurnoverReport({ ...good, profile: "sample", mode: "quantity" }, readStockEntry);
+          assert.equal(quantityWorkbook.rows[0]!.stockCostFromEntry, undefined);
+          const detail = await getTurnoverRow({ ...good, auditGroup: row("good").key }, readStockEntry);
+          assert.equal(detail.row.stockCostFromEntry, true);
+          assert.equal(detail.row.daily.at(-1)!.stockCostFromEntry, true);
+          const byDay = await getTurnoverReport({ ...good, groupBy: "day" }, readStockEntry);
+          assert.equal(byDay.daily.at(-1)!.stockCostFromEntry, true);
+          const warehouse = await getTurnoverReport({ ...params, warehouse: "w1", sku: "entry-signed" }, readStockEntry);
+          assert.equal(warehouse.rows[0]!.closingQty, 6);
+          assert.equal(warehouse.rows[0]!.closingCost, null, "one warehouse cannot hide offsetting signed stock");
+          const gap = await getTurnoverReport({ ...params, from: "2026-08-02", to: "2026-08-06", sku: "entry-gap" }, readStockEntry);
+          assert.equal(gap.rows[0]!.openingCost, 60, "prior opening snapshot uses only already recorded entry evidence");
+          assert.deepEqual(gap.rows[0]!.daily.map(day => [day.quantity, day.stockCost]), [[5,60],[5,60],[null,null],[4,null]]);
+          assert.equal(gap.rows[0]!.openingCostFromEntry, true);
+          assert.equal(gap.rows[0]!.closingCostFromEntry, undefined);
+          assert.equal(gap.rows[0]!.stockCostFromEntry, undefined, "an unavailable average has no provenance");
+          const openingOnly = await getTurnoverReport({ ...params, from: "2026-08-02", sku: "entry-generic-official" }, readStockEntry);
+          assert.equal(openingOnly.rows[0]!.openingCostFromEntry, true);
+          assert.equal(openingOnly.rows[0]!.closingCostFromEntry, undefined);
+          assert.equal(openingOnly.rows[0]!.averageCost, 160);
+          assert.equal(openingOnly.rows[0]!.stockCostFromEntry, undefined);
+          assert.equal(openingOnly.totals.overall.stockCostFromEntry, undefined);
+          for (const key of ["stock", "retail", "receipts", "document_postuplenie_tovarov"]) {
+            const readGap = async () => {
+              const state = await readStockEntry();
+              return { ...state, coverageSources: state.coverageSources.map(entry => entry.source.key === key
+                ? { ...entry, intervals: [{ from: "2026-08-01", to: "2026-08-02" }, { from: "2026-08-03", to: "2026-08-07" }] } : entry) };
+            };
+            const uncertified = await getTurnoverReport(good, readGap);
+            assert.equal(uncertified.rows[0]!.closingCost, null, key);
+            assert.ok(uncertified.warnings.some(warning => warning.includes("Оценка по оприходованию ограничена")), key);
+          }
+          const readHistorical = async () => {
+            const state = await readStockEntry();
+            return { ...state, coverageSources: state.coverageSources.map(entry => entry.source.key === "document_postuplenie_tovarov"
+              ? { ...entry, source: { ...entry.source, floor: "2026-08-03" }, intervals: [{ from: "2026-08-03", to: "2026-08-07" }] } : entry),
+              stockEntryHistoricalReceiptCoverage: [{ sku: "entry-good", from: "2026-08-01", toExclusive: "2026-08-03" }] };
+          };
+          assert.equal((await getTurnoverReport(good, readHistorical)).rows[0]!.closingCost, 96);
+          assert.equal((await getTurnoverReport({ ...params, sku: "entry-anchor-sold" }, readHistorical)).rows[0]!.closingCost, null,
+            "historical proof must not certify other SKUs");
+          const readNative = async () => ({
+            ...await readStockEntry(), stockEntryCostCoverage: { from: "2026-08-01", toExclusive: "2026-08-03" }
+          });
+          const native = await getTurnoverReport(good, readNative);
+          assert.deepEqual(native.rows[0]!.daily.map(day => day.stockCost), [84, 108, null]);
+          const readNativeAfterAnchor = async () => ({
+            ...await readStockEntry(), stockEntryCostCoverage: { from: "2026-08-02", toExclusive: "2026-08-04" }
+          });
+          const excludedAnchor = await getTurnoverReport(good, readNativeAfterAnchor);
+          assert.equal(excludedAnchor.rows[0]!.stockCostFromEntry, undefined);
+          const readUnverified = async () => ({ ...await readStockEntry(), stockEntryCostBackfillVerified: false });
+          const unverified = await getTurnoverReport(good, readUnverified);
+          assert.equal(unverified.rows[0]!.closingQty, 8);
+          assert.equal(unverified.rows[0]!.closingCost, null);
+          assert.equal(unverified.rows[0]!.stockCostFromEntry, undefined);
+          await tx.$executeRawUnsafe(`alter table document_oprihodovanie_tovarov_tovary
+            drop column nomenklatura_key, drop column harakteristika_key, drop column kolichestvo, drop column tsena`);
+          const readPredecessor = async () => ({ ...await readStockEntry(), stockEntryCostAvailable: false });
+          const legacy = await getTurnoverReport(good, readPredecessor);
+          assert.equal(legacy.rows[0]!.closingQty, 8);
+          assert.equal(legacy.rows[0]!.closingCost, null);
+          assert.equal(legacy.rows[0]!.stockCostFromEntry, undefined);
+        } finally {
+          await tx.$executeRawUnsafe("rollback to savepoint stock_entry");
+          await tx.$executeRawUnsafe("release savepoint stock_entry");
+        }
+      });
       await t.test("shop and network totals average the daily sum, not separate in-stock averages", async () => {
         await tx.$executeRawUnsafe("savepoint availability_totals");
         try {

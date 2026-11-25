@@ -91,7 +91,7 @@ export function completeTurnoverReport<T extends TurnoverReport | TurnoverPrevie
     summary: {
       ...report.summary, rowCount: report.params.groupBy === "day" ? daily.length : rows.length,
       totalRowCount: rows.length, skuCount: new Set(rows.map(row => row.sku).filter(Boolean)).size,
-      stockCost: null, frozen30Cost: null, frozen60Cost: null, frozen90Cost: null, costCoveragePct: null
+      stockCost: null, stockCostFromEntry: undefined, frozen30Cost: null, frozen60Cost: null, frozen90Cost: null, costCoveragePct: null
     },
     warnings: [...report.warnings,
       "Итоги исходной выборки не показаны: состав строк изменён, а атомарные данные для пересчёта отсутствуют.",

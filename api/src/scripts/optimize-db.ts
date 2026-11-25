@@ -149,7 +149,10 @@ function canonicalJson(value: unknown): string {
 }
 
 export function getIndexManifest(contractPath?: string): IndexManifest {
-  const contract = readContract(contractPath);
+  return indexManifestFor(readContract(contractPath));
+}
+
+function indexManifestFor(contract: StorageContract): IndexManifest {
   const indexes = queryDefinitions.map(toSpec);
   for (const index of indexes) {
     if (!contract.tables[index.table]) throw new Error(`Query index is outside storage contract: ${index.name}`);
@@ -463,8 +466,10 @@ export async function reconcileQueryIndex(db: PrismaClient, schema: string, spec
 }
 
 export async function applyIndexManifest(db: PrismaClient, schema: string, turnoverOnly = false, log: (message: string) => void = console.log, contractPath?: string): Promise<void> {
-  const manifest = getIndexManifest(contractPath);
-  const contractHash = createHash("sha256").update(canonicalJson(readContract(contractPath))).digest("hex");
+  // Use one artifact snapshot for both the exact marker gate and the DDL it authorizes.
+  const contract = readContract(contractPath);
+  const manifest = indexManifestFor(contract);
+  const contractHash = createHash("sha256").update(canonicalJson(contract)).digest("hex");
   const maintenanceKey = `naliv-analytics-maintenance:${schema}`;
   const storageKey = `naliv-analytics-storage:${schema}`;
   let maintenanceLocked = false;
