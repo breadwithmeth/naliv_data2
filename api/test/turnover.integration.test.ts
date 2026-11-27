@@ -546,6 +546,10 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
           });
           const excludedAnchor = await getTurnoverReport(good, readNativeAfterAnchor);
           assert.equal(excludedAnchor.rows[0]!.stockCostFromEntry, undefined);
+          let generationRead = 0;
+          await assert.rejects(getTurnoverReport(good, async () => ({
+            ...await readNative(), binding: generationRead++ === 0 ? "fixture:worker-before" : "fixture:worker-after"
+          })), { statusCode: 409 });
           const readUnverified = async () => ({ ...await readStockEntry(), stockEntryCostBackfillVerified: false });
           const unverified = await getTurnoverReport(good, readUnverified);
           assert.equal(unverified.rows[0]!.closingQty, 8);

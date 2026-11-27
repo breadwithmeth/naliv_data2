@@ -13,7 +13,7 @@ import { writeMarketingCompensationWorkbook } from "../services/marketing-compen
 import { writeTurnoverWorkbook } from "../services/turnover-workbook.js";
 import type { MarketingCompensationReport } from "../services/marketing-compensation-types.js";
 import type { TurnoverReport } from "../services/turnover-types.js";
-import { STOCK_ENTRY_EFFECTIVE_CONTRACT_SHA256, parseStockEntryReceiptProofs, reloadContractBinding } from "../services/stock-entry-upgrade.js";
+import { STOCK_ENTRY_EFFECTIVE_CONTRACT_SHA256, parseStockEntryReceiptProofs, reloadContractBinding, stockEntryEvidenceBinding } from "../services/stock-entry-upgrade.js";
 /** Mirrors naliv_data1 analytics_reload.PAUSE_AT_BYTES; kept local to avoid service side effects. */
 const RELOAD_PAUSE_AT_BYTES = 12_000_000_000;
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -297,7 +297,8 @@ type ReadinessBinding = ReloadPlan & { planSha256: string };
 type LedgerBinding = {
   planSha256: string; contractSha256: string; indexManifestSha256: string;
   sourceSha256?: string; revision?: string;
-  manifest?: unknown; returnPriceUpgrade?: unknown; stockEntryCostUpgrade?: unknown; stockEntryCostBackfill?: unknown; stockEntryReceiptProofs?: unknown;
+  manifest?: unknown; returnPriceUpgrade?: unknown; stockEntryCostUpgrade?: unknown; stockEntryCostBackfill?: unknown;
+  stockEntryReceiptProofs?: unknown; lowLoadWorkerUpgrade?: unknown;
 };
 type ReadinessResponse = { status: number; value: Json; ms: number; uncached: boolean };
 type ReadinessHttp = (entry: RequestCase) => Promise<ReadinessResponse>;
@@ -315,20 +316,23 @@ export function parseReloadPlan(value: unknown): ReloadPlan { return reloadPlanS
 
 const upgradeIdentitySchema = z.object({
   reloadId: z.string(), planSha256: z.string(), targetDatabase: z.unknown(), sourceSchema: z.unknown(),
-  returnPriceUpgrade: z.unknown(), stockEntryCostUpgrade: z.unknown(), stockEntryCostBackfill: z.unknown(), stockEntryReceiptProofs: z.unknown()
+  returnPriceUpgrade: z.unknown(), stockEntryCostUpgrade: z.unknown(), stockEntryCostBackfill: z.unknown(),
+  stockEntryReceiptProofs: z.unknown(), lowLoadWorkerUpgrade: z.unknown()
 });
 
 /** Only reviewed additive edges may change the effective contract.
  * Immutable plan/contract/index hashes and challenged physical identity stay exact. */
-export function validateReadinessIdentity(value: unknown, binding: ReadinessBinding, challenge: string, ledger: LedgerBinding | null) {
+function bindReadinessIdentity(value: unknown, binding: ReadinessBinding, challenge: string, ledger: LedgerBinding | null) {
   if (!ledger || ledger.planSha256 !== binding.planSha256 || ledger.contractSha256 !== binding.contractSha256 || ledger.indexManifestSha256 !== binding.indexManifestSha256) throw new Error("Reload ledger plan/contract/index manifest binding mismatch");
   const candidate = apiIdentitySchema.parse(value);
   const effectiveHash = candidate.layout?.contractSha256 ?? "";
   const contractBinding = reloadContractBinding(ledger.manifest, binding.contractSha256, effectiveHash, ledger.sourceSha256);
   if (!contractBinding) throw new Error("Invalid reload contract upgrade transition binding");
-  if (parseStockEntryReceiptProofs(ledger.manifest, contractBinding, binding.from) === null) throw new Error("Invalid historical stock entry receipt proof binding");
+  const receiptProofs = parseStockEntryReceiptProofs(ledger.manifest, contractBinding, binding.from);
+  if (receiptProofs === null) throw new Error("Invalid historical stock entry receipt proof binding");
   if (effectiveHash !== binding.contractSha256 || effectiveHash === STOCK_ENTRY_EFFECTIVE_CONTRACT_SHA256 ||
-      ledger.returnPriceUpgrade != null || ledger.stockEntryCostUpgrade != null || ledger.stockEntryCostBackfill != null || ledger.stockEntryReceiptProofs != null) {
+      ledger.returnPriceUpgrade != null || ledger.stockEntryCostUpgrade != null || ledger.stockEntryCostBackfill != null ||
+      ledger.stockEntryReceiptProofs != null || ledger.lowLoadWorkerUpgrade != null) {
     const manifest = upgradeIdentitySchema.parse(ledger.manifest);
     if (manifest.reloadId !== binding.migrationId || manifest.planSha256 !== binding.planSha256 ||
         canonicalJson(manifest.targetDatabase) !== canonicalJson(binding.targetDatabase) ||
@@ -336,11 +340,26 @@ export function validateReadinessIdentity(value: unknown, binding: ReadinessBind
         canonicalJson(manifest.returnPriceUpgrade ?? null) !== canonicalJson(ledger.returnPriceUpgrade ?? null) ||
         canonicalJson(manifest.stockEntryCostUpgrade ?? null) !== canonicalJson(ledger.stockEntryCostUpgrade ?? null) ||
         canonicalJson(manifest.stockEntryCostBackfill ?? null) !== canonicalJson(ledger.stockEntryCostBackfill ?? null) ||
-        canonicalJson(manifest.stockEntryReceiptProofs ?? null) !== canonicalJson(ledger.stockEntryReceiptProofs ?? null)) throw new Error("Reload contract upgrade parent identity binding mismatch");
+        canonicalJson(manifest.stockEntryReceiptProofs ?? null) !== canonicalJson(ledger.stockEntryReceiptProofs ?? null) ||
+        canonicalJson(manifest.lowLoadWorkerUpgrade ?? null) !== canonicalJson(ledger.lowLoadWorkerUpgrade ?? null)) throw new Error("Reload contract upgrade parent identity binding mismatch");
   }
   const identity = validateApiIdentity(value, { ...binding, contractSha256: effectiveHash }, challenge, true);
   if (identity.layout?.compactionActive) throw new Error("HTTP API layout is frozen/compaction active");
-  return identity;
+  return { identity, stockEntryBinding: stockEntryEvidenceBinding(contractBinding, receiptProofs) };
+}
+
+export function validateReadinessIdentity(value: unknown, binding: ReadinessBinding, challenge: string, ledger: LedgerBinding | null) {
+  return bindReadinessIdentity(value, binding, challenge, ledger).identity;
+}
+
+export function assertReadinessGenerationUnchanged(
+  beforeContract: string | undefined, afterContract: string | undefined, before: LedgerBinding | undefined, after: LedgerBinding | undefined
+) {
+  if (beforeContract !== afterContract || (afterContract === STOCK_ENTRY_EFFECTIVE_CONTRACT_SHA256 &&
+      (before?.revision !== after?.revision || (["lowLoadWorkerUpgrade", "stockEntryCostBackfill", "stockEntryReceiptProofs"] as const)
+        .some(key => canonicalJson(before?.[key] ?? null) !== canonicalJson(after?.[key] ?? null))))) {
+    throw new Error("API layout or stock entry ledger generation changed during verification");
+  }
 }
 
 /** Warm once, then measure three complete bodies, including explicit pending 503s. */
@@ -666,11 +685,11 @@ async function readiness(args: ParityArguments) {
     const ledgerSql = `SELECT plan_sha256 AS "planSha256", contract_sha256 AS "contractSha256", index_manifest_sha256 AS "indexManifestSha256",
        source_sha256 AS "sourceSha256", revision::text AS revision, manifest, manifest->'returnPriceUpgrade' AS "returnPriceUpgrade",
        manifest->'stockEntryCostUpgrade' AS "stockEntryCostUpgrade", manifest->'stockEntryCostBackfill' AS "stockEntryCostBackfill",
-       manifest->'stockEntryReceiptProofs' AS "stockEntryReceiptProofs"
+       manifest->'stockEntryReceiptProofs' AS "stockEntryReceiptProofs", manifest->'lowLoadWorkerUpgrade' AS "lowLoadWorkerUpgrade"
        FROM ops.analytics_reload_plans WHERE reload_id=$1::uuid AND table_schema=$2`;
     const verifyLedgerIdentity = async (value: unknown, challenge: string, ledgers: LedgerBinding[]) => {
       const ledger = ledgers.length === 1 ? ledgers[0] : null;
-      const identity = validateReadinessIdentity(value, binding, challenge, ledger);
+      const { identity, stockEntryBinding } = bindReadinessIdentity(value, binding, challenge, ledger);
       if (identity.layout?.contractSha256 === STOCK_ENTRY_EFFECTIVE_CONTRACT_SHA256 && ledger?.stockEntryCostUpgrade != null) {
         // The layout and manifest alone cannot prove the historical return job cycle. Re-read
         // it independently of HTTP, in one read-only snapshot of the same ledger generation.
@@ -678,9 +697,7 @@ async function readiness(args: ParityArguments) {
         // A static import would initialize application configuration before binding the read-only DSN above.
         const { readReloadReadiness } = await import("../services/reload-readiness.js");
         const proof = await db.$transaction(tx => readReloadReadiness(tx), { isolationLevel: "RepeatableRead", timeout: 30_000 });
-        const receiptProofs = parseStockEntryReceiptProofs(ledger.manifest, "stock-entry-verified", binding.from);
-        const receiptBinding = receiptProofs ? `:stock-entry-receipts:${receiptProofs.sha256}` : "";
-        const expected = `${binding.migrationId}:${ledger.revision}:ready:verified:${binding.planSha256}:${identity.layout.contractSha256}:ready${receiptBinding}`;
+        const expected = `${binding.migrationId}:${ledger.revision}:ready:verified:${binding.planSha256}:${identity.layout.contractSha256}:ready${stockEntryBinding}`;
         if (proof.binding !== expected || proof.stockEntryCostBackfillVerified !== (ledger.stockEntryCostBackfill != null)) throw new Error("Stock entry upgrade lacks a verified predecessor ledger generation");
       }
       return identity;
@@ -743,12 +760,7 @@ async function readiness(args: ParityArguments) {
     try {
       if (afterIdentity.status !== 200) throw new Error("API identity HTTP request failed");
       const verifiedAfter = await verifyLedgerIdentity(afterIdentity.value, afterChallenge, afterLedgerRows);
-      if (verifiedAfter.layout?.contractSha256 !== actualIdentity.layout?.contractSha256 ||
-          (verifiedAfter.layout?.contractSha256 === STOCK_ENTRY_EFFECTIVE_CONTRACT_SHA256 &&
-            (ledgerRows[0]?.revision !== afterLedgerRows[0]?.revision ||
-             canonicalJson(ledgerRows[0]?.stockEntryReceiptProofs ?? null) !== canonicalJson(afterLedgerRows[0]?.stockEntryReceiptProofs ?? null)))) {
-        throw new Error("API layout or stock entry ledger generation changed during verification");
-      }
+      assertReadinessGenerationUnchanged(actualIdentity.layout?.contractSha256, verifiedAfter.layout?.contractSha256, ledgerRows[0], afterLedgerRows[0]);
     }
     catch { identityFailure ??= "API identity/layout changed during verification"; }
     const incomplete = [...matrix.skipped, ...readinessBusinessFixtures(routes.filter((route) => route.status === "passed"))];

@@ -11,21 +11,23 @@ API independently checks its own coverage. Pass --out to the app's evidence path
 only for intentional installation: each successful run replaces the chosen file.
 An adjacent .audit.json contains source coverage and reasons a proof was refused.
 Evidence is a snapshot; rerun after backdated changes, not only after new movements.
+The sibling naliv_data1 checkout supplies the shared OData source guard.
+On a source pause the command exits 75 without replacing either output.
 """
 from argparse import ArgumentParser
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
+from importlib import import_module
 import json
 import os
 from pathlib import Path
 import re
+import sys
 from tempfile import NamedTemporaryFile
-from time import monotonic, sleep
-from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlsplit, urlunsplit, unquote
-from urllib.request import build_opener, HTTPRedirectHandler, Request
+from urllib.request import Request
 from uuid import UUID
 import base64
 
@@ -108,13 +110,32 @@ def prove_scope(local, rows, until):
             'verifiedThroughExclusive': boundary.isoformat()}, None
 
 
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
+def _collector_checkout():
+    return Path(__file__).resolve().parents[4] / 'naliv_data1'
+
+
+def _load_source_transport():
+    checkout = _collector_checkout()
+    source = checkout / 'odata_client.py'
+    error = 'A sibling naliv_data1 checkout with the shared OData source guard is required'
+    if not source.is_file():
+        raise AuditError(error)
+    sys.path.insert(0, str(checkout))
+    try:
+        transport = import_module('odata_client')
+    except ImportError:
+        raise AuditError(error) from None
+    finally:
+        sys.path.pop(0)
+    if (Path(getattr(transport, '__file__', None) or '').resolve() != source
+            or not hasattr(transport, 'SourcePaused')):
+        raise AuditError(error)
+    return transport
 
 
 class RegisterReader:
     def __init__(self, env):
+        self.transport = _load_source_transport()
         base = env.get('ODATA_URL', '').rstrip('/') + '/'
         url = urlsplit(base)
         if url.scheme not in ('http', 'https') or not url.netloc or url.username or url.query or url.fragment:
@@ -125,31 +146,24 @@ class RegisterReader:
             raise AuditError('Collector OData credentials are not configured') from None
         self.auth = 'Basic ' + base64.b64encode(credential).decode('ascii')
         self.url = urljoin(base, quote(REGISTER))
-        self.opener = build_opener(NoRedirect())
-        self.last_request = float('-inf')
         self.requests = 0
 
     def get(self, url):
-        sleep(max(0, .25 - (monotonic() - self.last_request)))
-        self.last_request = monotonic()
         self.requests += 1
         req = Request(url, headers={'Accept': 'application/json', 'Authorization': self.auth}, method='GET')
         try:
-            with self.opener.open(req, timeout=25) as body:
-                payload = body.read(MAX_BODY + 1)
-        except HTTPError as error:
-            error.close()
-            raise AuditError(f'Register GET refused with status {error.code}') from None
-        except (URLError, OSError):
+            response = self.transport.request_with_retry(req, timeout=25, max_response_bytes=MAX_BODY)
+        except self.transport.ODataTransportError as error:
+            if error.status_code is not None:
+                raise AuditError(f'Register GET refused with status {error.status_code}') from None
             raise AuditError('Register GET transport failed') from None
-        if len(payload) > MAX_BODY:
-            raise AuditError('Register page exceeded byte cap')
         try:
-            result = json.loads(payload, parse_float=Decimal)
+            result = json.loads(response.body, parse_float=Decimal)
         except (ValueError, UnicodeError):
             raise AuditError('Register returned invalid JSON') from None
         if not isinstance(result, dict) or not isinstance(result.get('value'), list):
             raise AuditError('Register response has no complete result page')
+        self.transport.record_source_rows(len(result['value']))
         return result
 
     def rows(self, price_type, items, start, end):
@@ -189,12 +203,14 @@ class RegisterReader:
                 rows.append({k: row[k] for k in REGISTER_FIELDS})
             link = result.get('@odata.nextLink') or result.get('odata.nextLink')
             if link:
-                if not page or len(rows) - window_start >= PAGE:
+                if not isinstance(link, str) or not page or len(rows) - window_start >= PAGE:
                     raise AuditError('Register next link does not continue an incomplete window')
                 next_url = urljoin(self.url, link)
                 orig, nex = urlsplit(self.url), urlsplit(next_url)
-                nq = dict(parse_qsl(nex.query))
-                if ((nex.scheme, nex.netloc, unquote(nex.path)) != (orig.scheme, orig.netloc, unquote(orig.path))
+                pairs = parse_qsl(nex.query, keep_blank_values=True)
+                nq = dict(pairs)
+                if (nex.fragment or len(pairs) != len(nq)
+                        or (nex.scheme, nex.netloc, unquote(nex.path)) != (orig.scheme, orig.netloc, unquote(orig.path))
                         or nq.get('$filter') != where or nq.get('$orderby') != QUERY_ORDER
                         or (not nq.get('$skiptoken') and nq.get('$skip') != str(len(rows)))):
                     raise AuditError('Register next link escaped requested filter/order or paging cursor')
@@ -229,13 +245,13 @@ def count_statuses(rows):
     return final, register
 
 
-def main():
+def main(argv=None):
     from dotenv import dotenv_values
     import psycopg
     from psycopg.rows import dict_row
 
     parser = ArgumentParser(description=__doc__)
-    collector_env = Path(__file__).resolve().parents[4] / 'naliv_data1' / '.env'
+    collector_env = _collector_checkout() / '.env'
     parser.add_argument('--dotenv', type=Path, default=collector_env)
     parser.add_argument('--activity', required=True, type=guid)
     parser.add_argument('--from', dest='start', required=True, type=date.fromisoformat)
@@ -244,7 +260,7 @@ def main():
     parser.add_argument('--coverage-to', required=True, type=date.fromisoformat)
     parser.add_argument('--max-scope-pairs', type=int, default=100)
     parser.add_argument('--out', type=Path, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not 1 <= (args.end - args.start).days <= 366 or not args.coverage_floor < args.coverage_to:
         parser.error('Specify a report of at most 366 days and an ordered coverage interval')
     if not 1 <= args.max_scope_pairs <= 1000:
@@ -253,6 +269,7 @@ def main():
     schema = env.get('PGSCHEMA', '')
     if not re.fullmatch(r'[a-z_][a-z0-9_]*', schema) or not env.get('DATABASE_URL'):
         parser.error('Collector DB URL or raw schema is not configured')
+    reader = RegisterReader(env)
     uri = urlsplit(env['DATABASE_URL'])
     dsn = urlunsplit(uri._replace(query=urlencode([(k, v) for k, v in parse_qsl(uri.query) if k != 'schema'])))
     query = {'from': args.start, 'to': args.end, 'activity': args.activity,
@@ -272,7 +289,6 @@ def main():
     if sum(map(len, pair_rows.values())) > args.max_scope_pairs:
         raise AuditError('Activity exceeds source item/purchase-type scope limit; narrow the report or choose a reviewed limit')
 
-    reader = RegisterReader(env)
     end = datetime.combine(min(args.end, args.coverage_to), time.min)
     register_pages, proofs = [], {}
     for price_type, items in pair_rows.items():
@@ -281,7 +297,11 @@ def main():
             batch = sorted_items[offset:offset + BATCH_ITEMS]
             local = [row for item in batch for row in items[item]]
             start = min(row['effective_at'] for row in local).replace(microsecond=0)
-            source = reader.rows(price_type, batch, start, end)
+            try:
+                source = reader.rows(price_type, batch, start, end)
+            except reader.transport.SourcePaused as error:
+                print(f'source_paused: {error.reason}', file=sys.stderr)
+                return 75
             register_pages.append({'priceTypeKey': price_type, 'itemKeys': batch, 'from': start.isoformat(),
                                    'toExclusive': end.isoformat(), 'rows': source})
             by_item = defaultdict(list)
@@ -306,11 +326,12 @@ def main():
     write_json(args.out, output)
     print(json.dumps({'scopes': len(proofs), 'registerGets': reader.requests, 'counts': counts,
                       'registerCounts': register_counts}, ensure_ascii=False))
+    return 0
 
 
 if __name__ == '__main__':
     try:
-        main()
+        raise SystemExit(main())
     except (KeyError, ValueError, OSError) as exc:
         message = str(exc) if isinstance(exc, AuditError) else 'Invalid source/configuration or evidence output could not be written'
         raise SystemExit(message) from None

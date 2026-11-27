@@ -5,7 +5,7 @@ import {
   compareSemanticValues, workbookSemantics, performanceGate, validateParityCoverage,
   validateApiIdentity, requiredParityCases, argumentsFor, parseReloadPlan,
   requiredReadinessCases, sampleReadiness, compareReadinessWorkbook, discoverReadinessSelection,
-  validateReadinessIdentity, readinessWorkbookOracle, readinessBusinessFixtures,
+  validateReadinessIdentity, assertReadinessGenerationUnchanged, readinessWorkbookOracle, readinessBusinessFixtures,
   pendingReadinessCases, compareReadinessFields
 } from "../src/scripts/verify-storage-parity.js";
 
@@ -178,6 +178,57 @@ test("stock-entry identity requires the known chained edge, independently bound 
   assert.throws(() => validateReadinessIdentity(identity, nativeBinding, "challenge", { ...ledger, contractSha256: effective }), /upgrade|transition|binding/i);
   const nativeLedger = { ...ledger, contractSha256: effective, manifest: { ...manifest, stockEntryCostUpgrade: undefined, stockEntryCostBackfill: undefined, returnPriceUpgrade: undefined }, returnPriceUpgrade: undefined, stockEntryCostUpgrade: undefined, stockEntryCostBackfill: undefined };
   assert.equal(validateReadinessIdentity(identity, nativeBinding, "challenge", nativeLedger).layout?.contractSha256, effective);
+});
+
+test("readiness independently binds the low-load edge and rejects stale stock evidence during verification", () => {
+  const original = "a6f5f51899a2d2c14508b0203eb3cf0f3a0368f506fb9a0449ad100933a81871";
+  const predecessor = "64f140bdcfbb1d5944677d96f9842804199ca8931ffb6fd2b34ea41016c85c54";
+  const effective = "43c6ce8d697b88bb8782ac39cfa777cacefa95267c8af95c1d49501d228d8e54";
+  const prior = "0996f642aeccf2c19c6c1c3ee6ad888b98b42a2c5275eaa97a1c0a752adeef6a";
+  const next = "a".repeat(64), returnWorker = "e".repeat(64);
+  const binding = { ...reloadPlan, contractSha256: original, planSha256: "c".repeat(64) };
+  const identity = { proofVersion: 1, challenge: "challenge", targetDatabase: binding.targetDatabase, sourceSchema: binding.sourceSchema, layout: { layoutVersion: 1, migrationId: binding.migrationId, contractSha256: effective, planSha256: binding.planSha256, compactionActive: false } };
+  const proof = { sourceSha256: "f".repeat(64), targetSha256: "c".repeat(64) };
+  const returnPriceUpgrade = {
+    version: 1, fromContractSha256: original, toContractSha256: predecessor,
+    table: "document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary", column: "tsena",
+    workerSourceSha256: returnWorker, rangeStart: "2026-06-01", rangeEndExclusive: "2026-06-04",
+    cycleId: "00000000-0000-4000-8000-000000000003", canaryDay: "2026-06-03",
+    canaryPasses: [proof, proof], state: "verified", appliedAt: "2026-06-05T00:00:00Z", verifiedAt: "2026-06-05T01:00:00Z"
+  };
+  const stockEntryCostUpgrade = {
+    version: 1, fromContractSha256: predecessor, toContractSha256: effective, table: "document_oprihodovanie_tovarov_tovary",
+    columns: { nomenklatura_key: "text", harakteristika_key: "text", kolichestvo: "numeric", tsena: "numeric" },
+    previousWorkerSourceSha256: returnWorker, workerSourceSha256: prior, appliedAt: "2026-06-05T02:00:00Z"
+  };
+  const lowLoadWorkerUpgrade = { version: 1, fromSha256: prior, toSha256: next, appliedAt: "2026-06-06T00:00:00Z" };
+  const stockEntryCostBackfill = {
+    version: 2, verifiedAt: "2026-11-26T01:00:00Z", throughId: 9, documents: 2, lines: 3, orphanLines: 7,
+    nullCounts: { nomenklatura_key: 0, harakteristika_key: 3, kolichestvo: 0, tsena: 1 }, valuesSha256: "a".repeat(64),
+    workerSourceSha256: next, from: "2026-05-20", toExclusive: "2026-11-26", sourceInventorySha256: "b".repeat(64)
+  };
+  const ledgerFor = (edge = lowLoadWorkerUpgrade, backfill = stockEntryCostBackfill) => ({
+    planSha256: binding.planSha256, contractSha256: original, indexManifestSha256: binding.indexManifestSha256,
+    sourceSha256: returnWorker, revision: "6", lowLoadWorkerUpgrade: edge, stockEntryCostBackfill: backfill, stockEntryCostUpgrade, returnPriceUpgrade,
+    manifest: {
+      manifestVersion: 1, reloadId: binding.migrationId, targetDatabase: binding.targetDatabase, sourceSchema: binding.sourceSchema,
+      planSha256: binding.planSha256, lowLoadWorkerUpgrade: edge, stockEntryCostBackfill: backfill, stockEntryCostUpgrade, returnPriceUpgrade
+    }
+  });
+  const ledger = ledgerFor();
+  assert.equal(validateReadinessIdentity(identity, binding, "challenge", ledger).layout?.contractSha256, effective);
+  assert.throws(() => validateReadinessIdentity(identity, binding, "challenge", { ...ledger, lowLoadWorkerUpgrade: undefined }), /binding/i);
+  assert.throws(() => validateReadinessIdentity(identity, binding, "challenge", { ...ledger, sourceSha256: next }), /binding/i);
+  assert.throws(() => validateReadinessIdentity(identity, binding, "challenge", ledgerFor({ ...lowLoadWorkerUpgrade, appliedAt: "2026-06-05T00:00:00Z" })), /binding/i);
+  assert.throws(() => validateReadinessIdentity(identity, binding, "challenge", ledgerFor(lowLoadWorkerUpgrade, { ...stockEntryCostBackfill, toExclusive: "2026-11-27" })), /binding/i);
+  assert.doesNotThrow(() => assertReadinessGenerationUnchanged(effective, effective, ledger, ledgerFor()));
+  for (const later of [
+    ledgerFor({ ...lowLoadWorkerUpgrade, toSha256: "0".repeat(64) }, { ...stockEntryCostBackfill, workerSourceSha256: "0".repeat(64) }),
+    ledgerFor(lowLoadWorkerUpgrade, { ...stockEntryCostBackfill, sourceInventorySha256: "0".repeat(64) })
+  ]) {
+    assert.equal(validateReadinessIdentity(identity, binding, "challenge", later).layout?.contractSha256, effective);
+    assert.throws(() => assertReadinessGenerationUnchanged(effective, effective, ledger, later), /changed during verification/i);
+  }
 });
 
 test("readiness exercises actual audit groups across eight turnover variants and every business export", () => {

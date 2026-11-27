@@ -9,7 +9,7 @@ import {
 import {
   buildPhysicalStoreIndex, isUsableWarehouse, type PhysicalStore, type PhysicalStoreIndex, type StoreDirectoryEntry
 } from "./turnover-stores.js";
-import { businessToday, evaluateCoverage, getReloadReadiness, type ReloadReadinessState } from "./reload-readiness.js";
+import { businessToday, evaluateCoverage, getReloadReadiness, readReloadReadiness, type ReloadReadinessState } from "./reload-readiness.js";
 import { isExcludedTurnoverItem } from "./turnover-exclusions.js";
 import { buildTurnoverRootGroups, compareTurnoverPresentationRows, turnoverUnitLabels } from "./turnover-presentation.js";
 import type {
@@ -1031,7 +1031,20 @@ async function loadTurnoverReport(request: TurnoverRequest, reloadReader: typeof
   const query = turnoverQuerySchema.parse(request);
   const readiness = await reloadReader();
   const { params, requestedTo } = resolveTurnoverPeriod(query, readiness);
-  return buildTurnoverReport(params, requestedTo, readiness, preview);
+  return buildBoundReport(params, requestedTo, readiness, preview, reloadReader);
+}
+
+async function buildBoundReport(
+  params: NormalizedTurnoverRequest, requestedTo: string | null, readiness: ReloadReadinessState,
+  preview: boolean, reader: typeof getReloadReadiness
+): Promise<TurnoverReport> {
+  const report = await buildTurnoverReport(params, requestedTo, readiness, preview);
+  // A cached read can return the pre-query generation for a full second.
+  const latest = await (reader === getReloadReadiness ? readReloadReadiness() : reader());
+  if (latest.binding !== readiness.binding) {
+    throw Object.assign(new Error("Во время формирования отчёта изменилось поколение данных. Сформируйте отчёт заново."), { statusCode: 409 });
+  }
+  return report;
 }
 
 async function buildTurnoverReport(
@@ -1622,9 +1635,9 @@ async function buildTurnoverReport(
   if (receiptsWithoutRetailReport) warningSet.add("В части дней есть проведённые чеки, но нет розничного отчёта магазина (возможна незакрытая смена); продажи этих дней неизвестны, не заменены нулём и не смешаны с чеками.");
   if (missingMoney) warningSet.add("Часть денежных показателей недоступна из-за пропусков снимков или учётных цен. Нулевая, отрицательная или пустая цена не считается бесплатным товаром и не заменяется более старой ценой.");
   if (stockEntryMovementGap) warningSet.add("Оценка по оприходованию ограничена: для части связанных остатков не подтверждена полнота снимков, розничных отчётов, чеков ККМ или поступлений.");
-  const nativeEntryCoverage = readiness.stockEntryCostCoverage;
-  if (includeStockEntry && nativeEntryCoverage && (params.from < nativeEntryCoverage.from || params.to > nativeEntryCoverage.toExclusive)) {
-    warningSet.add(`Проверенная история оприходования ограничена периодом [${nativeEntryCoverage.from}, ${nativeEntryCoverage.toExclusive}); за его пределами резервная оценка запаса не применяется.`);
+  const entryCoverage = readiness.stockEntryCostCoverage;
+  if (includeStockEntry && entryCoverage && (params.from < entryCoverage.from || params.to > entryCoverage.toExclusive)) {
+    warningSet.add(`Проверенная история оприходования ограничена периодом [${entryCoverage.from}, ${entryCoverage.toExclusive}); за его пределами резервная оценка запаса не применяется.`);
   }
   if (!standardQuantity && (!source.brands.length || selectedPairs.some((pair) => !pair.brand))) warningSet.add("Справочник брендов не заполнен или привязки отсутствуют. Бренд по названию товара не угадывается.");
   if (selectedPairs.some((pair) => pair.unit.startsWith("Единица не указана"))) warningSet.add("У части SKU нет подтверждённой базовой единицы. Такие SKU не суммируются между собой и не участвуют в перемещениях.");
@@ -1781,7 +1794,7 @@ export async function getTurnoverRow(request: TurnoverRequest, reloadReader = ge
     // seeds unobserved shops, so consolidated details retain the original scope.
     if (params.profile !== "sample") scoped = { ...params, sku };
   }
-  const report = await buildTurnoverReport(scoped, requestedTo, readiness, true);
+  const report = await buildBoundReport(scoped, requestedTo, readiness, true, reloadReader);
   const row = report.rows.find(candidate => candidate.key === auditGroup);
   if (!row) throw Object.assign(new Error("Строка не найдена. Сформируйте отчёт заново."), { statusCode: 404 });
   return { row, generatedAt: report.generatedAt };

@@ -710,9 +710,10 @@ Each workbook is a snapshot, not a switchable Excel calculation.
 
 **Purchase-price verification.** The compact replica does not retain a currency
 or an authoritative register snapshot. Outside the request path, use the
-collector's Python environment (`psycopg`, `python-dotenv`) to reconcile a
-selected activity. For example, from `naliv_data2`, using a verified June–November
-coverage interval (not an assumption that every SKU has a price):
+collector's Python environment (`psycopg`, `python-dotenv`) and a sibling
+`naliv_data1` checkout that provides the shared OData source guard. For example,
+from `naliv_data2`, using a verified June–November coverage interval (not an
+assumption that every SKU has a price):
 
 ```bash
 python api/src/scripts/reconcile_compensation_purchase_prices.py \
@@ -722,7 +723,8 @@ python api/src/scripts/reconcile_compensation_purchase_prices.py \
 ```
 
 The command uses read-only SQL and serial filtered 1C GETs, and writes the
-candidate-level audit next to the snapshot. Keep both outside version control.
+candidate-level audit next to the snapshot. A source pause exits with code 75
+and leaves both files unchanged. Keep both outside version control.
 For an intentional installation, point `COMPENSATION_PURCHASE_PRICE_EVIDENCE_PATH`
 at the trusted, access-controlled evidence file, **not** its `.audit.json`.
 The command replaces its output; it does not append other activities. The API

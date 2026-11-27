@@ -7,7 +7,7 @@ import { prisma } from "../prisma.js";
 import { RETURN_PRICE_EFFECTIVE_CONTRACT_SHA256, RETURN_PRICE_SOURCE_ENTITY, RETURN_PRICE_TABLE, returnPriceUpgradeSchema } from "./return-price-upgrade.js";
 import {
   STOCK_ENTRY_COLUMNS, STOCK_ENTRY_EFFECTIVE_CONTRACT_SHA256, STOCK_ENTRY_PARENT, STOCK_ENTRY_SOURCE_ENTITY, STOCK_ENTRY_TABLE,
-  parseStockEntryReceiptProofs, reloadContractBinding, type StockEntryHistoricalReceiptCoverage
+  parseStockEntryReceiptProofs, reloadContractBinding, stockEntryEvidenceBinding, type StockEntryHistoricalReceiptCoverage
 } from "./stock-entry-upgrade.js";
 export { validReturnPriceUpgrade } from "./return-price-upgrade.js";
 export { businessToday } from "../lib/business-day.js";
@@ -43,6 +43,7 @@ export type ReloadReadinessState = ReloadReadiness & {
   readonly returnPriceIntervals: Array<{ from: string; to: string }>;
   readonly stockEntryCostAvailable?: boolean;
   readonly stockEntryCostBackfillVerified?: boolean;
+  /** Half-open movement dates, independent of ordinary supplier receipt coverage. */
   readonly stockEntryCostCoverage?: { from: string; toExclusive: string };
   readonly stockEntryHistoricalReceiptCoverage?: StockEntryHistoricalReceiptCoverage;
 };
@@ -104,7 +105,7 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
     const upgrade = manifest.returnPriceUpgrade;
     const stockEntryLayout = layout.contract_sha256 === STOCK_ENTRY_EFFECTIVE_CONTRACT_SHA256;
     const contractBound = reloadContractBinding(plan.manifest, plan.contract_sha256, layout.contract_sha256, plan.source_sha256);
-    const stockEntryTransition = contractBound === "stock-entry-prepared" || contractBound === "stock-entry-verified";
+    const stockEntryTransition = contractBound?.kind === "stock-entry-prepared" || contractBound?.kind === "stock-entry-verified";
     if (!contractBound || plan.plan_sha256 !== layout.plan_sha256 || plan.table_schema !== identity.schema_name || layout.table_schema !== identity.schema_name || layout.migration_id !== plan.reload_id || manifest.reloadId !== plan.reload_id || manifest.planSha256 !== plan.plan_sha256 || manifest.targetDatabase.name !== identity.database_name || manifest.targetDatabase.oid !== Number(identity.database_oid) || manifest.sourceSchema.name !== identity.schema_name || manifest.sourceSchema.oid !== Number(identity.schema_oid) || manifest.from !== current.from || manifest.toExclusive !== current.toExclusive || manifest.from >= manifest.toExclusive || !sha.safeParse(plan.source_sha256).success || !sha.safeParse(plan.index_manifest_sha256).success || !["pending", "running", "verified"].includes(plan.canary_status) || !Number.isSafeInteger(Number(plan.revision)) || Number(plan.revision) < 0 || (upgrade?.canaryPasses.length === 2 && plan.source_sha256 !== upgrade.workerSourceSha256)) return state(current, `blocked:${binding}`);
     if (stockEntryTransition && (!identity.stock_entry_columns || plan.status !== "ready" || plan.canary_status !== "verified")) return state(current, `blocked:${binding}`);
     const receiptProofs = parseStockEntryReceiptProofs(plan.manifest, contractBound, manifest.from);
@@ -192,7 +193,7 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
     const missingRequired = manifest.sources.some(source => source.required && source.tables.some(table => !identity!.tables.includes(table)));
     current.status = plan.status === "blocked" || failed || missingRequired ? "blocked" : plan.status === "paused_capacity" || required.some(job => byKey.get(job.jobKey)!.status === "paused_capacity") ? "paused_capacity" : plan.status !== "ready" || plan.canary_status !== "verified" || current.completedJobs !== current.totalJobs ? "reloading" : "ready";
     let stockEntryCoverage: ReloadReadinessState["stockEntryCostCoverage"];
-    if (stockEntryLayout && contractBound === "native" && identity.stock_entry_columns && current.status === "ready") {
+    if (stockEntryLayout && contractBound.kind === "native" && identity.stock_entry_columns && current.status === "ready") {
       const source = sources.get(STOCK_ENTRY_PARENT);
       // Native compact plans certify the immutable dated replay and then only its
       // contiguous, verified routine continuation, never data before the source floor.
@@ -235,9 +236,12 @@ export async function readReloadReadiness(executor: Executor = prisma, metadataS
         }
       }
     }
-    const stockEntryVerified = current.status === "ready" && (contractBound === "stock-entry-verified" || stockEntryCoverage !== undefined);
-    const receiptBinding = receiptProofs ? `:stock-entry-receipts:${receiptProofs.sha256}` : "";
-    return state(current, `${binding}:${current.status}${receiptBinding}`, coverageSources, returnPriceIntervals, {
+    if (current.status === "ready" && contractBound.kind === "stock-entry-verified" && contractBound.backfill.version === 2) {
+      const { from, toExclusive } = contractBound.backfill;
+      stockEntryCoverage = { from, toExclusive };
+    }
+    const stockEntryVerified = current.status === "ready" && (contractBound.kind === "stock-entry-verified" || stockEntryCoverage !== undefined);
+    return state(current, `${binding}:${current.status}${stockEntryEvidenceBinding(contractBound, receiptProofs)}`, coverageSources, returnPriceIntervals, {
       verified: stockEntryVerified, coverage: stockEntryCoverage,
       historicalReceiptCoverage: stockEntryVerified ? receiptProofs?.coverage : undefined
     });

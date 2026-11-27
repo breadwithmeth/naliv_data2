@@ -1,13 +1,21 @@
 """python -m unittest discover -s api/test -p compensation_price_evidence_test.py"""
+from contextlib import contextmanager, redirect_stderr
 from datetime import datetime
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
+import os
 from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
+from threading import Thread
 import unittest
+from unittest import mock
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src' / 'scripts'))
-from reconcile_compensation_purchase_prices import RegisterReader, count_statuses, prove_scope
+import reconcile_compensation_purchase_prices as evidence
+from reconcile_compensation_purchase_prices import AuditError, RegisterReader, count_statuses, prove_scope
 
 AT = datetime(2026, 11, 3, 15, 4, 5)
 MOVE = datetime(2026, 11, 15, 18, 0)
@@ -29,6 +37,121 @@ def register(**fields):
                 Recorder_Type='StandardODATA.Document_УстановкаЦенНоменклатуры',
                 LineNumber='100', Active=True, ВидЦены_Key=TYPE, Номенклатура_Key=ITEM,
                 Характеристика_Key=ZERO, Упаковка_Key=ZERO, Цена=Decimal('600.25'), Валюта='KZT') | fields
+
+
+@contextmanager
+def register_server(status, *, headers=None, body=b''):
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(status if self.path != '/other' else 200)
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+        thread = Thread(target=server.serve_forever, kwargs={'poll_interval': .02})
+        thread.start()
+        try:
+            yield f'http://127.0.0.1:{server.server_port}/odata/', requests
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+class EvidenceSourcePolicy(unittest.TestCase):
+    def setUp(self):
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.directory = Path(tmp.name)
+        environment = mock.patch.dict(os.environ, {
+            'NALIV_TEST_ODATA_GATE_DIR': str(self.directory / 'gate'),
+            'NO_PROXY': '127.0.0.1',
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def reader_env(self, base):
+        return {'ODATA_URL': base, 'ODATA_USER': 'fixture', 'ODATA_PASSWORD': 'fixture-secret'}
+
+    def test_register_preserves_non_ieee_wire_amount(self):
+        body = b'{"value":[{"amount":9007199254740993.125}]}'
+        with register_server(200, body=body) as (base, requests):
+            reader = RegisterReader(self.reader_env(base))
+            result = reader.get(reader.url)
+
+        self.assertEqual(Decimal('9007199254740993.125'), result['value'][0]['amount'])
+        self.assertEqual(1, len(requests))
+
+    def test_register_never_follows_redirect(self):
+        with register_server(302, headers={'Location': '/other'}) as (base, requests):
+            reader = RegisterReader(self.reader_env(base))
+            with self.assertRaises(AuditError):
+                reader.get(reader.url)
+
+        self.assertEqual(1, len(requests))
+        self.assertNotIn('/other', requests)
+
+    def test_register_pauses_when_response_exceeds_its_byte_cap(self):
+        with register_server(200, headers={'Content-Length': '4194305'}) as (base, requests):
+            reader = RegisterReader(self.reader_env(base))
+            for _ in range(2):
+                with self.assertRaises(reader.transport.SourcePaused):
+                    reader.get(reader.url)
+
+        self.assertEqual(1, len(requests))
+
+    def test_missing_sibling_transport_fails_before_any_http(self):
+        isolated = self.directory / 'isolated/naliv_data2/api/src/scripts/reconcile.py'
+        with (
+            register_server(200, body=b'{"value":[]}') as (base, requests),
+            mock.patch.object(evidence, '__file__', str(isolated)),
+        ):
+            with self.assertRaisesRegex(AuditError, 'sibling naliv_data1'):
+                reader = RegisterReader(self.reader_env(base))
+                reader.get(reader.url)
+
+        self.assertEqual([], requests)
+
+    def test_paused_evidence_run_preserves_previous_evidence_and_audit(self):
+        import psycopg
+
+        out = self.directory / 'evidence.json'
+        audit = out.with_suffix('.audit.json')
+        out.write_bytes(b'previous evidence')
+        audit.write_bytes(b'previous audit')
+        argv = [
+            '--dotenv', str(self.directory / 'unused.env'), '--activity', KEY,
+            '--from', '2026-11-01', '--to', '2026-11-20',
+            '--coverage-floor', '2026-11-01', '--coverage-to', '2026-11-20',
+            '--out', str(out),
+        ]
+        diagnostics = io.StringIO()
+        with (
+            register_server(429, headers={'Retry-After': '120'}, body=b'fixture-secret') as (base, requests),
+            mock.patch.dict(os.environ, self.reader_env(base) | {
+                'PGSCHEMA': 'fixture', 'DATABASE_URL': 'postgresql://127.0.0.1/fixture',
+            }),
+            mock.patch.object(psycopg, 'connect') as connect,
+            redirect_stderr(diagnostics),
+        ):
+            connect.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = [
+                local(local_status='local_candidate', sale_lines=1, return_lines=0),
+            ]
+            self.assertEqual(75, evidence.main(argv))
+
+        self.assertEqual(b'previous evidence', out.read_bytes())
+        self.assertEqual(b'previous audit', audit.read_bytes())
+        self.assertEqual(1, len(requests))
+        self.assertIn('source_paused', diagnostics.getvalue())
+        self.assertNotIn('fixture-secret', diagnostics.getvalue())
 
 
 class EvidenceScope(unittest.TestCase):

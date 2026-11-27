@@ -108,6 +108,120 @@ function stockEntryFixture() {
   return { ...f, manifest: Object.assign(f.plan.manifest, { stockEntryCostUpgrade: stockEntryUpgrade(), stockEntryCostBackfill: stockEntryProof() }) };
 }
 
+function lowLoadFixture() {
+  const f = stockEntryFixture();
+  const prior = "0996f642aeccf2c19c6c1c3ee6ad888b98b42a2c5275eaa97a1c0a752adeef6a";
+  const next = "a".repeat(64);
+  f.manifest.stockEntryCostUpgrade.workerSourceSha256 = prior;
+  const manifest = Object.assign(f.manifest, {
+    lowLoadWorkerUpgrade: { version: 1, fromSha256: prior, toSha256: next, appliedAt: "2026-06-05T10:00:00Z" },
+    stockEntryCostBackfill: {
+      ...stockEntryProof(), version: 2, verifiedAt: "2026-11-26T01:00:00Z", workerSourceSha256: next,
+      from: "2026-05-20", toExclusive: "2026-11-26", sourceInventorySha256: "b".repeat(64)
+    }
+  });
+  return { ...f, manifest };
+}
+
+test("a low-load worker edge leaves predecessor evidence intact and authorizes only the v2 stock inventory bounds", async () => {
+  const f = lowLoadFixture();
+  const proof = f.manifest.stockEntryCostBackfill;
+  const edge = f.manifest.lowLoadWorkerUpgrade;
+  Reflect.deleteProperty(f.manifest, "stockEntryCostBackfill");
+  Reflect.deleteProperty(f.manifest, "lowLoadWorkerUpgrade");
+  const predecessor = await readReloadReadiness(f.executor as never);
+  Object.assign(f.manifest, { lowLoadWorkerUpgrade: edge });
+  const adopted = await readReloadReadiness(f.executor as never);
+  assert.equal(adopted.status, "ready");
+  assert.equal(adopted.stockEntryCostAvailable, false);
+  assert.equal(adopted.stockEntryCostCoverage, undefined);
+  assert.deepEqual(adopted.returnPriceIntervals, predecessor.returnPriceIntervals);
+  assert.notEqual(adopted.binding, predecessor.binding);
+
+  Object.assign(f.manifest, { stockEntryCostBackfill: proof });
+  const verified = await readReloadReadiness(f.executor as never);
+  assert.equal(verified.status, "ready");
+  assert.equal(verified.stockEntryCostAvailable, true);
+  assert.deepEqual(verified.stockEntryCostCoverage, { from: "2026-05-20", toExclusive: "2026-11-26" });
+  assert.equal(Object.keys(verified).includes("stockEntryCostCoverage"), false);
+  assert.deepEqual(verified.returnPriceIntervals, predecessor.returnPriceIntervals);
+  assert.notEqual(verified.binding, adopted.binding);
+  proof.sourceInventorySha256 = "c".repeat(64);
+  assert.notEqual((await readReloadReadiness(f.executor as never)).binding, verified.binding);
+});
+
+test("unapproved worker edges and v1/v2 stock certificate mixtures cannot authorize valuation", async () => {
+  type Fixture = ReturnType<typeof lowLoadFixture>;
+  const cases: Array<[string, (f: Fixture) => void]> = [
+    ["v2 without edge", f => { Reflect.deleteProperty(f.manifest, "lowLoadWorkerUpgrade"); }],
+    ["v1 with edge", f => { Object.assign(f.manifest, { stockEntryCostBackfill: stockEntryProof() }); }],
+    ["unreviewed predecessor", f => {
+      f.manifest.lowLoadWorkerUpgrade.fromSha256 = f.manifest.stockEntryCostUpgrade.workerSourceSha256 = "d".repeat(64);
+    }],
+    ["same worker", f => { f.manifest.lowLoadWorkerUpgrade.toSha256 = f.manifest.lowLoadWorkerUpgrade.fromSha256; }],
+    ["noncanonical successor", f => { f.manifest.lowLoadWorkerUpgrade.toSha256 = "A".repeat(64); }],
+    ["edge before stock activation", f => { f.manifest.lowLoadWorkerUpgrade.appliedAt = "2026-06-04T01:59:59Z"; }],
+    ["extra edge field", f => { Object.assign(f.manifest.lowLoadWorkerUpgrade, { reason: "upgrade" }); }],
+    ["unbound original return worker", f => { f.plan.source_sha256 = f.manifest.lowLoadWorkerUpgrade.toSha256; }],
+    ["proof before edge", f => { f.manifest.stockEntryCostBackfill.verifiedAt = "2026-06-05T09:59:59Z"; }],
+    ["proof from predecessor worker", f => { f.manifest.stockEntryCostBackfill.workerSourceSha256 = f.manifest.lowLoadWorkerUpgrade.fromSha256; }],
+    ["wrong history cutoff", f => { f.manifest.stockEntryCostBackfill.toExclusive = "2026-11-27"; }],
+    ["empty inventory interval", f => { f.manifest.stockEntryCostBackfill.from = "2026-11-26"; }],
+    ["invalid inventory date", f => { f.manifest.stockEntryCostBackfill.from = "2026-02-29"; }],
+    ["absent inventory fingerprint", f => { Reflect.deleteProperty(f.manifest.stockEntryCostBackfill, "sourceInventorySha256"); }],
+    ["extra inventory field", f => { Object.assign(f.manifest.stockEntryCostBackfill, { partial: false }); }],
+    ["invalid null count", f => { f.manifest.stockEntryCostBackfill.nullCounts.tsena = 4; }]
+  ];
+  for (const [why, mutate] of cases) {
+    const f = lowLoadFixture();
+    mutate(f);
+    const result = await readReloadReadiness(f.executor as never);
+    assert.equal(result.status, "blocked", why);
+    assert.equal(result.stockEntryCostCoverage, undefined, why);
+  }
+  const native = nativeStockEntryFixture();
+  Object.assign(native.plan.manifest, { lowLoadWorkerUpgrade: lowLoadFixture().manifest.lowLoadWorkerUpgrade });
+  assert.equal((await readReloadReadiness(native.executor as never)).status, "blocked");
+});
+
+test("v2 historical supplier proofs require the same generation inside stage coverage without certifying the routine source", async t => {
+  // Keep the out-of-stage case in the past so the open-day guard cannot hide a missing stage check.
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-30T00:00:00Z") });
+  const f = lowLoadFixture();
+  // Narrow the stage to distinguish both proof bounds from the ordinary reload floor.
+  f.manifest.stockEntryCostBackfill.from = "2026-06-02";
+  const receipts = "document_postuplenie_tovarov";
+  f.manifest.sources.push({
+    key: receipts, entity: "Document_ПоступлениеТоваров", kind: "dated", tables: [receipts, `${receipts}_tovary`],
+    floor: "2026-06-03", required: false
+  });
+  const proof = {
+    ...historicalReceiptProof(), version: 2, workerSourceSha256: f.manifest.lowLoadWorkerUpgrade.toSha256,
+    from: "2026-06-02", verifiedAt: "2026-11-26T02:00:00Z"
+  };
+  const before = await readReloadReadiness(f.executor as never);
+  Object.assign(f.manifest, { stockEntryReceiptProofs: { [receiptSku]: proof } });
+  const after = await readReloadReadiness(f.executor as never);
+  assert.equal(after.status, "ready");
+  assert.deepEqual(after.stockEntryHistoricalReceiptCoverage, [{ sku: receiptSku, from: "2026-06-02", toExclusive: "2026-06-03" }]);
+  assert.notEqual(after.binding, before.binding);
+  const window = { from: new Date("2026-06-02"), to: new Date("2026-06-03") };
+  assert.equal(evaluateCoverage(after, receipts, window, "2026-11-26").reason, "before_horizon");
+  for (const [why, entry] of [
+    ["unversioned proof", historicalReceiptProof()],
+    ["other worker", { ...proof, workerSourceSha256: f.plan.source_sha256 }],
+    ["before stage", { ...proof, from: "2026-06-01" }],
+    ["past stage", { ...proof, toExclusive: "2026-11-27", verifiedAt: "2026-11-28T02:00:00Z" }],
+    ["before stage verification", { ...proof, verifiedAt: "2026-11-26T00:59:59Z" }],
+    ["extra key", { ...proof, extra: true }]
+  ] as const) {
+    Object.assign(f.manifest, { stockEntryReceiptProofs: { [receiptSku]: entry } });
+    const result = await readReloadReadiness(f.executor as never);
+    assert.equal(result.status, "blocked", why);
+    assert.equal(result.stockEntryHistoricalReceiptCoverage, undefined, why);
+  }
+});
+
 test("stock entry activation preserves the verified return generation and its price intervals", async () => {
   const f = stockEntryFixture();
   const result = await readReloadReadiness(f.executor as never);
@@ -180,6 +294,9 @@ test("historical receipt proof fails closed for an unapproved layout, invalid ra
     assert.equal(result.status, "blocked", why);
     assert.equal(result.stockEntryHistoricalReceiptCoverage, undefined, why);
   }
+  const empty = stockEntryFixture();
+  Object.assign(empty.manifest, { stockEntryReceiptProofs: {} });
+  assert.equal((await readReloadReadiness(empty.executor as never)).status, "blocked");
   const oversized = stockEntryFixture();
   Object.assign(oversized.manifest, {
     stockEntryReceiptProofs: Object.fromEntries(Array.from({ length: 257 }, (_, index) =>
