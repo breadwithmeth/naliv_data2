@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { PassThrough } from "node:stream";
+import { buffer } from "node:stream/consumers";
+import ExcelJS from "exceljs";
 import {
   chronologicalAverage, completeTurnoverReport, isCompleteTurnoverDailyRow, isCompleteTurnoverRow,
   salesChange, sumNullable, turnoverRatios, turnoverSales
@@ -133,6 +136,7 @@ test("default turnover population is filtered before daily, grouping and totals,
   // before Prisma/config singletons are loaded, and all SQL is replaced below.
   const { prisma } = await import("../src/prisma.js");
   const { getTurnoverPreview, getTurnoverReport, turnoverQuerySchema } = await import("../src/services/turnover.js");
+  const { deliverTurnover } = await import("../src/services/turnover-delivery.js");
   const request = { from: "2026-11-01", to: "2026-11-04", mode: "both" as const };
   assert.equal(turnoverQuerySchema.parse(request).sort, "turnover");
   assert.equal(turnoverQuerySchema.parse({ ...request, sort: "name" }).sort, "name");
@@ -170,13 +174,21 @@ test("default turnover population is filtered before daily, grouping and totals,
     receiptDays: [], barcodes: [], bounds: { firstStock: dates[0], lastStock: "2026-11-04", firstSales: dates[0], lastSales: dates[2] }
   });
   const originalQuery = prisma.$queryRaw;
-  let call = 0;
+  const originalTransaction = prisma.$transaction;
+  prisma.$transaction = (async (run: (client: typeof prisma) => Promise<unknown>) => run(prisma)) as typeof originalTransaction;
+  const originalUnsafeQuery = prisma.$queryRawUnsafe;
+  prisma.$queryRawUnsafe = (async () => []) as typeof prisma.$queryRawUnsafe;
+  let directoryRead = 0;
+  let extraSkus: string[] = [];
+  let previousFactRead = true;
+  const pageSizes: number[] = [];
   let transferScenario = false;
-  prisma.$queryRaw = (async () => {
-    const stage = call++ % 3;
-    if (stage < 2) return transferScenario
-      ? [{ key: "s", name: "Donor" }, { key: "r", name: "Receiver" }]
-      : stage === 0 ? [{ key: "s", name: "Shop" }] : [{ key: "s" }];
+  prisma.$queryRaw = (async (query: TemplateStringsArray | { sql: string; values: unknown[] }) => {
+    if (!("sql" in query)) {
+      const stage = directoryRead++ % 2;
+      return transferScenario ? [{ key: "s", name: "Donor" }, { key: "r", name: "Receiver" }]
+        : stage === 0 ? [{ key: "s", name: "Shop" }] : [{ key: "s" }];
+    }
     const data = source();
     if (alternatePrice !== null) data.costs.push([0, "s", "missing-cost", "", "2026-10-01T00:00:00", alternatePrice]);
     if (transferScenario) {
@@ -191,13 +203,74 @@ test("default turnover population is filtered before daily, grouping and totals,
       data.salesDays = ["s", "r"].flatMap(store => history.map(date => [store, date]));
       data.costs = [[0, "r", "complete", "", "2026-09-01T00:00:00", 10]];
     }
-    return [{ data }];
+    const { stock, sales, costs, stockEntryEvidence, orders, receipts, lastSales, firstStock, barcodes, ...context } = data;
+    if (query.sql.includes("'batchSkus'")) {
+      return [{ data: { ...context, batchSkus: [...data.items.map(item => item.key), ...extraSkus] } }];
+    }
+    const keys = query.values.find(Array.isArray) as string[];
+    assert.ok(keys?.length, "fact reads must bind a nonempty SKU partition");
+    assert.ok(previousFactRead, "process the previous fact packet before fetching another");
+    for (const key of keys) if (extraSkus.includes(key)) stock.push(["s", key, "", [["2026-11-04", 1]]]);
+    const page = {
+      stock: stock.filter(row => keys.includes(String(row[1]))), sales: sales.filter(row => keys.includes(String(row[1]))),
+      costs: costs.filter(row => keys.includes(String(row[2]))), stockEntryEvidence, orders, receipts, lastSales, firstStock, barcodes
+    };
+    if (extraSkus.length) {
+      pageSizes.push(keys.length);
+      previousFactRead = false;
+      const values = page.stock;
+      Object.defineProperty(page, "stock", { get() { previousFactRead = true; return values; } });
+    }
+    return [{ data: page }];
   }) as typeof prisma.$queryRaw;
   const reloadReader = async () => ({
     status: "needs_preparation" as const, from: "2026-06-01", toExclusive: null, completedJobs: 0, totalJobs: 0,
     sources: [], databaseBytes: 0, pauseAtBytes: 9_000_000_000, binding: "test-unverified", returnPriceIntervals: [], coverageSources: []
   });
   try {
+    await t.test("each all-store SKU partition is consumed before the next read; unknown units still veto totals", async () => {
+      extraSkus = Array.from({ length: 65 }, (_, n) => `source-only-${n}`);
+      try {
+        const report = await getTurnoverReport({ ...request, includeIncomplete: true }, reloadReader);
+        assert.ok(pageSizes.length > 1);
+        assert.equal(report.rows.length, 69);
+        assert.equal(report.rows.filter(row => row.sku?.startsWith("source-only-")).length, 65);
+        assert.equal(report.totals.overall.closingQty, null);
+        assert.equal(report.totals.overall.periodSales.quantity, null);
+        assert.equal(report.totals.overall.periodSales.revenue, 135);
+      } finally { extraSkus = []; }
+    });
+    await t.test("worker delivers preview, row and raw XLSX with the same selected turnover values", async () => {
+      const download = async (kind: Parameters<typeof deliverTurnover>[0], query: unknown) => {
+        const output = new PassThrough();
+        let metadata: Record<string, string> | undefined;
+        const [bytes] = await Promise.all([
+          buffer(output),
+          deliverTurnover(kind, query, output, values => { metadata = values; })
+        ]);
+        assert.ok(metadata);
+        return { bytes, metadata };
+      };
+      const preview = JSON.parse((await download("turnover-preview", request)).bytes.toString());
+      assert.equal(preview.summary.rowCount, 1);
+      assert.equal(preview.rows[0].periodSales.cost, 60);
+      const detail = JSON.parse((await download("turnover-row", { ...request, auditGroup: preview.rows[0].key })).bytes.toString());
+      assert.equal(detail.row.sku, "complete");
+      assert.equal(detail.row.periodSales.cost, 60);
+
+      const { bytes, metadata } = await download("turnover-xlsx", request);
+      assert.equal(metadata["X-Report-Rows"], "1");
+      assert.equal(metadata["Content-Type"], "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      assert.match(metadata["Content-Disposition"], /filename="turnover_2026-11-01_2026-11-04\.xlsx"/);
+      const book = new ExcelJS.Workbook();
+      await book.xlsx.load(bytes);
+      const parameters = book.getWorksheet("Параметры и методика")!;
+      let generatedAt: ExcelJS.CellValue = null;
+      parameters.eachRow(row => { if (row.getCell(1).value === "Сформировано UTC") generatedAt = row.getCell(2).value; });
+      assert.ok(metadata["X-Report-Generated-At"]);
+      assert.equal(generatedAt, metadata["X-Report-Generated-At"]);
+      assert.equal(book.getWorksheet("Оборачиваемость")!.getCell("T5").value, 60);
+    });
     for (const profile of ["summary", "full"] as const) for (const groupBy of ["sku", "store", "category", "brand", "day"] as const) {
       const report = await getTurnoverReport({ ...request, profile, groupBy }, reloadReader);
       assert.equal(report.excludedIncompleteRows, 3);
@@ -345,5 +418,7 @@ test("default turnover population is filtered before daily, grouping and totals,
     assert.equal(originalTransfers.transfers[0].toStoreKey, "key:r");
   } finally {
     prisma.$queryRaw = originalQuery;
+    prisma.$transaction = originalTransaction;
+    prisma.$queryRawUnsafe = originalUnsafeQuery;
   }
 });

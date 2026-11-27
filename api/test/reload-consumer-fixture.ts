@@ -5,7 +5,7 @@ import express from "express";
 import ExcelJS from "exceljs";
 import { installReloadFixture } from "./reload-fixture.js";
 
-export async function verifyReloadConsumer(path: string, kind: "all" | "receipts" | "retail") {
+export async function verifyReloadConsumer(path: string, kind: "all" | "receipts" | "retail", delivery: "cached" | "uncached" = "cached") {
   assert.ok(process.env.ANALYTICS_TEST_DATABASE_URL);
   assert.equal(new URL(process.env.ANALYTICS_TEST_DATABASE_URL).pathname, "/nalivdata");
   process.env.DATABASE_URL = process.env.ANALYTICS_TEST_DATABASE_URL;
@@ -46,16 +46,27 @@ export async function verifyReloadConsumer(path: string, kind: "all" | "receipts
       for (const format of ["json", "xlsx"]) app.get(`${path}.${format}`, async (req, res, next) => {
         req.user = { role: "admin", email: "admin@test.local" };
         try {
-          const result = await load(req, [path, format], async () => {
+          const compute = async () => {
             computes++;
             const [row] = await tx.$queryRaw<Array<{ total: number }>>`select sum(amount)::float8 as total from pg_temp.document_chek_kkm`;
-            if (format === "json") return JSON.stringify(row);
-            const workbook = new ExcelJS.Workbook(); workbook.addWorksheet("Проверка").addRow([row.total]);
-            return Buffer.from(await workbook.xlsx.writeBuffer()).toString("base64");
-          }, requirement);
-          res.setHeader("X-Report-Cache", result.status);
-          if (format === "xlsx") res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet").send(Buffer.from(result.value, "base64"));
-          else res.type("json").send(result.value);
+            return JSON.stringify(row);
+          };
+          let value: string;
+          if (delivery === "uncached") {
+            requireCoverage(await reader(), requirement);
+            value = await compute();
+            res.setHeader("X-Report-Cache", "bypass");
+          } else {
+            const result = await load(req, [path, format], compute, requirement);
+            value = result.value;
+            res.setHeader("X-Report-Cache", result.status);
+          }
+          if (format === "xlsx") {
+            const workbook = new ExcelJS.Workbook(); workbook.addWorksheet("Проверка").addRow([JSON.parse(value).total]);
+            res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            await workbook.xlsx.write(res);
+            res.end();
+          } else res.type("json").send(value);
         } catch (error) { next(error); }
       });
       app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { if (!sendReloadIncompleteError(error, res)) res.status(500).json({ error: "unexpected" }); });
@@ -63,10 +74,10 @@ export async function verifyReloadConsumer(path: string, kind: "all" | "receipts
       const get = (format: string) => fetch(`http://127.0.0.1:${address.port}${path}.${format}`);
       try {
         for (const format of ["json", "xlsx"]) {
-          const cold = await get(format); assert.equal(cold.status, 200); assert.equal(cold.headers.get("x-report-cache"), "miss");
+          const cold = await get(format); assert.equal(cold.status, 200); assert.equal(cold.headers.get("x-report-cache"), delivery === "uncached" ? "bypass" : "miss");
           if (format === "json") assert.deepEqual(await cold.json(), { total: 12 });
           else { const workbook = new ExcelJS.Workbook(); await workbook.xlsx.load(Buffer.from(await cold.arrayBuffer())); assert.equal(workbook.worksheets[0].getCell("A1").value, 12); }
-          const warm = await get(format); assert.equal(warm.status, 200); assert.equal(warm.headers.get("x-report-cache"), "hit"); await warm.arrayBuffer();
+          const warm = await get(format); assert.equal(warm.status, 200); assert.equal(warm.headers.get("x-report-cache"), delivery === "uncached" ? "bypass" : "hit"); await warm.arrayBuffer();
         }
         await tx.$executeRawUnsafe(`update pg_temp.analytics_reload_jobs set status='pending' where range_start='2026-06-01'`);
         await tx.$executeRawUnsafe(`update pg_temp.analytics_reload_plans set status='reloading',revision=revision+1`);
@@ -74,7 +85,7 @@ export async function verifyReloadConsumer(path: string, kind: "all" | "receipts
         for (const format of ["json", "xlsx"]) { const response = await get(format); assert.equal(response.status, 503); assert.equal(response.headers.get("cache-control"), "no-store"); assert.equal((await response.json()).code, "ANALYTICS_RELOAD_INCOMPLETE"); }
         await fixture.verify(); clock = 2000; unreadable = true;
         for (const format of ["json", "xlsx"]) assert.equal((await get(format)).status, 503);
-        assert.equal(computes, 2, "no affected report or workbook computation after readiness refusal");
+        assert.equal(computes, delivery === "uncached" ? 4 : 2, "no affected report or workbook computation after readiness refusal");
       } finally { await promisify(server.close.bind(server))(); }
       throw rollback;
     }, { timeout: 60_000 });

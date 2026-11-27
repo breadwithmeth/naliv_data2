@@ -142,6 +142,7 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
   const { config } = await import("../src/config.js");
   const { getTurnoverOptions, getTurnoverPreview, getTurnoverReport, getTurnoverRow, turnoverQuerySchema } = await import("../src/services/turnover.js");
   const originalQuery = prisma.$queryRaw;
+  const originalTransaction = prisma.$transaction;
   const originalUnsafeQuery = prisma.$queryRawUnsafe;
   const originalSchema = config.PGSCHEMA;
   config.PGSCHEMA = "pg_temp";
@@ -222,6 +223,8 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       await tx.$executeRawUnsafe("insert into document_chek_kkm_tovary values ('c1','i1','460123')");
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
       prisma.$queryRawUnsafe = tx.$queryRawUnsafe.bind(tx) as typeof prisma.$queryRawUnsafe;
+      // The fixture already owns the snapshot and the session-local tables.
+      prisma.$transaction = (async (run: (client: typeof tx) => Promise<unknown>) => run(tx)) as typeof originalTransaction;
       const params = { from: "2026-08-01", to: "2026-08-04", store: ["s1"], includeIncomplete: true };
       const report = await getTurnoverReport(params);
       const item = report.rows.find((row) => row.sku === "i1")!;
@@ -244,6 +247,28 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
       assert.equal(report.totals.overall.periodSales.revenue, 300);
       assert.deepEqual(report.totals.byUnit.map((total) => [total.unit, total.closingQty]), [["л", 7], ["шт", 21]]);
       assert.deepEqual(report.totals.overall.daily, []);
+      await t.test("source-only stock and returns survive SKU batch boundaries in network and daily totals", async () => {
+        await tx.$executeRawUnsafe("savepoint batch_boundary");
+        try {
+          await tx.$executeRawUnsafe(`insert into accumulation_register_tovary_na_skladah_balance
+            select '2026-08-04'::timestamp, 'w2', 'orphan-' || i, '', 1 from generate_series(1,65) i`);
+          await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary
+            values ('rr-s1-2026-08-02','orphan-65','','w1',2,30)`);
+          const network = await getTurnoverReport({ ...params, store: [], profile: "sample" });
+          const unknown = network.rows.filter(row => row.sku?.startsWith("orphan-"));
+          assert.equal(unknown.length, 65);
+          const combined = unknown.find(row => row.sku === "orphan-65")!;
+          assert.equal(combined.closingQty, 1);
+          assert.equal(combined.periodSales.quantity, -2);
+          assert.equal(combined.periodSales.revenue, -30);
+          assert.equal(combined.closingCost, null);
+          assert.equal(network.totals.overall.periodSales.revenue, 270);
+          assert.equal(network.totals.overall.closingQty, null);
+        } finally {
+          await tx.$executeRawUnsafe("rollback to savepoint batch_boundary");
+          await tx.$executeRawUnsafe("release savepoint batch_boundary");
+        }
+      });
       await t.test("standard preview values stock before the closing midnight and signed sales as of the opening midnight", async () => {
         const selection = { ...params, sku: "i1", profile: "summary" as const, sort: "name" as const, mode: "quantity" as const, includeIncomplete: false };
         const preview = await getTurnoverPreview(selection);
@@ -1405,12 +1430,13 @@ test("turnover source boundaries retain historical daily cost, returns, gaps, un
     }, { timeout: 60_000 });
   } finally {
     prisma.$queryRaw = originalQuery;
+    prisma.$transaction = originalTransaction;
     prisma.$queryRawUnsafe = originalUnsafeQuery;
     config.PGSCHEMA = originalSchema;
     await prisma.$disconnect();
   }
 });
 
-test("reload readiness temporary global gate refuses cached turnover workbook", { skip: !process.env.ANALYTICS_TEST_DATABASE_URL }, async () => {
-  await verifyReloadConsumer("/turnover", "all");
+test("reload readiness refuses uncached turnover JSON and workbook before computation", { skip: !process.env.ANALYTICS_TEST_DATABASE_URL }, async () => {
+  await verifyReloadConsumer("/turnover", "all", "uncached");
 });

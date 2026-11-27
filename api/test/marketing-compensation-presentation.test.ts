@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CompensationActivity, CompensationBranch, CompensationRow, MarketingCompensationReport } from "../src/services/marketing-compensation-types.js";
@@ -118,7 +119,7 @@ test("exclusions stay explicit even if a direct DTO declares its source total co
   assert.equal(projected.excludedIncompleteRows, 1);
 });
 
-test("compensation queries normalize filters into cache identity and early reports retain calculation mode", async () => {
+async function compensationModules() {
   process.env.DATABASE_URL ??= "postgresql://test:test@127.0.0.1:1/test";
   process.env.APP_ADMIN_EMAIL ??= "admin@test.local";
   process.env.APP_ADMIN_PASSWORD ??= "admin-test-password";
@@ -127,7 +128,11 @@ test("compensation queries normalize filters into cache identity and early repor
   process.env.JWT_SECRET ??= "test-jwt-secret-with-at-least-24-characters";
   // Config reads required env at module load; initialize the isolated test values first.
   const { prisma } = await import("../src/prisma.js");
-  const { compensationQuerySchema, getMarketingCompensationReport } = await import("../src/services/marketing-compensation.js");
+  return { prisma, ...await import("../src/services/marketing-compensation.js") };
+}
+
+test("compensation queries normalize filters into cache identity and early reports retain calculation mode", async () => {
+  const { prisma, compensationQuerySchema, getMarketingCompensationReport } = await compensationModules();
   const request = { from: new Date("2026-06-01"), to: new Date("2026-06-02") };
   assert.equal(compensationQuerySchema.parse(request).calculationMode, "purchase-title");
   assert.equal(compensationQuerySchema.parse({ ...request, calculationMode: "retail-rule" }).calculationMode, "retail-rule");
@@ -161,6 +166,75 @@ test("compensation queries normalize filters into cache identity and early repor
     assert.equal(restored.calculationMode, "retail-rule");
     assert.equal(restored.activities.length, 1);
     assert.equal(restored.activities[0].totals.compensation, null);
+    // No activity in scope: preserve the distinction between a known-empty period
+    // and an unresolved selection, without reading any composition or sales data.
+    prisma.$queryRaw = (async (sql: TemplateStringsArray, ...values: unknown[]) => {
+      const query = sql.join("?");
+      if (query.includes("to_regclass")) {
+        return (values.find(Array.isArray) as string[]).map(name => ({ name, present: true }));
+      }
+      if (query.includes("posted is true")) return [];
+      throw new Error("Empty activity scope must not load report sources");
+    }) as typeof original;
+    const empty = await getMarketingCompensationReport(request, readiness);
+    assert.deepEqual(empty.totals, { compensation: 0, knownCompensation: 0, incompleteRows: 0 });
+    const absent = await getMarketingCompensationReport({ ...request, activityKey: "absent" }, readiness);
+    assert.deepEqual(absent.issues.map(i => i.code), ["activity_not_found"]);
+    assert.deepEqual(absent.totals, { compensation: null, knownCompensation: 0, incompleteRows: 0 });
+  } finally {
+    prisma.$queryRaw = original;
+  }
+});
+
+test("retail calculation scopes catalog reads and keeps unassigned diagnostics separate from known money", async () => {
+  const { prisma, getMarketingCompensationReport } = await compensationModules();
+  const request = { from: new Date("2026-06-01"), to: new Date("2026-06-02"), activityKey: "a", calculationMode: "retail-rule" as const, includeIncomplete: true };
+  // The DB boundary supplies rows, not calculations. Exercise real candidate expansion, projection and totals.
+  const catalog: Record<string, { keys: string[]; rows: Record<string, unknown>[] }> = {
+    document_marketingovaya_aktsiya: { keys: ["a"], rows: [{ ref_key: "a", naimenovanie_aktsii: "Акция", dlya_vseh_magazinov: false }] },
+    document_marketingovaya_aktsiya_skidki_natsenki: { keys: ["a"], rows: [{ activity_key: "a", skidka_natsenka_key: "discount", magazin_key: "shop", data_nachala: null, data_okonchaniya: null }] },
+    document_marketingovaya_aktsiya_magaziny: { keys: ["a"], rows: [] },
+    catalog_magaziny: { keys: ["shop"], rows: [{ ref_key: "shop", description: "Магазин", deletion_mark: false }] },
+    catalog_skidki_natsenki: { keys: ["discount"], rows: [{ ref_key: "discount", description: "10%", segment_nomenklatury_predostavleniya_key: "segment", deletion_mark: false }] },
+    catalog_segmenty_nomenklatury: { keys: ["segment"], rows: [{ ref_key: "segment", description: "Состав", deletion_mark: false }] },
+    information_register_nomenklatura_segmenta: { keys: ["segment"], rows: [
+      { item: "idle", characteristic: "", segments: ["segment"] },
+      { item: "sold", characteristic: "", segments: ["segment"] }
+    ] },
+    catalog_nomenklatura: { keys: ["sold"], rows: [{ ref_key: "sold", description: "Товар", naimenovanie_polnoe: null, shtrihkod: null, barcode: "001" }] }
+  };
+  const original = prisma.$queryRaw;
+  let movementReads = 0;
+  prisma.$queryRaw = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const query = Prisma.sql(strings, ...values);
+    if (query.text.includes("to_regclass")) return (query.values.find(Array.isArray) as string[]).map(name => ({ name, present: true }));
+    if (query.text.includes("as invalid_item")) return [{ segment_key: "segment", invalid_item: false }];
+    if (query.text.includes("as days")) return [{ branch: "shop", days: ["2026-06-01"] }];
+    if (query.text.includes("orphan_reports")) return [{ key: "a" }];
+    if (query.text.includes("with candidates")) {
+      movementReads++;
+      return [{ id: 1, price: "100", quantity: "2", has_sales: true, has_returns: false,
+        missing_quantity: false, missing_price: false, unverified_movement: false,
+        unverified_return: false, purchase_price_issue: null }];
+    }
+    if (query.text.includes("posted is true")) {
+      assert.ok(query.values.includes("a"), "selection must be bound at the activity query");
+      return [{ key: "a", name: "Акция", number: null, startsOn: "2026-06-01", endsOn: "2026-06-01" }];
+    }
+    const table = /from "[^"]+"\."([^"]+)"/.exec(query.text)?.[1];
+    assert.ok(table && catalog[table], `unexpected SQL: ${query.text}`);
+    assert.deepEqual(query.values.find(Array.isArray), catalog[table].keys, `unbounded or unrelated ${table} lookup`);
+    return catalog[table].rows;
+  }) as typeof original;
+  try {
+    const report = await getMarketingCompensationReport(request, async () => ({ returnPriceIntervals: [] }));
+    assert.equal(movementReads, 1);
+    const [branch] = report.activities[0].branches;
+    assert.deepEqual(branch.rows.map(r => [r.itemKey, r.barcode, r.compensation]), [["sold", "001", 20]]);
+    assert.deepEqual(branch.totals, { compensation: 20, knownCompensation: 20, incompleteRows: 0 });
+    assert.deepEqual(report.totals, { compensation: null, knownCompensation: 20, incompleteRows: 0 });
+    assert.deepEqual(report.issues.map(i => i.code), ["missing_branch"]);
+    assert.deepEqual(report.activities[0].issues.map(i => i.code), ["missing_branch"]);
   } finally {
     prisma.$queryRaw = original;
   }

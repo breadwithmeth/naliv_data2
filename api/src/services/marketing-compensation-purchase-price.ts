@@ -103,9 +103,13 @@ export function purchasePriceCte({ table, stores, available, zero, itemKeys, fro
         and t.ref_key not in ('', ${zero}) and t.deletion_mark is false and t.is_folder is not true
     ),
     purchase_movement_keys as materialized (
-      select distinct m.magazin_key, m.nomenklatura_key, coalesce(m.characteristic, '') as characteristic,
-        m.date, s.price_type
+      -- Carry the matching rows through price resolution. Joining them back by
+      -- timestamp let PostgreSQL rescan every resolved key for every movement.
+      select m.magazin_key, m.nomenklatura_key, coalesce(m.characteristic, '') as characteristic,
+        m.date, s.price_type, jsonb_agg(jsonb_build_object('id', m.id, 'quantity', m.quantity,
+          'kind', m.kind, 'unverified_movement', m.unverified_movement)) as movements
       from matched m left join purchase_store_types s on s.ref_key = m.magazin_key
+      group by m.magazin_key, m.nomenklatura_key, coalesce(m.characteristic, ''), m.date, s.price_type
     ),
     purchase_price_keys as materialized (
       select distinct price_type, nomenklatura_key, characteristic
@@ -168,7 +172,7 @@ export function purchasePriceCte({ table, stores, available, zero, itemKeys, fro
     priced as (
       select m.*, case when p.purchase_price_issue is null then p.candidate_price end as known_price,
         false as unverified_return, false as missing_price, p.purchase_price_issue
-      from matched m join purchase_resolution p on p.magazin_key = m.magazin_key and p.nomenklatura_key = m.nomenklatura_key
-        and p.characteristic = coalesce(m.characteristic, '') and p.date = m.date
+      from purchase_resolution p cross join lateral jsonb_to_recordset(p.movements)
+        as m(id int, quantity numeric, kind text, unverified_movement boolean)
     )`;
 }

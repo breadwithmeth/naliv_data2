@@ -12,7 +12,7 @@ import { writeMarketingCompensationWorkbook } from "../src/services/marketing-co
 
 // Real PostgreSQL TEMP fixtures only: source records are never changed.
 async function withCompensationSources(run: (
-  tx: Prisma.TransactionClient, engine: typeof CompensationEngine
+  tx: Prisma.TransactionClient, engine: typeof CompensationEngine, client: Pick<Prisma.TransactionClient, "$queryRaw">
 ) => Promise<void>) {
   process.env.DATABASE_URL = process.env.ANALYTICS_TEST_DATABASE_URL;
   process.env.PGSCHEMA = "pg_temp";
@@ -53,9 +53,10 @@ async function withCompensationSources(run: (
       await tx.$executeRawUnsafe(`insert into information_register_nomenklatura_segmenta values ('seg','i',null),('seg','i',null)`);
       await tx.$executeRawUnsafe(`insert into catalog_skidki_natsenki values ('d','10% в строке','Подарок',99,'seg',false)`);
       await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya_skidki_natsenki values
-        ('a',null,'d',null,'2026-09-02','2026-09-30'),('a',null,'d',null,'2026-09-02','2026-09-30'),
+        ('','a','d',null,'2026-09-02','2026-09-30'),('','a','d',null,'2026-09-02','2026-09-30'),
         ('b',null,'d','s1','2026-09-02','2026-09-30')`);
-      await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya_magaziny values ('a',null,'s1'),('a',null,'s2')`);
+      await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya_magaziny values
+        (null,'a','s1'),('00000000-0000-0000-0000-000000000000','a','s2')`);
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah values
         ('before','2026-09-01','s1',true,false),('r','2026-09-30 23:59:59','s1',true,false),
         ('other','2026-09-10','s2',true,false),('end','2026-10-01','s1',true,false),('deleted','2026-09-20','s1',true,true)`);
@@ -64,7 +65,7 @@ async function withCompensationSources(run: (
         ('end',null,'i',null,1000,1,1000),('deleted',null,'i',null,1000,1,1000),('r',null,'i','other',1000,1,1000)`);
       await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values ('r',null,'i',null,1,800)`);
       prisma.$queryRaw = tx.$queryRaw.bind(tx) as typeof prisma.$queryRaw;
-      await run(tx, engine);
+      await run(tx, engine, prisma);
     }, { timeout: 60000 });
   } finally { prisma.$queryRaw = original; await prisma.$disconnect(); }
 }
@@ -167,10 +168,14 @@ test("retail-rule compensation uses rule prefixes and exact movement prices with
       assert.equal((await getMarketingCompensationReport(selected, unverified)).totals.compensation, null);
       // Unknown store of a relevant SKU blocks even an otherwise empty scope.
       await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah values ('unknown','2026-09-15',null,true,false)");
-      await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah_tovary values ('unknown',null,'i',null,1,1000,900)");
+      // Unassigned scope is independent of branch, movement quantity and the assigned-store price join.
+      await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah_tovary values ('unknown',null,'i','other',0,1000,0)");
+      assert.ok(!(await read()).issues.some(i => i.code === "missing_branch"));
+      await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah_tovary values ('unknown',null,'i','00000000-0000-0000-0000-000000000000',0,1000,0)");
       const unknownStore = await read();
       assert.equal(unknownStore.totals.compensation, null);
       assert.ok(unknownStore.issues.some(i => i.code === "missing_branch"));
+      assert.equal(unknownStore.activities[0].issues.filter(i => i.code === "missing_branch").length, 1);
       await tx.$executeRawUnsafe("drop table information_register_nomenklatura_segmenta");
       const unsynced = await read();
       assert.equal(unsynced.totals.compensation, null);
@@ -271,6 +276,20 @@ test("purchase-title prices exact movements by store, dimensions and timestamp a
       });
       assert.deepEqual(items, detail);
     }
+
+    // The first batch has two certified as-of prices for 'i'; the last batch has a different SKU and proof.
+    await tx.$executeRawUnsafe(`insert into information_register_nomenklatura_segmenta
+      select 'seg','pad-' || n,null from generate_series(1,4096) n union all select 'seg','zz-late',null`);
+    await tx.$executeRawUnsafe("insert into catalog_nomenklatura values ('zz-late','Последний',null,'002',false)");
+    await tx.$executeRawUnsafe("insert into document_otchet_o_roznichnyh_prodazhah_tovary values ('r',null,'zz-late',null,1,9999,9999)");
+    await tx.$executeRawUnsafe("insert into document_ustanovka_tsen_nomenklatury_tovary values ('first',null,'purchase-1','zz-late',null,null,640)");
+    const partialAcrossBatches = await summarize();
+    assert.deepEqual(partialAcrossBatches.totals, { compensation: null, knownCompensation: 175, incompleteRows: 1 });
+    assert.ok(partialAcrossBatches.rows.some(r => r.itemKey === "zz-late" && r.price === null && hasIssue(r, "purchase_price_unverified")));
+    evidence = { version: 2, scopes: [...valid.scopes, { ...first, itemKey: "zz-late", price: "640" }] };
+    assert.deepEqual((await summarize()).totals, { compensation: 335, knownCompensation: 335, incompleteRows: 0 });
+    evidence = valid;
+    await tx.$executeRawUnsafe("delete from information_register_nomenklatura_segmenta where nomenklatura_key like 'pad-%' or nomenklatura_key='zz-late'");
 
     await tx.$executeRawUnsafe("insert into document_ustanovka_tsen_nomenklatury values ('second-duplicate','2026-09-30 12:00',true,false)");
     await tx.$executeRawUnsafe("insert into document_ustanovka_tsen_nomenklatury_tovary values ('second-duplicate',null,'purchase-1','i',null,null,500)");
@@ -422,6 +441,66 @@ test("purchase-title prices exact movements by store, dimensions and timestamp a
   });
 });
 
-test("reload readiness temporary global gate refuses cached compensation workbook", { skip: !process.env.ANALYTICS_TEST_DATABASE_URL }, async () => {
-  await verifyReloadConsumer("/compensations", "all");
+test("one October promotion batches complete overlapping scopes without losing known money or duplicating diagnostics", {
+  skip: !process.env.ANALYTICS_TEST_DATABASE_URL
+}, async () => {
+  await withCompensationSources(async (tx, { getMarketingCompensationReport }, prisma) => {
+    // One activity, one branch, and enough distinct items to require multiple valuation queries.
+    await tx.$executeRawUnsafe(`insert into information_register_nomenklatura_segmenta
+      select 'seg','item-' || lpad(n::text,5,'0'),null from generate_series(1,4200) n`);
+    await tx.$executeRawUnsafe(`insert into catalog_segmenty_nomenklatury values ('overlap','Пересечение',false)`);
+    await tx.$executeRawUnsafe(`insert into information_register_nomenklatura_segmenta values ('overlap','item-04200',null)`);
+    await tx.$executeRawUnsafe(`insert into catalog_skidki_natsenki values ('extra','20%',null,null,'overlap',false)`);
+    await tx.$executeRawUnsafe(`insert into document_marketingovaya_aktsiya_skidki_natsenki values
+      ('outside',null,'d','s1',null,null),('outside',null,'d','s1',null,null),
+      ('outside',null,'extra','s1','2026-10-15','2026-10-15')`);
+    await tx.$executeRawUnsafe(`insert into catalog_nomenklatura values
+      ('item-00001','One',null,'01',false),('item-04200','Last',null,'42',false)`);
+    await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah values
+      ('mid','2026-10-15','s1',true,false),('orphan','2026-10-15',null,true,false)`);
+    await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_tovary values
+      ('mid',null,'item-00001',null,2,10.55,null),('mid',null,'item-04200',null,1,100,null),
+      ('orphan',null,'item-00001',null,0,null,null),('orphan',null,'item-04200',null,0,null,null)`);
+    await tx.$executeRawUnsafe(`insert into document_otchet_o_roznichnyh_prodazhah_vozvraschennye_tovary values
+      ('mid',null,'item-00001',null,2,10.55)`);
+    const original = prisma.$queryRaw;
+    const batches: number[] = [];
+    prisma.$queryRaw = ((...args: Parameters<typeof original>) => {
+      for (const value of args.slice(1)) {
+        if (typeof value !== "string" || !value.startsWith('[{"id":')) continue;
+        const rows = JSON.parse(value);
+        if (rows[0]?.itemKey) batches.push(rows.length);
+      }
+      return original.apply(prisma, args);
+    }) as typeof original;
+    const params = { from: new Date("2026-10-01"), to: new Date("2026-11-01"), activityKey: "outside",
+      calculationMode: "retail-rule" as const, includeIncomplete: true };
+    try {
+      const report = await getMarketingCompensationReport(params, async () => ({
+        returnPriceIntervals: [{ from: "2026-10-01", to: "2026-11-01" }]
+      }));
+      assert.ok(batches.length > 1 && batches.every(n => n <= 4096), `candidate batches: ${batches}`);
+      const activity = report.activities[0], branch = activity.branches[0];
+      // Existing October 1 sale of 'i': 1000 × 0.10; otherwise a net-zero movement and an unknown overlap.
+      assert.deepEqual(report.totals, { compensation: null, knownCompensation: 100, incompleteRows: 1 });
+      assert.equal(activity.issues.filter(i => i.code === "missing_branch").length, 1);
+      assert.equal(report.issues.filter(i => i.code === "missing_branch").length, 1);
+      assert.ok(branch.hasSales && branch.hasReturns);
+      assert.deepEqual(branch.rows.filter(r => r.itemKey === "item-00001").map(r => [r.unitCompensation, r.quantity, r.compensation]), [[1.06, 0, 0]]);
+      const overlap = branch.rows.filter(r => r.itemKey === "item-04200");
+      assert.equal(overlap.length, 1);
+      assert.deepEqual([overlap[0].from, overlap[0].to, overlap[0].compensation], ["2026-10-15", "2026-10-16", null]);
+      assert.ok(overlap[0].issues.some(i => i.code === "conflicting_percentage"));
+      let reads = 0;
+      await assert.rejects(getMarketingCompensationReport(params, async () => ({
+        binding: String(++reads), returnPriceIntervals: []
+      })), {statusCode: 503});
+    } finally {
+      prisma.$queryRaw = original;
+    }
+  });
+});
+
+test("reload readiness refuses uncached compensation JSON and workbook before computation", { skip: !process.env.ANALYTICS_TEST_DATABASE_URL }, async () => {
+  await verifyReloadConsumer("/compensations", "all", "uncached");
 });

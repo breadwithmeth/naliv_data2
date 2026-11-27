@@ -8,7 +8,7 @@ import type { ReloadReadinessState, ReloadRequirement } from "../services/reload
 
 type ReloadGuard = ReloadRequirement | (() => Promise<void>);
 
-/** Certification precedes every hit, including binary workbooks. */
+/** Certification precedes every cache hit. */
 export function createCachedReportLoader(
   reportCache: ReportCache,
   reader: () => Promise<ReloadReadinessState> = getReloadReadiness
@@ -31,18 +31,6 @@ const loadReport = createCachedReportLoader(cache);
 export function invalidateReports() {
   reportGeneration.value++;
   cache.clear();
-}
-
-// Binary workbooks are cached as base64 text in the same bounded LRU.
-export async function loadCachedText(
-  req: Request,
-  key: readonly unknown[],
-  load: () => Promise<string>,
-  requirement?: ReloadGuard
-) {
-  if (!req.user) throw Object.assign(new Error("Authentication required"), { statusCode: 401 });
-  refreshReportGeneration(invalidateReports);
-  return loadReport(req, key, load, requirement);
 }
 
 // Both JSON previews and downloadable reports share the same bounded snapshot.

@@ -373,8 +373,8 @@ Excel формируется отдельным запросом по исход
 
 Поиск товара заранее сужает источник по названию, артикулу, коду или ключу SKU.
 Справочники формы загружаются отдельным запросом `GET /api/reports/turnover/options`.
-Готовый XLSX кэшируется; заголовки `X-Report-Cache`, `X-Report-Rows` и `Server-Timing`
-показывают источник и объём результата.
+Предпросмотр, детали строки и XLSX формируются в одноразовом процессе API без кэша тела.
+XLSX передаётся потоком. `X-Report-Rows` описывает размер выгрузки, `Server-Timing` — время до выдачи.
 
 Admin API: `GET /api/reports/turnover/options` — физические магазины и склады;
 `GET /api/reports/turnover.xlsx` — стандартная форма при `profile=sample` или
@@ -887,7 +887,42 @@ and date summaries in a single scan. The Excel query aggregates numeric facts
 and distinct receipt counts at source-store grain before address/scope expansion;
 JIT is disabled locally in that report transaction, not globally.
 
-Authenticated report responses have a bounded, per-process cache: by default
+Turnover and marketing compensation calculations/downloads are isolated from the server heap:
+one child per request, one running plus one waiting per API instance. Additional simultaneous
+requests get HTTP 503 with `Retry-After`. Leaving the page cancels a waiting request or kills
+its worker when the HTTP connection closes. Normal completion also reaps the worker. Its JSON
+or XLSX goes to the client with backpressure and `X-Report-Cache: bypass`; no completed body
+is held by the API. The options endpoints remain light and use the normal cache.
+
+Turnover reads facts for at most 32 SKU keys at a time, keeping all selected stores and
+both periods together in one repeatable-read transaction. Compensation processes one
+promotion at a time: it pages item/characteristic memberships, resolves overlapping
+rules for the same scope, then values up to 4,096 candidate windows per SQL batch.
+Purchase evidence and the branch/day coverage calendar are shared across batches.
+Neither calculation adds independently computed daily or store reports to make a monthly total.
+These are limits on keys, not bytes: history for one key, report-wide metadata, rollups,
+diagnostics and output rows still consume memory. A full response must fit the worker;
+HTTP 503 or an interrupted download is not a successful report.
+
+October 2026 replay (Windows, local PostgreSQL copy of the production report inputs):
+both previews and both workbooks completed for the whole month. Sampled RSS for the API
+and its descendants was 99,696,640 bytes before, 621,748,224 at peak and 156,200,960
+after, with no surviving child. Closing a live preview connection reaped its worker in
+58 ms in a separate run. The previous worker failed the full turnover preview (503);
+old/new JSON and workbook cell parity was verified on a smaller real monthly selection,
+not claimed for that failed full run. These measurements do not certify Linux cgroup usage.
+
+**Deployment requirement for `data1b`:** set the new runtime container's hard memory limit
+in Coolify to `950m` (996,147,200 bytes) and disable swap for the container if swap is available.
+Do not shrink a live 2 GiB process in place. With no verifiable cgroup v2 `memory.max`
+at or below 1,000,000,000 bytes the production API refuses heavy reports (503).
+It reserves 100 MB of headroom before starting, bounds worker V8 old space to 256 MiB
+and samples total container `memory.current` every 100 ms, stopping a worker at 700 MB
+(or 85% of a smaller cap). 700 MB is a target, not an instantaneous hard bound.
+A stopped download after headers is interrupted, not marked complete. The DB, frontend,
+build container and other replicas are outside this limit.
+
+Other authenticated report responses have a bounded, per-process cache: by default
 `REPORT_CACHE_TTL_SECONDS=60`, `REPORT_CACHE_MAX_MB=64`, and at most 128 entries.
 Identical simultaneous requests share one load. Keys include source/application
 schemas, authenticated role, report generation, endpoint, and validated parameters.
