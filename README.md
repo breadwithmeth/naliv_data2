@@ -893,6 +893,9 @@ requests get HTTP 503 with `Retry-After`. Leaving the page cancels a waiting req
 its worker when the HTTP connection closes. Normal completion also reaps the worker. Its JSON
 or XLSX goes to the client with backpressure and `X-Report-Cache: bypass`; no completed body
 is held by the API. The options endpoints remain light and use the normal cache.
+Both report screens show an indeterminate bar and elapsed time while waiting for a preview
+or Excel file, then show the amount of response data actually received by the browser.
+Neither elapsed time nor received bytes is a percentage of the server-side calculation.
 
 Turnover reads facts for at most 32 SKU keys at a time, keeping all selected stores and
 both periods together in one repeatable-read transaction. Compensation processes one

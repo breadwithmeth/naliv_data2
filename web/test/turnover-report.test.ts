@@ -1118,12 +1118,10 @@ async function traceTransport(page: Page, surviveAbort = false) {
       // Model a response whose transport already crossed the abort boundary.
       const response = await fetch(input, isPreview && surviveAbort ? { ...init, signal: undefined } : init);
       if (isPreview && surviveAbort) {
-        const json = response.json.bind(response);
-        response.json = async () => {
-          const body = await json();
-          trace.consumed.push(body.generatedAt);
-          return body;
-        };
+        const tag = response.headers.get("X-Test-Generation")!;
+        return new Response(response.body!.pipeThrough(new TransformStream({
+          flush() { trace.consumed.push(tag); }
+        })), { headers: response.headers });
       }
       return response;
     };
@@ -1142,7 +1140,7 @@ test("A → B → A ignores late results even when older transports still delive
   await loadButton(page).waitFor();
   await setDates(page);
   const search = page.getByRole("searchbox", { name: "Товар", exact: true });
-  const loading = page.getByText("Загружаем отчёт…", { exact: true });
+  const loading = page.getByRole("progressbar", { name: "Загрузка отчёта" });
   const captured: Route[] = [];
   for (const [index, value] of ["A", "B", "A"].entries()) {
     await search.fill(value);
@@ -1163,7 +1161,7 @@ test("A → B → A ignores late results even when older transports still delive
     const data = report();
     data.generatedAt = `2026-11-04T0${index}:00:00.000Z`;
     data.rows[0].name = index === 2 ? "Current A" : `Stale ${index}`;
-    await captured[index].fulfill({ json: data });
+    await captured[index].fulfill({ json: data, headers: { "X-Test-Generation": data.generatedAt } });
     await page.waitForFunction(tag => (window as TracedWindow).turnoverTransport.consumed.includes(tag), data.generatedAt);
     if (index !== 2) {
       await frame(page);
@@ -1186,8 +1184,10 @@ test("JSON cancellation and failure never enable Excel; retry can load an empty 
   await setDates(page);
   await loadButton(page).click();
   const cancelled = await previews.at(0);
+  await page.getByRole("progressbar", { name: "Загрузка отчёта" }).waitFor();
   await page.getByRole("button", { name: "Отменить", exact: true }).click();
   await assertAborted(page, cancelled);
+  assert.equal(await page.getByRole("progressbar").count(), 0);
   assert.equal(await loadButton(page).isEnabled(), true);
   assert.equal(await excelButton(page).count(), 0);
   assert.equal(await page.getByRole("alert").count(), 0);
@@ -1247,6 +1247,7 @@ test("Excel cancel and error preserve the JSON; a collapsed report still downloa
   page.on("download", event => downloads.push(event.suggestedFilename()));
   await excelButton(page).dblclick();
   const cancelled = await workbooks.at(0);
+  await page.getByRole("progressbar", { name: "Загрузка Excel" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Формируем Excel…" }).isEnabled(), false);
   assert.equal(workbooks.count, 1);
   await page.getByRole("button", { name: "Отменить", exact: true }).click();

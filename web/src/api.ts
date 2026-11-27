@@ -1078,7 +1078,23 @@ function nextDate(value: string) {
   return date.toISOString().slice(0, 10);
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+export class ReportTransfer {
+  readonly startedAt = performance.now();
+  receivedBytes = 0;
+}
+
+function trackBody(response: Response, transfer?: ReportTransfer): Response {
+  if (!transfer || !response.body || typeof TransformStream === "undefined") return response;
+  const stream = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      transfer.receivedBytes += chunk.byteLength;
+      controller.enqueue(chunk);
+    }
+  }));
+  return new Response(stream, { headers: response.headers });
+}
+
+async function request<T>(url: string, init?: RequestInit, transfer?: ReportTransfer): Promise<T> {
   const response = await fetch(url, {
     credentials: "include",
     headers: {
@@ -1096,7 +1112,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     return undefined as T;
   }
 
-  return response.json() as Promise<T>;
+  return trackBody(response, transfer).json() as Promise<T>;
 }
 
 async function responseError(response: Response): Promise<Error> {
@@ -1267,7 +1283,7 @@ function downloadFilename(disposition: string | null): string {
   return filename;
 }
 
-async function downloadWorkbook(url: string, signal?: AbortSignal) {
+async function downloadWorkbook(url: string, signal?: AbortSignal, transfer?: ReportTransfer) {
   const response = await fetch(url, {
     credentials: "include",
     cache: "no-store",
@@ -1277,7 +1293,7 @@ async function downloadWorkbook(url: string, signal?: AbortSignal) {
   if (!response.ok) throw await responseError(response);
   const filename = downloadFilename(response.headers.get("Content-Disposition"));
   const rowsHeader = Number(response.headers.get("X-Report-Rows"));
-  const blob = await response.blob();
+  const blob = await trackBody(response, transfer).blob();
   return {
     blob, filename,
     rows: Number.isFinite(rowsHeader) ? rowsHeader : null,
@@ -1315,11 +1331,11 @@ export const api = {
   turnoverOptions(signal?: AbortSignal): Promise<TurnoverOptions> {
     return request<TurnoverOptions>("/api/reports/turnover/options", { signal, cache: "no-store" });
   },
-  turnoverReport(filters: TurnoverRequest, signal?: AbortSignal): Promise<TurnoverPreview> {
+  turnoverReport(filters: TurnoverRequest, signal?: AbortSignal, transfer?: ReportTransfer): Promise<TurnoverPreview> {
     return request<TurnoverPreview>(`/api/reports/turnover?${turnoverParams(filters)}`, {
       signal,
       cache: "no-store"
-    });
+    }, transfer);
   },
   async turnoverRow(filters: TurnoverRequest, signal?: AbortSignal): Promise<TurnoverRowDetail> {
     if (!filters.auditGroup?.trim()) throw new Error("Для подробностей строки нужен её точный ключ.");
@@ -1328,8 +1344,8 @@ export const api = {
       cache: "no-store"
     });
   },
-  turnoverWorkbook(filters: TurnoverRequest, signal?: AbortSignal) {
-    return downloadWorkbook(`/api/reports/turnover.xlsx?${turnoverParams(filters)}`, signal);
+  turnoverWorkbook(filters: TurnoverRequest, signal?: AbortSignal, transfer?: ReportTransfer) {
+    return downloadWorkbook(`/api/reports/turnover.xlsx?${turnoverParams(filters)}`, signal, transfer);
   },
   yearComparison(filters: YearComparisonRequest, signal?: AbortSignal) {
     const params = yearComparisonParams(filters);
@@ -1386,17 +1402,17 @@ export const api = {
     appendReportParams(params, filters);
     return request<{ activities: CompensationActivityOption[] }>(`/api/marketing/compensations/activities?${params}`, { signal });
   },
-  async marketingCompensationReport(filters: MarketingCompensationFilters, signal?: AbortSignal) {
+  async marketingCompensationReport(filters: MarketingCompensationFilters, signal?: AbortSignal, transfer?: ReportTransfer) {
     const calculationMode = filters.calculationMode;
-    const report = await request<MarketingCompensationReport>(`/api/marketing/compensations?${marketingCompensationParams(filters)}`, { signal });
+    const report = await request<MarketingCompensationReport>(`/api/marketing/compensations?${marketingCompensationParams(filters)}`, { signal }, transfer);
     signal?.throwIfAborted();
     if (calculationMode !== undefined && report.calculationMode !== calculationMode) {
       throw new Error("Режим полученного отчёта не совпадает с выбранным расчётом.");
     }
     return report;
   },
-  async marketingCompensationWorkbook(filters: MarketingCompensationFilters, signal?: AbortSignal) {
-    const result = await downloadWorkbook(`/api/marketing/compensations.xlsx?${marketingCompensationParams(filters)}`, signal);
+  async marketingCompensationWorkbook(filters: MarketingCompensationFilters, signal?: AbortSignal, transfer?: ReportTransfer) {
+    const result = await downloadWorkbook(`/api/marketing/compensations.xlsx?${marketingCompensationParams(filters)}`, signal, transfer);
     signal?.throwIfAborted();
     return result;
   },

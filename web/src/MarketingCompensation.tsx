@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Download } from "lucide-react";
-import { api } from "./api";
+import { api, ReportTransfer } from "./api";
+import { ReportProgress } from "./ReportProgress";
 import type {
   CompensationActivity, CompensationActivityOption, CompensationBranch, CompensationCalculationMode,
   CompensationIssue, CompensationRow, CompensationTotals, MarketingCompensationReport,
@@ -14,10 +15,11 @@ import {
 
 type InclusiveDateRange = Required<Pick<ReportDateRange, "from" | "to">>;
 type LoadState<T> =
-  | { key: string; status: "loading" }
+  | { key: string; status: "loading"; transfer?: ReportTransfer }
   | { key: string; status: "success"; data: T }
   | { key: string; status: "error"; error: string };
-type DownloadState = { key: string; status: "loading" | "success" | "error"; message?: string };
+type DownloadState = { key: string; status: "loading"; transfer: ReportTransfer }
+  | { key: string; status: "success" | "error"; message: string };
 const moneyFormatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const decimalFormatter = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 6 });
 
@@ -255,8 +257,9 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
   useEffect(() => {
     const controller = new AbortController();
     reportController.current = controller;
-    setReportState({ key: requestKey, status: "loading" });
-    api.marketingCompensationReport(filters, controller.signal).then((data) => {
+    const transfer = new ReportTransfer();
+    setReportState({ key: requestKey, status: "loading", transfer });
+    api.marketingCompensationReport(filters, controller.signal, transfer).then((data) => {
       if (!controller.signal.aborted) setReportState({ key: requestKey, status: "success", data });
     }).catch((caught: unknown) => {
       if (!controller.signal.aborted) setReportState({ key: requestKey, status: "error", error: caught instanceof Error ? caught.message : "Не удалось загрузить расчёт компенсаций." });
@@ -286,9 +289,10 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
     if (!report || downloadController.current) return;
     const controller = new AbortController();
     downloadController.current = controller;
-    setDownloadState({ key: requestKey, status: "loading" });
+    const transfer = new ReportTransfer();
+    setDownloadState({ key: requestKey, status: "loading", transfer });
     try {
-      const result = await api.marketingCompensationWorkbook({ ...filters, calculationMode: report.calculationMode }, controller.signal);
+      const result = await api.marketingCompensationWorkbook({ ...filters, calculationMode: report.calculationMode }, controller.signal, transfer);
       if (controller.signal.aborted || downloadController.current !== controller) return;
       const url = URL.createObjectURL(result.blob);
       const link = document.createElement("a");
@@ -340,7 +344,8 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
       <span>Включить строки без полного расчёта</span>
       <span className="compensation-note">Отбор применяется к сайту и Excel; отсутствие штрихкода не исключает строку</span>
     </label>
-    {download?.status === "loading" ? <p className="compensation-note" role="status">Формируем Excel по всему выбранному отбору…</p> : null}
+    {state?.status === "loading" && state.transfer && <ReportProgress transfer={state.transfer} />}
+    {download?.status === "loading" && <ReportProgress transfer={download.transfer} excel />}
     {download?.status === "success" ? <p className="compensation-note" role="status">{download.message}</p> : null}
     {download?.status === "error" ? <div className="compensation-error" role="alert">
       <p>Не удалось скачать Excel. Повторите попытку.</p>
@@ -363,7 +368,6 @@ export function MarketingCompensation({ dateRange }: { dateRange: InclusiveDateR
       </div>
     </details>
     <div className="compensation-results" aria-busy={reportPending}>
-      {reportPending ? <div className="compensation-loading" role="status"><p>Загружаем расчёт компенсаций…</p><span>Данные предыдущего периода, отбора или режима не показываются.</span></div> : null}
       {state?.status === "error" ? <div className="compensation-error" role="alert">
         <p>Не удалось загрузить компенсации. Повторите попытку.</p>
         <button type="button" className="compensation-button" onClick={() => setReportAttempt((attempt) => attempt + 1)}>Повторить</button>

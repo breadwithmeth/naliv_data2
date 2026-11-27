@@ -1,7 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { Download } from "lucide-react";
-import { api } from "./api";
+import { api, ReportTransfer } from "./api";
+import { ReportProgress } from "./ReportProgress";
 import type {
   ReportDateRange, TurnoverOption, TurnoverOptions, TurnoverPreview, TurnoverRequest
 } from "./api";
@@ -24,10 +25,10 @@ type Filters = {
   format: ReportFormat; includeNonRetail: boolean; excludeZero: boolean; includeIncomplete: boolean;
 };
 type PreparedRequest = { valid: true; request: TurnoverRequest } | { valid: false; error: string };
-type DownloadState = { status: "idle" | "loading" } | { status: "success" | "error"; message: string };
+type DownloadState = { status: "idle" } | { status: "loading"; transfer: ReportTransfer } | { status: "success" | "error"; message: string };
 type ReportState =
   | { status: "idle" }
-  | { status: "loading"; requestKey: string }
+  | { status: "loading"; requestKey: string; transfer: ReportTransfer }
   | { status: "error"; requestKey: string; message: string }
   | { status: "ready"; requestKey: string; request: TurnoverRequest; report: TurnoverPreview };
 
@@ -293,9 +294,10 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
     const controller = new AbortController();
     jsonController.current = controller;
     const isCurrent = () => jsonController.current === controller && activeKey.current === requestKey;
-    setState({ status: "loading", requestKey });
+    const transfer = new ReportTransfer();
+    setState({ status: "loading", requestKey, transfer });
     try {
-      const report = await api.turnoverReport(prepared.request, controller.signal);
+      const report = await api.turnoverReport(prepared.request, controller.signal, transfer);
       if (isCurrent()) setState({ status: "ready", requestKey, request: prepared.request, report });
     } catch (error) {
       if (isCurrent()) setState({ status: "error", requestKey,
@@ -310,9 +312,10 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
     const requestController = new AbortController();
     excelController.current = requestController;
     const isCurrent = () => excelController.current === requestController && activeKey.current === ready.requestKey;
-    setExcel({ status: "loading" });
+    const transfer = new ReportTransfer();
+    setExcel({ status: "loading", transfer });
     try {
-      const result = await api.turnoverWorkbook(ready.request, requestController.signal);
+      const result = await api.turnoverWorkbook(ready.request, requestController.signal, transfer);
       if (!isCurrent()) return;
       const url = URL.createObjectURL(result.blob);
       const link = document.createElement("a");
@@ -431,8 +434,9 @@ export function TurnoverReport({ dateRange, onDateRangeChange }: {
           </button>
           {downloading && <button type="button" className="turnover-button" onClick={cancelExcel}>Отменить</button>}
           <p className="turnover-note" role="status">{period} · строк: {formatNumber(ready.report.rows.length)}</p>
+          {excel.status === "loading" && <ReportProgress transfer={excel.transfer} excel />}
         </> : current?.status === "loading" ? <>
-          <p className="turnover-note" role="status">Загружаем отчёт…</p>
+          <ReportProgress transfer={current.transfer} />
           <button type="button" className="turnover-button" onClick={cancelLoad}>Отменить</button>
         </> : <button type="submit" className="turnover-button turnover-primary" disabled={!prepared.valid}
           aria-describedby={!prepared.valid ? periodErrorId : undefined}>Загрузить отчёт</button>}

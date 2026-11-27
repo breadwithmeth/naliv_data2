@@ -308,6 +308,36 @@ test("a preview returned with the other calculation basis is rejected", async (t
   }), /не совпадает/);
 });
 
+test("preview and Excel count received bytes before the body finishes, without a content length", async t => {
+  const filters = { from: "2026-11-01", to: "2026-11-03", calculationMode: "purchase-title" } as const;
+  for (const kind of ["report", "workbook"] as const) {
+    const transfer = { startedAt: 0, receivedBytes: 0 };
+    const end = Promise.withResolvers<void>();
+    const first = new TextEncoder().encode('{"name":"Отчёт",');
+    const last = new TextEncoder().encode('"calculationMode":"purchase-title"}');
+    const response = new Response(new ReadableStream({
+      async start(controller) {
+        controller.enqueue(first);
+        await end.promise;
+        controller.enqueue(last);
+        controller.close();
+      }
+    }), { headers: { "Content-Disposition": 'attachment; filename="report.xlsx"' } });
+    const fetch = t.mock.method(globalThis, "fetch", async () => response);
+    const pending = kind === "report" ? api.marketingCompensationReport(filters, undefined, transfer)
+      : api.marketingCompensationWorkbook(filters, undefined, transfer);
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(transfer.receivedBytes, first.byteLength);
+    } finally { end.resolve(); }
+    const result = await pending;
+    assert.equal(transfer.receivedBytes, first.byteLength + last.byteLength);
+    if ("blob" in result) assert.equal(result.blob.size, transfer.receivedBytes);
+    else assert.equal(result.calculationMode, "purchase-title");
+    fetch.mock.restore();
+  }
+});
+
 test("canceled compensation responses and workbook bodies cannot deliver stale results", async (t) => {
   for (const kind of ["report", "workbook"] as const) {
     const waiting = Promise.withResolvers<void>();
